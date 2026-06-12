@@ -23,9 +23,15 @@ app.post("/email", async (req, res) => {
       model: "gpt-4o-mini",
       input: `
 Extract a work order from this email.
-The task description should be brief and for an electricians job notes.
-If there are more than one tenant, list them with a comma between the names and the same with the numbers. dont create an array.
-The tenants info will be listed under tenant details, don't just add names you find.
+Rules:
+- tenant-name must come ONLY from the "Tenant Details" section.
+- property-manager must come ONLY from the "Property Manager Details" section.
+- maintenance_request_posted_by is a separate field.
+- Do not use names found elsewhere in the email for tenant_names.
+- If multiple tenants exist, return all tenant names and contacts wiuth commas between.
+- If a section is missing, return null.
+- The account to is generally the owners name followed by C/O and the real estate name.
+- task-description should be brief but specific for an electricians job, include locations and all important info.
 
 Return JSON ONLY:
 - tenant-name
@@ -34,6 +40,7 @@ Return JSON ONLY:
 - task-description
 - real-estate
 - property-manager
+- account-to 
 
 Email:
 ${text}
