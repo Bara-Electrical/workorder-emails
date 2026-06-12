@@ -22,7 +22,7 @@ app.post("/email", async (req, res) => {
     const response = await openai.responses.create({
       model: "gpt-4o-mini",
       input: `
-Extract a work order from this email.
+Extract details of a workorder from this email.
 Rules:
 - tenant-name must come ONLY from the "Tenant Details" section.
 - property-manager must come ONLY from the "Property Manager Details" section.
@@ -34,7 +34,16 @@ Rules:
 - task-description is for an electricians job description no fluff. just list each fault with specific info.
 - order-number will be a workorder number. It will say job number or similar.
 
+Possible categories for task-type:
+
+EC1 = Electrical Compliance Check - keywords= smoke alarm check, rcd check, ec1
+AC1 = Aircon Servicing - keywords= ac1, aircon clean, aircon service
+AC2 = Deluxe Aircon Clean - keywords= deluxe clean, deluxe service
+Real Estate Aircon Maintenance = anything else to do with aircons
+Real Estate General Maintenance = everything else if non of the above apply
+
 Return JSON ONLY:
+- task-type
 - tenant-name
 - tenant-contact
 - address
