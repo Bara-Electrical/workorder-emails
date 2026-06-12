@@ -36,11 +36,11 @@ Rules:
 
 Possible categories for task-type:
 
-EC1 = Electrical Compliance Check - keywords= smoke alarm check, rcd check, ec1
-AC1 = Aircon Servicing - keywords= ac1, aircon clean, aircon service
-AC2 = Deluxe Aircon Clean - keywords= deluxe clean, deluxe service
-Real Estate Aircon Maintenance = anything else to do with aircons
-Real Estate General Maintenance = everything else if non of the above apply
+EC1 = Electrical Compliance Check - keywords= smoke alarm check, rcd check, ec1, electrical safety check etc.
+AC1 = Aircon Servicing - keywords= ac1, aircon clean, aircon service etc.
+AC2 = Deluxe Aircon Clean - keywords= deluxe clean, deluxe service etc.
+Real Estate Aircon Maintenance = anything else to do with aircons etc.
+Real Estate General Maintenance = everything else if none of the above apply
 
 Return JSON ONLY:
 - task-type
