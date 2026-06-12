@@ -30,8 +30,8 @@ Rules:
 - Do not use names found elsewhere in the email for tenant_names.
 - If multiple tenants exist, return all tenant names and contacts wiuth commas between.
 - If a section is missing, return null.
-- The account to is generally the owners name followed by C/O and the real estate name.
-- task-description should be brief but specific for an electricians job, include locations and all important info.
+- The account to is generally the owners name or multiple names followed by C/O and the real estate name.
+- task-description should be brief but specific for an electricians job, include locations and all important info. they know they need to repair or quote on things just describe the issue.
 
 Return JSON ONLY:
 - tenant-name
