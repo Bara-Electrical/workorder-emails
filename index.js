@@ -1,4 +1,10 @@
+import express from "express";
+import bodyParser from "body-parser";
 import OpenAI from "openai";
+
+const app = express();
+
+app.use(bodyParser.json());
 
 const openai = new OpenAI({
   apiKey: process.env.OPENAI_API_KEY,
@@ -39,4 +45,8 @@ ${text}
     console.error("AI ERROR:", err);
     res.status(500).send("error");
   }
+});
+
+app.listen(process.env.PORT || 3000, () => {
+  console.log("Server running");
 });
