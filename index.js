@@ -31,8 +31,8 @@ Rules:
 - If multiple tenants exist, return all tenant names and contacts with commas between.
 - If a section is missing, return null.
 - The account-to is generally the owners name or multiple names followed by C/O and the real estate name. Make sure to include all owners names. This has to appear exactly as written.
-- task-description is for an electricians job details, be very specific and just list what is wrong, no fluff.
-- order number will be a workorder number or reference number.
+- task-description is for an electricians job details. Bullet point of each fault and location. To the point.
+- order-number will be a workorder number. It will say job number or similar.
 
 Return JSON ONLY:
 - tenant-name
