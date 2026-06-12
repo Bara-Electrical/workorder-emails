@@ -22,14 +22,15 @@ app.post("/email", async (req, res) => {
     const response = await openai.responses.create({
       model: "gpt-4o-mini",
       input: `
-Extract a work order from this email.
+Extract a work order from this email. The task description should be brief and for an electricians job notes. add multiple tenant names and contacts if there is.
 
 Return JSON ONLY:
-- title
+- tenant-name
+- tenant-contact
 - address
-- priority
-- job_type
-- notes
+- task-description
+- real-estate
+- property-manager
 
 Email:
 ${text}
