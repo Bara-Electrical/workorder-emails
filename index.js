@@ -27,11 +27,12 @@ Rules:
 - tenant-name must come ONLY from the "Tenant Details" section.
 - property-manager must come ONLY from the "Property Manager Details" section.
 - maintenance_request_posted_by is a separate field.
-- Do not use names found elsewhere in the email for tenant_names.
-- If multiple tenants exist, return all tenant names and contacts wiuth commas between.
+- Do not use names found elsewhere in the email for tenant-names.
+- If multiple tenants exist, return all tenant names and contacts with commas between.
 - If a section is missing, return null.
-- The account to is generally the owners name or multiple names followed by C/O and the real estate name.
+- The account-to is generally the owners name or multiple names followed by C/O and the real estate name. Make sure to include all owners names. This has to appear exactly as written.
 - task-description should be brief but specific for an electricians job, include locations and all important info. they know they need to repair or quote on things just describe the issue.
+- order number will be a workorder number or reference number.
 
 Return JSON ONLY:
 - tenant-name
@@ -40,7 +41,8 @@ Return JSON ONLY:
 - task-description
 - real-estate
 - property-manager
-- account-to 
+- account-to
+- order-number
 
 Email:
 ${text}
