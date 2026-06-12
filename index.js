@@ -20,7 +20,7 @@ app.post("/email", async (req, res) => {
     console.log("ABOUT TO CALL AI");
 
     const response = await openai.responses.create({
-      model: "gpt-5.3-mini",
+      model: "gpt-4o-mini",
       input: `
 Extract a work order from this email.
 
