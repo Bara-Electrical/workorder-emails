@@ -24,7 +24,7 @@ app.post("/email", async (req, res) => {
       input: `
 Extract a work order from this email.
 The task description should be brief and for an electricians job notes.
-Add multiple tenant names and contacts if there is, each tenant will have its own contact number, don't get confused with other names, they will be listed under tenant details.
+If there are more than one tenants, list them with a comma between the names and the same with the numbers. dont create an array.
 
 Return JSON ONLY:
 - tenant-name
