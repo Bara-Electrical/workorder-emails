@@ -36,14 +36,6 @@ export class EventBus {
      * @param {Object} data
      */
     dispatch(eventName: string, data: Object): void;
-    /**
-     * @ignore
-     */
-    _on(eventName: any, listener: any, options?: null): void;
-    /**
-     * @ignore
-     */
-    _off(eventName: any, listener: any, options?: null): void;
     #private;
 }
 /**

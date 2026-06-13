@@ -1,19 +1,32 @@
 import express from "express";
 import bodyParser from "body-parser";
 import OpenAI from "openai";
-import { createRequire } from "module";
+import * as pdfjsLib from "pdfjs-dist/legacy/build/pdf.mjs";
 
 const app = express();
 app.use(bodyParser.json());
 
-const require = createRequire(import.meta.url);
-
-// 🔥 IMPORTANT: direct internal import avoids ESM/CJS issues
-const pdfParse = require("pdf-parse/lib/pdf-parse.js");
-
 const openai = new OpenAI({
   apiKey: process.env.OPENAI_API_KEY,
 });
+
+// PDF extractor (stable)
+async function extractPDF(buffer) {
+  const loadingTask = pdfjsLib.getDocument({ data: buffer });
+  const pdf = await loadingTask.promise;
+
+  let text = "";
+
+  for (let i = 1; i <= pdf.numPages; i++) {
+    const page = await pdf.getPage(i);
+    const content = await page.getTextContent();
+
+    const strings = content.items.map(item => item.str);
+    text += strings.join(" ") + "\n";
+  }
+
+  return text;
+}
 
 app.post("/email", async (req, res) => {
   try {
@@ -24,13 +37,11 @@ app.post("/email", async (req, res) => {
     const attachments = req.body.attachments || [];
     let textForAI = req.body.text || "";
 
-    // Find workorder PDF (any variation)
     const workorder = attachments.find(a => {
       const name = (a.filename || "").toLowerCase();
       return name.includes("workorder") && name.endsWith(".pdf");
     });
 
-    // If PDF exists, download + parse it
     if (workorder?.contentUrl) {
       console.log("FOUND WORK ORDER PDF:", workorder.filename);
 
@@ -38,9 +49,7 @@ app.post("/email", async (req, res) => {
       const arrayBuffer = await response.arrayBuffer();
       const buffer = Buffer.from(arrayBuffer);
 
-      const pdfData = await pdfParse(buffer);
-
-      textForAI = pdfData.text;
+      textForAI = await extractPDF(buffer);
 
       console.log("USING PDF CONTENT FOR AI");
     } else {
