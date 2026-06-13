@@ -73,4 +73,6 @@ app.listen(process.env.PORT || 3000, () => {
   console.log("Server running");
 });
 
+console.log("CUNT");
+
 console.log(JSON.stringify(req.body, null, 2));
