@@ -10,9 +10,9 @@ const openai = new OpenAI({
   apiKey: process.env.OPENAI_API_KEY,
 });
 
-// PDF extractor (stable)
-async function extractPDF(buffer) {
-  const loadingTask = pdfjsLib.getDocument({ data: buffer });
+// -------- PDF extraction (stable) ----------
+async function extractPDF(data) {
+  const loadingTask = pdfjsLib.getDocument({ data });
   const pdf = await loadingTask.promise;
 
   let text = "";
@@ -28,6 +28,7 @@ async function extractPDF(buffer) {
   return text;
 }
 
+// -------- Email endpoint ----------
 app.post("/email", async (req, res) => {
   try {
     console.log("WORK ORDER EMAIL RECEIVED");
@@ -37,6 +38,7 @@ app.post("/email", async (req, res) => {
     const attachments = req.body.attachments || [];
     let textForAI = req.body.text || "";
 
+    // Find workorder PDF
     const workorder = attachments.find(a => {
       const name = (a.filename || "").toLowerCase();
       return name.includes("workorder") && name.endsWith(".pdf");
@@ -47,9 +49,11 @@ app.post("/email", async (req, res) => {
 
       const response = await fetch(workorder.contentUrl);
       const arrayBuffer = await response.arrayBuffer();
-      const buffer = Buffer.from(arrayBuffer);
 
-      textForAI = await extractPDF(buffer);
+      // IMPORTANT FIX: pdfjs needs Uint8Array (NOT Buffer)
+      const data = new Uint8Array(arrayBuffer);
+
+      textForAI = await extractPDF(data);
 
       console.log("USING PDF CONTENT FOR AI");
     } else {
