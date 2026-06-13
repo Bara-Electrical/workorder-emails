@@ -146,7 +146,7 @@ CRITICAL RULES:
 - if missing return null
 - task-description must be concise electrician job summary
 - order-number is the job/work order number
-- if you cant find the real estate name, pull it from the account to.
+- if you cant find the real estate name, it'll be in the account to after the owners name or after the c/o.
 
 TASK TYPES:
 EC1 = Electrical Compliance Check
