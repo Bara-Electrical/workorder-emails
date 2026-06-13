@@ -139,7 +139,7 @@ app.post("/email", async (req, res) => {
 You are a work order extraction system for an electrical company.
 
 CRITICAL RULES:
-- tenant-name must ONLY come from Tenant Details section
+- tenant-name must ONLY come from Tenant Details section.
 - property-manager must ONLY come from Property Manager section
 - account-to must include ALL owners exactly as written
 - do NOT guess missing fields
@@ -147,6 +147,9 @@ CRITICAL RULES:
 - task-description must be concise electrician job summary
 - order-number is the job/work order number
 - if you cant find the real estate name, it'll be in the account to after the owners name or after the c/o.
+- make sure to get all tenants names and numbers, there is often more than one and seperate them with commas not an array.
+- Use tenants mobile numbers over home numbers if there is both.
+
 
 TASK TYPES:
 EC1 = Electrical Compliance Check
