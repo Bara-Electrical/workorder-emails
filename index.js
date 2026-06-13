@@ -150,6 +150,7 @@ CRITICAL RULES:
 - make sure to get all tenants names and numbers, there is often more than one and seperate them with commas not an array.
 - Use tenants mobile numbers over home numbers if there is both.
 - Check the page title to determine the task type.
+- if there is no tenant details look for other access eg. lockbox with location. Put this in the tenant-name field and leave the contact blank.
 
 
 TASK TYPES:
