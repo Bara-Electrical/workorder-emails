@@ -4,7 +4,7 @@ import OpenAI from "openai";
 import { createRequire } from "module";
 
 const require = createRequire(import.meta.url);
-const pdf = require("pdf-parse");
+const pdfParse = require("pdf-parse");
 
 const app = express();
 app.use(bodyParser.json());
@@ -17,18 +17,17 @@ app.post("/email", async (req, res) => {
   try {
     console.log("WORK ORDER EMAIL RECEIVED");
 
+    console.log(JSON.stringify(req.body, null, 2));
+
     const attachments = req.body.attachments || [];
-    const emailText = req.body.text || "";
+    let textForAI = req.body.text || "";
 
-    let textForAI = emailText;
-
-    // Find work order PDF
+    // Find workorder PDF
     const workorder = attachments.find(a => {
       const name = (a.filename || "").toLowerCase();
       return name.includes("workorder") && name.endsWith(".pdf");
     });
 
-    // If found, download + extract PDF
     if (workorder?.contentUrl) {
       console.log("FOUND WORK ORDER PDF:", workorder.filename);
 
@@ -36,7 +35,7 @@ app.post("/email", async (req, res) => {
       const arrayBuffer = await response.arrayBuffer();
       const buffer = Buffer.from(arrayBuffer);
 
-      const pdfData = await pdf(buffer);
+      const pdfData = await pdfParse(buffer);
 
       textForAI = pdfData.text;
 
@@ -47,17 +46,17 @@ app.post("/email", async (req, res) => {
 
     console.log("ABOUT TO CALL AI");
 
-    const response = await openai.responses.create({
+    const responseAI = await openai.responses.create({
       model: "gpt-4o-mini",
       input: `
 Extract details of a workorder from this text.
 
-Rules:
+CRITICAL RULES:
 - tenant-name ONLY from Tenant Details section
 - property-manager ONLY from Property Manager section
 - account-to must include all owners exactly as written
-- do not guess roles
 - if missing return null
+- do not guess roles
 
 Return JSON ONLY:
 - task-type
@@ -76,7 +75,7 @@ ${textForAI}
     });
 
     console.log("AI RESULT:");
-    console.log(response.output_text);
+    console.log(responseAI.output_text);
 
     res.status(200).send("ok");
 
