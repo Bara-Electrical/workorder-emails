@@ -36,7 +36,7 @@ app.post("/email", async (req, res) => {
     const attachments = req.body.attachments || [];
     let textForAI = req.body.text || "";
 
-    // Find workorder PDF only
+    // Find workorder PDF
     const workorder = attachments.find(a => {
       const name = (a.filename || "").toLowerCase();
       return name.includes("workorder") && name.endsWith(".pdf");
@@ -47,14 +47,14 @@ app.post("/email", async (req, res) => {
 
       const response = await fetch(workorder.contentUrl);
       const arrayBuffer = await response.arrayBuffer();
+
+      // REQUIRED: Uint8Array for pdfjs
       const data = new Uint8Array(arrayBuffer);
 
       let pdfText = await extractPDF(data);
 
-      // CLEAN TEXT (IMPORTANT FOR AI ACCURACY)
-      pdfText = pdfText.replace(/\s+/g, " ").trim();
-
-      textForAI = pdfText;
+      // Clean up PDF noise for better AI accuracy
+      textForAI = pdfText.replace(/\s+/g, " ").trim();
 
       console.log("USING PDF CONTENT FOR AI");
     } else {
@@ -67,8 +67,11 @@ app.post("/email", async (req, res) => {
     const responseAI = await openai.responses.create({
       model: "gpt-4o-mini",
 
-      response_format: {
-        type: "json_object"
+      // NEW API FIX
+      text: {
+        format: {
+          type: "json_object"
+        }
       },
 
       input: `
@@ -79,7 +82,7 @@ CRITICAL RULES:
 - property-manager must ONLY come from Property Manager section
 - account-to must include ALL owners exactly as written
 - do NOT guess missing fields
-- if missing, return null
+- if missing return null
 - task-description must be concise electrician job summary
 - order-number is the job/work order number
 
@@ -91,6 +94,7 @@ Real Estate Aircon Maintenance = other aircon jobs
 Real Estate General Maintenance = everything else
 
 Return ONLY valid JSON:
+
 {
   "task-type": "",
   "tenant-name": "",
