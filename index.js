@@ -28,7 +28,7 @@ async function extractPDF(data) {
   return text;
 }
 
-// ---------------- HTML extraction ----------------
+// ---------------- HTML cleaning ----------------
 function cleanHtml(html) {
   return html
     .replace(/<script[\s\S]*?<\/script>/gi, "")
@@ -54,11 +54,19 @@ app.post("/email", async (req, res) => {
     );
 
     if (tapiMatch) {
-      console.log("FOUND TAPI LINK:", tapiMatch[0]);
+      console.log("RAW TAPI MATCH:", tapiMatch[0]);
+
+      // 🔥 FIX: clean broken URL (removes > " ) etc)
+      let tapiLink = tapiMatch[0]
+        .split(">")[0]
+        .split('"')[0]
+        .split(")")[0]
+        .trim();
+
+      console.log("CLEAN TAPI LINK:", tapiLink);
 
       try {
-        // Step 1: follow tracking redirect
-        const redirectResponse = await fetch(tapiMatch[0], {
+        const redirectResponse = await fetch(tapiLink, {
           redirect: "follow",
           headers: {
             "User-Agent": "Mozilla/5.0"
@@ -68,7 +76,6 @@ app.post("/email", async (req, res) => {
         const finalUrl = redirectResponse.url;
         console.log("FINAL URL:", finalUrl);
 
-        // Step 2: re-fetch actual page content (IMPORTANT FIX)
         const finalPage = await fetch(finalUrl, {
           headers: {
             "User-Agent": "Mozilla/5.0"
@@ -91,7 +98,7 @@ app.post("/email", async (req, res) => {
       }
     }
 
-    // ---------------- WORKORDER PDF ATTACHMENT FLOW ----------------
+    // ---------------- WORK ORDER PDF FLOW ----------------
     const workorder = attachments.find(a => {
       const name = (a.filename || "").toLowerCase();
       return name.includes("workorder") && name.endsWith(".pdf");
@@ -147,7 +154,7 @@ AC2 = Deluxe Aircon Clean
 Real Estate Aircon Maintenance = aircon related jobs
 Real Estate General Maintenance = everything else
 
-Return JSON ONLY:
+Return ONLY JSON:
 
 {
   "task-type": "",
