@@ -149,6 +149,7 @@ CRITICAL RULES:
 - if you cant find the real estate name, it'll be in the account to after the owners name or after the c/o.
 - make sure to get all tenants names and numbers, there is often more than one and seperate them with commas not an array.
 - Use tenants mobile numbers over home numbers if there is both.
+- Check the page title to determine the task type.
 
 
 TASK TYPES:
