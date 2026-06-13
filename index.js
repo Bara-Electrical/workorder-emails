@@ -41,6 +41,27 @@ console.log("ATTACHMENTS:", JSON.stringify(req.body.attachments, null, 2));
     const attachments = req.body.attachments || [];
     let textForAI = req.body.text || "";
 
+    // TAPI LINK DETECTION
+const emailText = req.body.text || "";
+
+const tapiMatch = emailText.match(
+  /https:\/\/url\d+\.tapihq\.com\/ls\/click\S+/i
+);
+
+if (tapiMatch) {
+  console.log("FOUND TAPI LINK:", tapiMatch[0]);
+
+  try {
+    const tapiResponse = await fetch(tapiMatch[0], {
+      redirect: "follow",
+    });
+
+    console.log("FINAL URL:", tapiResponse.url);
+  } catch (err) {
+    console.error("TAPI LINK ERROR:", err);
+  }
+}
+
     // Find workorder PDF
     const workorder = attachments.find(a => {
       const name = (a.filename || "").toLowerCase();
