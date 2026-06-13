@@ -10,7 +10,7 @@ const openai = new OpenAI({
   apiKey: process.env.OPENAI_API_KEY,
 });
 
-// -------- PDF extraction (stable) ----------
+// ---------------- PDF extraction ----------------
 async function extractPDF(data) {
   const loadingTask = pdfjsLib.getDocument({ data });
   const pdf = await loadingTask.promise;
@@ -28,17 +28,15 @@ async function extractPDF(data) {
   return text;
 }
 
-// -------- Email endpoint ----------
+// ---------------- EMAIL ROUTE ----------------
 app.post("/email", async (req, res) => {
   try {
     console.log("WORK ORDER EMAIL RECEIVED");
 
-    console.log(JSON.stringify(req.body, null, 2));
-
     const attachments = req.body.attachments || [];
     let textForAI = req.body.text || "";
 
-    // Find workorder PDF
+    // Find workorder PDF only
     const workorder = attachments.find(a => {
       const name = (a.filename || "").toLowerCase();
       return name.includes("workorder") && name.endsWith(".pdf");
@@ -49,41 +47,61 @@ app.post("/email", async (req, res) => {
 
       const response = await fetch(workorder.contentUrl);
       const arrayBuffer = await response.arrayBuffer();
-
-      // IMPORTANT FIX: pdfjs needs Uint8Array (NOT Buffer)
       const data = new Uint8Array(arrayBuffer);
 
-      textForAI = await extractPDF(data);
+      let pdfText = await extractPDF(data);
+
+      // CLEAN TEXT (IMPORTANT FOR AI ACCURACY)
+      pdfText = pdfText.replace(/\s+/g, " ").trim();
+
+      textForAI = pdfText;
 
       console.log("USING PDF CONTENT FOR AI");
     } else {
       console.log("NO WORK ORDER PDF - USING EMAIL BODY");
+      textForAI = (textForAI || "").replace(/\s+/g, " ").trim();
     }
 
     console.log("ABOUT TO CALL AI");
 
     const responseAI = await openai.responses.create({
       model: "gpt-4o-mini",
+
+      response_format: {
+        type: "json_object"
+      },
+
       input: `
-Extract details of a workorder from this text.
+You are a work order extraction system for an electrical company.
 
 CRITICAL RULES:
-- tenant-name ONLY from Tenant Details section
-- property-manager ONLY from Property Manager section
-- account-to must include all owners exactly as written
-- if missing return null
-- do not guess roles
+- tenant-name must ONLY come from Tenant Details section
+- property-manager must ONLY come from Property Manager section
+- account-to must include ALL owners exactly as written
+- do NOT guess missing fields
+- if missing, return null
+- task-description must be concise electrician job summary
+- order-number is the job/work order number
 
-Return JSON ONLY:
-- task-type
-- tenant-name
-- tenant-contact
-- address
-- task-description
-- real-estate
-- property-manager
-- account-to
-- order-number
+TASK TYPE RULES:
+EC1 = Electrical Compliance Check (smoke alarms, RCDs, safety checks)
+AC1 = Aircon Servicing
+AC2 = Deluxe Aircon Clean
+Real Estate Aircon Maintenance = other aircon jobs
+Real Estate General Maintenance = everything else
+
+Return ONLY valid JSON:
+{
+  "task-type": "",
+  "tenant-name": "",
+  "tenant-contact": "",
+  "address": "",
+  "task-description": "",
+  "real-estate": "",
+  "property-manager": "",
+  "account-to": "",
+  "order-number": ""
+}
 
 TEXT:
 ${textForAI}
@@ -101,6 +119,7 @@ ${textForAI}
   }
 });
 
+// ---------------- START SERVER ----------------
 app.listen(process.env.PORT || 3000, () => {
   console.log("Server running");
 });
