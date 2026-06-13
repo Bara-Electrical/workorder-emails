@@ -1,7 +1,10 @@
 import express from "express";
 import bodyParser from "body-parser";
 import OpenAI from "openai";
-import pdf from "pdf-parse";
+import { createRequire } from "module";
+
+const require = createRequire(import.meta.url);
+const pdf = require("pdf-parse");
 
 const app = express();
 app.use(bodyParser.json());
