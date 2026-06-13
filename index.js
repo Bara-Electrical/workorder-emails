@@ -66,15 +66,22 @@ app.post("/email", async (req, res) => {
 
       try {
         const redirectResponse = await fetch(tapiMatch[0], {
-          redirect: "follow",
+        redirect: "follow"
         });
 
         const finalUrl = redirectResponse.url;
         console.log("FINAL URL:", finalUrl);
 
-        const pageText = await fetchPageText(finalUrl);
+        // 🔥 re-fetch FINAL URL content properly
+        const finalPage = await fetch(finalUrl, {
+        headers: {
+          "User-Agent": "Mozilla/5.0"
+        }
+      });
 
-        console.log("TAPI PAGE TEXT LENGTH:", pageText.length);
+const html = await finalPage.text();
+
+console.log("RAW HTML LENGTH:", html.length);
 
         textForAI = pageText;
       } catch (err) {
