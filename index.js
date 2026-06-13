@@ -2,7 +2,6 @@ import express from "express";
 import bodyParser from "body-parser";
 import OpenAI from "openai";
 import * as pdfjsLib from "pdfjs-dist/legacy/build/pdf.mjs";
-import { chromium } from "playwright";
 
 const app = express();
 app.use(bodyParser.json({ limit: "25mb" }));
@@ -11,7 +10,7 @@ const openai = new OpenAI({
   apiKey: process.env.OPENAI_API_KEY,
 });
 
-// ---------------- PDF extraction ----------------
+// ---------------- PDF extraction (attachments only) ----------------
 async function extractPDF(data) {
   const loadingTask = pdfjsLib.getDocument({ data });
   const pdf = await loadingTask.promise;
@@ -29,31 +28,19 @@ async function extractPDF(data) {
   return text;
 }
 
-// ---------------- Generate PDF from webpage ----------------
-async function generatePdfFromUrl(url) {
-  console.log("OPENING TAPI PAGE:", url);
+// ---------------- HTML extraction (TAPI pages) ----------------
+async function fetchPageText(url) {
+  const res = await fetch(url);
+  const html = await res.text();
 
-  const browser = await chromium.launch({
-    headless: true,
-  });
+  const clean = html
+    .replace(/<script[\s\S]*?<\/script>/gi, "")
+    .replace(/<style[\s\S]*?<\/style>/gi, "")
+    .replace(/<[^>]*>/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
 
-  try {
-    const page = await browser.newPage();
-
-    await page.goto(url, {
-      waitUntil: "networkidle",
-      timeout: 60000,
-    });
-
-    const pdfBuffer = await page.pdf({
-      format: "A4",
-      printBackground: true,
-    });
-
-    return pdfBuffer;
-  } finally {
-    await browser.close();
-  }
+  return clean;
 }
 
 // ---------------- EMAIL ROUTE ----------------
@@ -61,10 +48,13 @@ app.post("/email", async (req, res) => {
   try {
     console.log("WORK ORDER EMAIL RECEIVED");
 
+    console.log("FROM:", req.body.from);
+    console.log("SUBJECT:", req.body.subject);
+
     const attachments = req.body.attachments || [];
     let textForAI = req.body.text || "";
 
-    // ---------------- TAPI DETECTION ----------------
+    // ---------------- TAPI LINK DETECTION ----------------
     const emailText = req.body.text || "";
 
     const tapiMatch = emailText.match(
@@ -80,73 +70,71 @@ app.post("/email", async (req, res) => {
         });
 
         const finalUrl = redirectResponse.url;
-
         console.log("FINAL URL:", finalUrl);
 
-        const pdfBuffer = await generatePdfFromUrl(finalUrl);
+        const pageText = await fetchPageText(finalUrl);
 
-        const pdfData = new Uint8Array(pdfBuffer);
+        console.log("TAPI PAGE TEXT LENGTH:", pageText.length);
 
-        let pdfText = await extractPDF(pdfData);
-
-        textForAI = pdfText.replace(/\s+/g, " ").trim();
-
-        console.log("USING GENERATED TAPI PDF FOR AI");
+        textForAI = pageText;
       } catch (err) {
         console.error("TAPI PROCESSING ERROR:", err);
       }
     }
 
-    // ---------------- NORMAL PDF ATTACHMENT FLOW ----------------
-    else {
-      const workorder = attachments.find(a => {
-        const name = (a.filename || "").toLowerCase();
-        return name.includes("workorder") && name.endsWith(".pdf");
-      });
+    // ---------------- WORKORDER PDF ATTACHMENT FLOW ----------------
+    const workorder = attachments.find(a => {
+      const name = (a.filename || "").toLowerCase();
+      return name.includes("workorder") && name.endsWith(".pdf");
+    });
 
-      if (workorder?.contentUrl) {
-        console.log("FOUND WORK ORDER PDF:", workorder.filename);
+    if (workorder?.contentUrl) {
+      console.log("FOUND WORK ORDER PDF:", workorder.filename);
 
-        const response = await fetch(workorder.contentUrl);
-        const arrayBuffer = await response.arrayBuffer();
+      const response = await fetch(workorder.contentUrl);
+      const arrayBuffer = await response.arrayBuffer();
 
-        const data = new Uint8Array(arrayBuffer);
+      const data = new Uint8Array(arrayBuffer);
 
-        let pdfText = await extractPDF(data);
+      const pdfText = await extractPDF(data);
 
-        textForAI = pdfText.replace(/\s+/g, " ").trim();
+      textForAI = pdfText.replace(/\s+/g, " ").trim();
 
-        console.log("USING PDF CONTENT FOR AI");
-      } else {
-        console.log("NO WORK ORDER PDF - USING EMAIL BODY");
-        textForAI = (textForAI || "").replace(/\s+/g, " ").trim();
-      }
+      console.log("USING PDF CONTENT FOR AI");
+    } else if (!tapiMatch) {
+      console.log("NO PDF OR TAPI - USING EMAIL BODY");
+      textForAI = (textForAI || "").replace(/\s+/g, " ").trim();
     }
 
+    console.log("TEXT LENGTH:", textForAI.length);
     console.log("ABOUT TO CALL AI");
 
     const responseAI = await openai.responses.create({
       model: "gpt-4o-mini",
 
+      text: {
+        format: {
+          type: "json_object"
+        }
+      },
+
       input: `
 You are a work order extraction system for an electrical company.
 
 CRITICAL RULES:
-- tenant-name must ONLY come from Tenant Details section.
-- if there is no tenant details the property may be vacant.
-- if access details include a lockbox, put the lockbox details into tenant-name.
-- property-manager must ONLY come from Property Manager section.
-- account-to must include ALL owners exactly as written.
-- do NOT guess missing fields.
-- if missing return null.
-- task-description must be concise electrician job summary.
-- order-number is the job/work order number.
+- tenant-name must ONLY come from Tenant Details section
+- property-manager must ONLY come from Property Manager section
+- account-to must include ALL owners exactly as written
+- do NOT guess missing fields
+- if missing return null
+- task-description must be concise electrician job summary
+- order-number is the job/work order number
 
-TASK TYPE RULES:
-EC1 = Electrical Compliance Check (smoke alarms, RCDs, safety checks)
+TASK TYPES:
+EC1 = Electrical Compliance Check
 AC1 = Aircon Servicing
 AC2 = Deluxe Aircon Clean
-Real Estate Aircon Maintenance = anything involving air conditioning
+Real Estate Aircon Maintenance = aircon related jobs
 Real Estate General Maintenance = everything else
 
 Return JSON ONLY:
@@ -172,6 +160,7 @@ ${textForAI}
     console.log(responseAI.output_text);
 
     res.status(200).send("ok");
+
   } catch (err) {
     console.error("AI ERROR:", err);
     res.status(500).send("error");

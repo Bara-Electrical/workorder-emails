@@ -5,7 +5,6 @@
   "main": "index.js",
   "scripts": {
     "start": "node index.js",
-    "postinstall": "playwright install chromium"
   },
   "dependencies": {
     "body-parser": "^1.20.2",
