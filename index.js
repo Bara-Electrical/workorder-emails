@@ -2,9 +2,10 @@ import express from "express";
 import bodyParser from "body-parser";
 import OpenAI from "openai";
 import * as pdfjsLib from "pdfjs-dist/legacy/build/pdf.mjs";
+import { chromium } from "playwright";
 
 const app = express();
-app.use(bodyParser.json());
+app.use(bodyParser.json({ limit: "25mb" }));
 
 const openai = new OpenAI({
   apiKey: process.env.OPENAI_API_KEY,
@@ -28,64 +29,98 @@ async function extractPDF(data) {
   return text;
 }
 
+// ---------------- Generate PDF from webpage ----------------
+async function generatePdfFromUrl(url) {
+  console.log("OPENING TAPI PAGE:", url);
+
+  const browser = await chromium.launch({
+    headless: true,
+  });
+
+  try {
+    const page = await browser.newPage();
+
+    await page.goto(url, {
+      waitUntil: "networkidle",
+      timeout: 60000,
+    });
+
+    const pdfBuffer = await page.pdf({
+      format: "A4",
+      printBackground: true,
+    });
+
+    return pdfBuffer;
+  } finally {
+    await browser.close();
+  }
+}
+
 // ---------------- EMAIL ROUTE ----------------
 app.post("/email", async (req, res) => {
   try {
     console.log("WORK ORDER EMAIL RECEIVED");
-    console.log("FROM:", req.body.from);
-console.log("SUBJECT:", req.body.subject);
-console.log("TEXT:", req.body.text);
-console.log("HTML:", req.body.html);
-console.log("ATTACHMENTS:", JSON.stringify(req.body.attachments, null, 2));
 
     const attachments = req.body.attachments || [];
     let textForAI = req.body.text || "";
 
-    // TAPI LINK DETECTION
-const emailText = req.body.text || "";
+    // ---------------- TAPI DETECTION ----------------
+    const emailText = req.body.text || "";
 
-const tapiMatch = emailText.match(
-  /https:\/\/url\d+\.tapihq\.com\/ls\/click\S+/i
-);
+    const tapiMatch = emailText.match(
+      /https:\/\/url\d+\.tapihq\.com\/ls\/click\S+/i
+    );
 
-if (tapiMatch) {
-  console.log("FOUND TAPI LINK:", tapiMatch[0]);
+    if (tapiMatch) {
+      console.log("FOUND TAPI LINK:", tapiMatch[0]);
 
-  try {
-    const tapiResponse = await fetch(tapiMatch[0], {
-      redirect: "follow",
-    });
+      try {
+        const redirectResponse = await fetch(tapiMatch[0], {
+          redirect: "follow",
+        });
 
-    console.log("FINAL URL:", tapiResponse.url);
-  } catch (err) {
-    console.error("TAPI LINK ERROR:", err);
-  }
-}
+        const finalUrl = redirectResponse.url;
 
-    // Find workorder PDF
-    const workorder = attachments.find(a => {
-      const name = (a.filename || "").toLowerCase();
-      return name.includes("workorder") && name.endsWith(".pdf");
-    });
+        console.log("FINAL URL:", finalUrl);
 
-    if (workorder?.contentUrl) {
-      console.log("FOUND WORK ORDER PDF:", workorder.filename);
+        const pdfBuffer = await generatePdfFromUrl(finalUrl);
 
-      const response = await fetch(workorder.contentUrl);
-      const arrayBuffer = await response.arrayBuffer();
+        const pdfData = new Uint8Array(pdfBuffer);
 
-      // REQUIRED: Uint8Array for pdfjs
-      const data = new Uint8Array(arrayBuffer);
+        let pdfText = await extractPDF(pdfData);
 
-      let pdfText = await extractPDF(data);
+        textForAI = pdfText.replace(/\s+/g, " ").trim();
 
-      // Clean up PDF noise for better AI accuracy
-      textForAI = pdfText.replace(/\s+/g, " ").trim();
+        console.log("USING GENERATED TAPI PDF FOR AI");
+      } catch (err) {
+        console.error("TAPI PROCESSING ERROR:", err);
+      }
+    }
 
-      console.log("USING PDF CONTENT FOR AI");
-    } else {
-      console.log("NO WORK ORDER PDF - USING EMAIL BODY");
-      textForAI = (textForAI || "").replace(/\s+/g, " ").trim();
+    // ---------------- NORMAL PDF ATTACHMENT FLOW ----------------
+    else {
+      const workorder = attachments.find(a => {
+        const name = (a.filename || "").toLowerCase();
+        return name.includes("workorder") && name.endsWith(".pdf");
+      });
+
+      if (workorder?.contentUrl) {
+        console.log("FOUND WORK ORDER PDF:", workorder.filename);
+
+        const response = await fetch(workorder.contentUrl);
+        const arrayBuffer = await response.arrayBuffer();
+
+        const data = new Uint8Array(arrayBuffer);
+
+        let pdfText = await extractPDF(data);
+
+        textForAI = pdfText.replace(/\s+/g, " ").trim();
+
+        console.log("USING PDF CONTENT FOR AI");
+      } else {
+        console.log("NO WORK ORDER PDF - USING EMAIL BODY");
+        textForAI = (textForAI || "").replace(/\s+/g, " ").trim();
+      }
     }
 
     console.log("ABOUT TO CALL AI");
@@ -93,34 +128,28 @@ if (tapiMatch) {
     const responseAI = await openai.responses.create({
       model: "gpt-4o-mini",
 
-      // NEW API FIX
-      text: {
-        format: {
-          type: "json_object"
-        }
-      },
-
       input: `
 You are a work order extraction system for an electrical company.
 
 CRITICAL RULES:
-- tenant-name must ONLY come from Tenant Details section
-- if there is no tenant details the property might be vacant, it should have access details like a lockbox. add the lockbox into the tenant name and include the location and key.
-- property-manager must ONLY come from Property Manager section
-- account-to must include ALL owners exactly as written
-- do NOT guess missing fields
-- if missing return null
-- task-description must be concise electrician job summary
-- order-number is the job/work order number
+- tenant-name must ONLY come from Tenant Details section.
+- if there is no tenant details the property may be vacant.
+- if access details include a lockbox, put the lockbox details into tenant-name.
+- property-manager must ONLY come from Property Manager section.
+- account-to must include ALL owners exactly as written.
+- do NOT guess missing fields.
+- if missing return null.
+- task-description must be concise electrician job summary.
+- order-number is the job/work order number.
 
 TASK TYPE RULES:
 EC1 = Electrical Compliance Check (smoke alarms, RCDs, safety checks)
 AC1 = Aircon Servicing
 AC2 = Deluxe Aircon Clean
-Real Estate Aircon Maintenance = anything else that has aircon in the description, even if other works are involved aswell. other aircon jobs
+Real Estate Aircon Maintenance = anything involving air conditioning
 Real Estate General Maintenance = everything else
 
-Return ONLY valid JSON:
+Return JSON ONLY:
 
 {
   "task-type": "",
@@ -143,7 +172,6 @@ ${textForAI}
     console.log(responseAI.output_text);
 
     res.status(200).send("ok");
-
   } catch (err) {
     console.error("AI ERROR:", err);
     res.status(500).send("error");
