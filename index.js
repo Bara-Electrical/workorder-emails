@@ -32,6 +32,11 @@ async function extractPDF(data) {
 app.post("/email", async (req, res) => {
   try {
     console.log("WORK ORDER EMAIL RECEIVED");
+    console.log("FROM:", req.body.from);
+console.log("SUBJECT:", req.body.subject);
+console.log("TEXT:", req.body.text);
+console.log("HTML:", req.body.html);
+console.log("ATTACHMENTS:", JSON.stringify(req.body.attachments, null, 2));
 
     const attachments = req.body.attachments || [];
     let textForAI = req.body.text || "";
