@@ -28,28 +28,20 @@ async function extractPDF(data) {
   return text;
 }
 
-// ---------------- HTML extraction (TAPI pages) ----------------
-async function fetchPageText(url) {
-  const res = await fetch(url);
-  const html = await res.text();
-
-  const clean = html
+// ---------------- HTML extraction ----------------
+function cleanHtml(html) {
+  return html
     .replace(/<script[\s\S]*?<\/script>/gi, "")
     .replace(/<style[\s\S]*?<\/style>/gi, "")
     .replace(/<[^>]*>/g, " ")
     .replace(/\s+/g, " ")
     .trim();
-
-  return clean;
 }
 
 // ---------------- EMAIL ROUTE ----------------
 app.post("/email", async (req, res) => {
   try {
     console.log("WORK ORDER EMAIL RECEIVED");
-
-    console.log("FROM:", req.body.from);
-    console.log("SUBJECT:", req.body.subject);
 
     const attachments = req.body.attachments || [];
     let textForAI = req.body.text || "";
@@ -65,25 +57,35 @@ app.post("/email", async (req, res) => {
       console.log("FOUND TAPI LINK:", tapiMatch[0]);
 
       try {
+        // Step 1: follow tracking redirect
         const redirectResponse = await fetch(tapiMatch[0], {
-        redirect: "follow"
+          redirect: "follow",
+          headers: {
+            "User-Agent": "Mozilla/5.0"
+          }
         });
 
         const finalUrl = redirectResponse.url;
         console.log("FINAL URL:", finalUrl);
 
-        // 🔥 re-fetch FINAL URL content properly
+        // Step 2: re-fetch actual page content (IMPORTANT FIX)
         const finalPage = await fetch(finalUrl, {
-        headers: {
-          "User-Agent": "Mozilla/5.0"
-        }
-      });
+          headers: {
+            "User-Agent": "Mozilla/5.0"
+          }
+        });
 
-const html = await finalPage.text();
+        const html = await finalPage.text();
 
-console.log("RAW HTML LENGTH:", html.length);
+        console.log("RAW HTML LENGTH:", html.length);
+        console.log("HTML PREVIEW:", html.slice(0, 300));
+
+        const pageText = cleanHtml(html);
+
+        console.log("CLEAN TEXT LENGTH:", pageText.length);
 
         textForAI = pageText;
+
       } catch (err) {
         console.error("TAPI PROCESSING ERROR:", err);
       }
@@ -108,6 +110,7 @@ console.log("RAW HTML LENGTH:", html.length);
       textForAI = pdfText.replace(/\s+/g, " ").trim();
 
       console.log("USING PDF CONTENT FOR AI");
+
     } else if (!tapiMatch) {
       console.log("NO PDF OR TAPI - USING EMAIL BODY");
       textForAI = (textForAI || "").replace(/\s+/g, " ").trim();
