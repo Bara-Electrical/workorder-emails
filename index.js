@@ -2,13 +2,14 @@ import express from "express";
 import bodyParser from "body-parser";
 import OpenAI from "openai";
 import { createRequire } from "module";
-const require = createRequire(import.meta.url);
-
-const pdfModule = require("pdf-parse");
-const pdfParse = pdfModule.default || pdfModule;
 
 const app = express();
 app.use(bodyParser.json());
+
+const require = createRequire(import.meta.url);
+
+// 🔥 IMPORTANT: direct internal import avoids ESM/CJS issues
+const pdfParse = require("pdf-parse/lib/pdf-parse.js");
 
 const openai = new OpenAI({
   apiKey: process.env.OPENAI_API_KEY,
@@ -23,12 +24,13 @@ app.post("/email", async (req, res) => {
     const attachments = req.body.attachments || [];
     let textForAI = req.body.text || "";
 
-    // Find workorder PDF
+    // Find workorder PDF (any variation)
     const workorder = attachments.find(a => {
       const name = (a.filename || "").toLowerCase();
       return name.includes("workorder") && name.endsWith(".pdf");
     });
 
+    // If PDF exists, download + parse it
     if (workorder?.contentUrl) {
       console.log("FOUND WORK ORDER PDF:", workorder.filename);
 
