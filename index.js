@@ -1,9 +1,9 @@
 import express from "express";
 import bodyParser from "body-parser";
 import OpenAI from "openai";
+import pdf from "pdf-parse";
 
 const app = express();
-
 app.use(bodyParser.json());
 
 const openai = new OpenAI({
@@ -14,36 +14,47 @@ app.post("/email", async (req, res) => {
   try {
     console.log("WORK ORDER EMAIL RECEIVED");
 
-    // Log full payload from Pipedream
-    console.log(JSON.stringify(req.body, null, 2));
+    const attachments = req.body.attachments || [];
+    const emailText = req.body.text || "";
 
-    const text = req.body.text || "";
+    let textForAI = emailText;
+
+    // Find work order PDF
+    const workorder = attachments.find(a => {
+      const name = (a.filename || "").toLowerCase();
+      return name.includes("workorder") && name.endsWith(".pdf");
+    });
+
+    // If found, download + extract PDF
+    if (workorder?.contentUrl) {
+      console.log("FOUND WORK ORDER PDF:", workorder.filename);
+
+      const response = await fetch(workorder.contentUrl);
+      const arrayBuffer = await response.arrayBuffer();
+      const buffer = Buffer.from(arrayBuffer);
+
+      const pdfData = await pdf(buffer);
+
+      textForAI = pdfData.text;
+
+      console.log("USING PDF CONTENT FOR AI");
+    } else {
+      console.log("NO WORK ORDER PDF - USING EMAIL BODY");
+    }
 
     console.log("ABOUT TO CALL AI");
 
     const response = await openai.responses.create({
       model: "gpt-4o-mini",
       input: `
-Extract details of a workorder from this email.
+Extract details of a workorder from this text.
 
 Rules:
-- tenant-name must come ONLY from the "Tenant Details" section.
-- property-manager must come ONLY from the "Property Manager Details" section.
-- maintenance_request_posted_by is a separate field.
-- Do not use names found elsewhere in the email for tenant-names.
-- If multiple tenants exist, return all tenant names and contacts with commas between.
-- If a section is missing, return null.
-- The account-to is generally the owners name or multiple names followed by C/O and the real estate name. Make sure to include all owners names. This has to appear exactly as written.
-- task-description is for an electricians job description no fluff. just list each fault with specific info.
-- order-number will be a workorder number. It will say job number or similar.
-
-Possible categories for task-type:
-
-EC1 = Electrical Compliance Check
-AC1 = Aircon Servicing
-AC2 = Deluxe Aircon Clean
-Real Estate Aircon Maintenance = anything else to do with aircons
-Real Estate General Maintenance = everything else
+- tenant-name ONLY from Tenant Details section
+- property-manager ONLY from Property Manager section
+- account-to must include all owners exactly as written
+- do not guess roles
+- if missing return null
 
 Return JSON ONLY:
 - task-type
@@ -56,8 +67,8 @@ Return JSON ONLY:
 - account-to
 - order-number
 
-Email:
-${text}
+TEXT:
+${textForAI}
       `,
     });
 
