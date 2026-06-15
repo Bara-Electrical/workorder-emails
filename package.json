@@ -7,10 +7,8 @@
     "start": "node index.js"
   },
   "dependencies": {
-    "body-parser": "^1.20.2",
     "express": "^4.18.2",
     "openai": "^6.42.0",
-    "pdfjs-dist": "^6.0.227",
-    "playwright": "^1.60.0"
+    "pdfjs-dist": "^6.0.227"
   }
 }

@@ -1,10 +1,14 @@
 import express from "express";
-import bodyParser from "body-parser";
 import OpenAI from "openai";
 import * as pdfjsLib from "pdfjs-dist/legacy/build/pdf.mjs";
 
+if (!process.env.OPENAI_API_KEY) {
+  console.error("OPENAI_API_KEY is not set");
+  process.exit(1);
+}
+
 const app = express();
-app.use(bodyParser.json({ limit: "25mb" }));
+app.use(express.json({ limit: "25mb" }));
 
 const openai = new OpenAI({
   apiKey: process.env.OPENAI_API_KEY,
@@ -20,7 +24,6 @@ async function extractPDF(data) {
   for (let i = 1; i <= pdf.numPages; i++) {
     const page = await pdf.getPage(i);
     const content = await page.getTextContent();
-
     const strings = content.items.map(item => item.str);
     text += strings.join(" ") + "\n";
   }
@@ -47,16 +50,13 @@ app.post("/email", async (req, res) => {
     let textForAI = req.body.text || "";
 
     // ---------------- TAPI LINK DETECTION ----------------
-    const emailText = req.body.text || "";
-
-    const tapiMatch = emailText.match(
+    const tapiMatch = textForAI.match(
       /https:\/\/url\d+\.tapihq\.com\/ls\/click\S+/i
     );
 
     if (tapiMatch) {
       console.log("RAW TAPI MATCH:", tapiMatch[0]);
 
-      // 🔥 FIX: clean broken URL (removes > " ) etc)
       let tapiLink = tapiMatch[0]
         .split(">")[0]
         .split('"')[0]
@@ -66,32 +66,19 @@ app.post("/email", async (req, res) => {
       console.log("CLEAN TAPI LINK:", tapiLink);
 
       try {
-        const redirectResponse = await fetch(tapiLink, {
+        const response = await fetch(tapiLink, {
           redirect: "follow",
-          headers: {
-            "User-Agent": "Mozilla/5.0"
-          }
+          headers: { "User-Agent": "Mozilla/5.0" }
         });
 
-        const finalUrl = redirectResponse.url;
-        console.log("FINAL URL:", finalUrl);
+        console.log("FINAL URL:", response.url);
 
-        const finalPage = await fetch(finalUrl, {
-          headers: {
-            "User-Agent": "Mozilla/5.0"
-          }
-        });
-
-        const html = await finalPage.text();
-
+        const html = await response.text();
         console.log("RAW HTML LENGTH:", html.length);
         console.log("HTML PREVIEW:", html.slice(0, 300));
 
-        const pageText = cleanHtml(html);
-
-        console.log("CLEAN TEXT LENGTH:", pageText.length);
-
-        textForAI = pageText;
+        textForAI = cleanHtml(html).slice(0, 50000);
+        console.log("CLEAN TEXT LENGTH:", textForAI.length);
 
       } catch (err) {
         console.error("TAPI PROCESSING ERROR:", err);
@@ -109,18 +96,15 @@ app.post("/email", async (req, res) => {
 
       const response = await fetch(workorder.contentUrl);
       const arrayBuffer = await response.arrayBuffer();
-
       const data = new Uint8Array(arrayBuffer);
-
       const pdfText = await extractPDF(data);
 
       textForAI = pdfText.replace(/\s+/g, " ").trim();
-
       console.log("USING PDF CONTENT FOR AI");
 
     } else if (!tapiMatch) {
       console.log("NO PDF OR TAPI - USING EMAIL BODY");
-      textForAI = (textForAI || "").replace(/\s+/g, " ").trim();
+      textForAI = textForAI.replace(/\s+/g, " ").trim();
     }
 
     console.log("TEXT LENGTH:", textForAI.length);
@@ -179,10 +163,10 @@ ${textForAI}
       `,
     });
 
-    console.log("AI RESULT:");
-    console.log(responseAI.output_text);
+    const result = JSON.parse(responseAI.output_text);
+    console.log("AI RESULT:", result);
 
-    res.status(200).send("ok");
+    res.status(200).json(result);
 
   } catch (err) {
     console.error("AI ERROR:", err);
