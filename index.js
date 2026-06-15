@@ -127,7 +127,7 @@ app.post("/email", async (req, res) => {
     console.log("ABOUT TO CALL AI");
 
     const responseAI = await openai.responses.create({
-      model: "gpt-4o",
+      model: "gpt-5-mini",
 
       text: {
         format: {
