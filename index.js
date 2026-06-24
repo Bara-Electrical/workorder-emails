@@ -489,6 +489,11 @@ async function pollEmails() {
     const messages = data.value || [];
     console.log(`Poll: ${messages.length} email(s) found`);
 
+    // DEBUG: log categories of last 5 inbox emails to catch name mismatches
+    const debugRes  = await graphFetch(`/users/${process.env.GRAPH_RECIPIENT}/mailFolders/inbox/messages?$select=subject,categories&$top=5`);
+    const debugData = await debugRes.json();
+    for (const m of debugData.value || []) console.log("DEBUG email:", m.subject, "| categories:", JSON.stringify(m.categories));
+
     if (messages.length) console.log(`Found ${messages.length} email(s) to process`);
 
     for (const message of messages) {
