@@ -249,7 +249,8 @@ async function createArofloJob(result) {
   const xml =
 `<tasks>
   <task>
-    ${taskTypeId                   ? `<tasktype><tasktypeid>${taskTypeId}</tasktypeid></tasktype>` : ""}
+    <org><orgid>JiYqTydSXDcmCg==</orgid></org>
+    ${taskTypeId ? `<tasktype><tasktypeid>${taskTypeId}</tasktypeid></tasktype>`                  : ""}
     <client><clientid>${client.clientid}</clientid></client>
     ${location ? `<location><locationid>${location.locationid}</locationid></location>` : ""}
     ${result.address && !location  ? `<sitename>${result.address}</sitename>`          : ""}
