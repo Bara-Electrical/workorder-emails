@@ -88,6 +88,7 @@ function findWorkOrderLink(rawHtml) {
   const hrefs = [...unescaped.matchAll(/href="([^"]+)"/gi)].map(m => m[1]);
 
   for (const href of hrefs) {
+    if (!href.startsWith("https://")) continue;
     if (/tapihq\.com/i.test(href)) return href;
     if (/shared\.outlook\.inky\.com/i.test(href)) return href;
     if (/safelinks\.protection\.outlook\.com/i.test(href)) {
