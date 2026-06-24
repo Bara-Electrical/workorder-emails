@@ -138,6 +138,26 @@ const SUBSTATUS_MAP = {
   "Real Estate General Maintenance": "Iyc6LyYK", // Ready to schedule
 };
 
+// Search Aroflo for a contact by name linked to a client.
+async function findContact(clientId, pmName) {
+  if (!clientId || !pmName) return null;
+  try {
+    const zone = await arofloGet(
+      "zone=contacts" +
+      "&where=" + encodeURIComponent(`and|linkedtoid|=|${clientId}`) +
+      "&page=1"
+    );
+    const raw = zone.contacts;
+    if (!raw) return null;
+    const arr = Array.isArray(raw) ? raw : [raw];
+    const nameLower = pmName.toLowerCase();
+    return arr.find(c => c.contactname?.toLowerCase().includes(nameLower)) || null;
+  } catch (err) {
+    console.warn("Contact search failed:", err.message);
+    return null;
+  }
+}
+
 // Search Aroflo for a client by name using the API where clause.
 // Tries progressively shorter variants: full name, before-pipe, first word.
 async function findClient(realEstateName) {
@@ -239,6 +259,10 @@ async function createArofloJob(result) {
     result["tenant-contact"]
   );
 
+  const pmContact = await findContact(client.clientid, result["property-manager"]);
+  if (pmContact) console.log("PM CONTACT:", pmContact.contactid, pmContact.contactname);
+  else console.warn("PM contact not found in Aroflo:", result["property-manager"]);
+
   const notes = [
     result["order-number"]     ? `Work Order: ${result["order-number"]}`          : null,
     result["tenant-name"]      ? `Tenant: ${result["tenant-name"]}`                : null,
@@ -263,6 +287,7 @@ async function createArofloJob(result) {
     <org><orgid>JiYqTydSXDcmCg==</orgid></org>
     ${taskTypeId ? `<tasktype><tasktypeid>${taskTypeId}</tasktypeid></tasktype>`                  : ""}
     <client><clientid>${client.clientid}</clientid></client>
+    ${pmContact ? `<contact><contactid>${pmContact.contactid}</contactid></contact>` : ""}
     ${location ? `<location><locationid>${location.locationid}</locationid></location>` : ""}
     ${result.address && !location  ? `<sitename>${result.address}</sitename>`          : ""}
     <taskname>${taskName}</taskname>
