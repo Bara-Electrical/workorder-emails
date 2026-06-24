@@ -241,6 +241,11 @@ async function createArofloJob(result) {
     return `${d.getFullYear()}/${String(d.getMonth() + 1).padStart(2, "0")}/${String(d.getDate()).padStart(2, "0")}`;
   })();
 
+  // "36 Dollis Way, Kingsley, WA 6026" → "36 Dollis Way Kingsley"
+  const taskName = result.address
+    ? result.address.split(",").slice(0, 2).map(p => p.trim()).join(" ")
+    : "";
+
   const xml =
 `<tasks>
   <task>
@@ -248,6 +253,7 @@ async function createArofloJob(result) {
     <clientid>${client.clientid}</clientid>
     ${location                     ? `<locationid>${location.locationid}</locationid>` : ""}
     ${result.address && !location  ? `<sitename>${result.address}</sitename>`          : ""}
+    <taskname>${taskName}</taskname>
     <description>${result["task-description"] || result["task-type"] || ""}</description>
     <duedate>${dueDate}</duedate>
     ${notes ? `<notes><note><content><![CDATA[${notes}]]></content></note></notes>` : ""}
