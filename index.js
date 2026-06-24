@@ -445,6 +445,7 @@ CRITICAL RULES:
 - if you cant find the real estate name, it'll be in the account to after the owners name or after the c/o.
 - make sure to get all tenants names and numbers, there is often more than one and seperate them with commas not an array.
 - Use tenants mobile numbers over home numbers if there is both.
+- Australian phone numbers always start with 0 (e.g. 0412 345 678). Always include the leading 0.
 - Check the page title to determine the task type.
 - if there is no tenant details look for other access eg. lockbox with location. Put this in the tenant-name field and leave the contact blank.
 
@@ -475,7 +476,20 @@ ${textForAI}
     `,
   });
 
-  return JSON.parse(responseAI.output_text);
+  const parsed = JSON.parse(responseAI.output_text);
+
+  // Australian mobile numbers are 10 digits starting with 0 — if AI drops the leading 0, restore it
+  if (parsed["tenant-contact"]) {
+    parsed["tenant-contact"] = parsed["tenant-contact"]
+      .split(",")
+      .map(n => {
+        const digits = n.replace(/\D/g, "");
+        return digits.length === 9 && digits.startsWith("4") ? "0" + n.trim() : n.trim();
+      })
+      .join(", ");
+  }
+
+  return parsed;
 }
 
 // ================================================================
