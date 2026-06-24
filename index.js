@@ -250,8 +250,8 @@ async function createArofloJob(result) {
 `<tasks>
   <task>
     ${taskTypeId                   ? `<tasktype><tasktypeid>${taskTypeId}</tasktypeid></tasktype>` : ""}
-    <clientid>${client.clientid}</clientid>
-    ${location                     ? `<locationid>${location.locationid}</locationid>` : ""}
+    <client><clientid>${client.clientid}</clientid></client>
+    ${location ? `<location><locationid>${location.locationid}</locationid></location>` : ""}
     ${result.address && !location  ? `<sitename>${result.address}</sitename>`          : ""}
     <taskname>${taskName}</taskname>
     <description>${result["task-description"] || result["task-type"] || ""}</description>
