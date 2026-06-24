@@ -277,6 +277,7 @@ async function createArofloJob(result) {
 
   const zone     = await arofloPost("zone=tasks&postxml=" + encodeURIComponent(xml));
   const pr       = zone.postresults;
+  console.log("AROFLO POST RESULT:", JSON.stringify(pr, null, 2));
   const inserted = pr?.inserts?.task;
   const jobNumber = Array.isArray(inserted) ? inserted[0]?.jobnumber : inserted?.jobnumber;
 
