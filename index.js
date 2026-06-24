@@ -127,25 +127,28 @@ const TASK_TYPE_MAP = {
   "Real Estate General Maintenance": "JCYqWyVQICAgCg==", // Real-Estate General Maintenance
 };
 
-// Fetch all clients (85 total, fits in one page) and find by name client-side.
-// Tries progressively shorter variants of the real estate name.
+// Search Aroflo for a client by name using the API where clause.
+// Tries progressively shorter variants: full name, before-pipe, first word.
 async function findClient(realEstateName) {
   if (!realEstateName) return null;
 
-  const zone    = await arofloGet("zone=clients&page=1");
-  const clients = zone.clients || [];
-  const arr     = Array.isArray(clients) ? clients : [clients];
+  const candidates = [
+    realEstateName,                              // "Realmark Urban"
+    realEstateName.split(/[|,]/)[0].trim(),      // before " | " separator
+    realEstateName.split(" ")[0],                // first word only
+  ].filter((v, i, a) => a.indexOf(v) === i);    // dedupe
 
-  const nameLower  = realEstateName.toLowerCase();
-  const beforePipe = realEstateName.split(/[|,]/)[0].trim().toLowerCase(); // "Ray White Cottesloe"
-  const firstWord  = realEstateName.split(" ")[0].toLowerCase();           // "Ray"
+  for (const name of candidates) {
+    const zone    = await arofloGet(
+      "zone=clients&where=" + encodeURIComponent(`and|clientname|=|${name}`) + "&page=1"
+    );
+    const raw     = zone.clients;
+    if (!raw) continue;
+    const arr     = Array.isArray(raw) ? raw : [raw];
+    if (arr.length > 0) return arr[0];
+  }
 
-  return (
-    arr.find(c => c.clientname?.toLowerCase() === nameLower) ||
-    arr.find(c => c.clientname?.toLowerCase().includes(beforePipe)) ||
-    arr.find(c => c.clientname?.toLowerCase().includes(firstWord)) ||
-    null
-  );
+  return null;
 }
 
 // Find a location by street address, then update SiteContact/SitePhone if stale.
