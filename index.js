@@ -119,7 +119,7 @@ async function arofloPost(body) {
 
 // Task type IDs sourced from live Aroflo system on 2026-06-24
 const TASK_TYPE_MAP = {
-  "EC1":                            "JCYqWyVQICAgCg==", // Real-Estate General Maintenance
+  "EC1":                            "JCYqLyBSQCAgCg==", // $120 Standard Electrical Compliance
   "AC1":                            "JCYqWyVQUCAgCg==", // $180 Standard Air Con Service
   "AC2":                            "JCYqLyNRMCAgCg==", // $270 Deluxe Air Con Service
   "Real Estate Aircon Maintenance":  "JCZaSyBSQCAgCg==", // Real-Estate Air Con Maintenance
