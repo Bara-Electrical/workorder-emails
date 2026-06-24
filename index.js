@@ -270,22 +270,30 @@ async function createArofloJob(result) {
     <description>${result["task-description"] || result["task-type"] || ""}</description>
     <duedate>${dueDate}</duedate>
     <substatus><substatusid>${substatusId}</substatusid></substatus>
-    <enteredby>Bara AI</enteredby>
+    ${result["account-to"] ? `<custon>${result["account-to"]}</custon>` : ""}
     ${notes ? `<notes><note><content><![CDATA[${notes}]]></content></note></notes>` : ""}
   </task>
 </tasks>`;
 
-  const zone   = await arofloPost("zone=tasks&postxml=" + encodeURIComponent(xml));
-  const pr     = zone.postresults;
-  const errors = pr?.errors;
+  const zone     = await arofloPost("zone=tasks&postxml=" + encodeURIComponent(xml));
+  const pr       = zone.postresults;
+  const inserted = pr?.inserts?.task;
+  const jobNumber = Array.isArray(inserted) ? inserted[0]?.jobnumber : inserted?.jobnumber;
 
-  if (errors) {
-    const msgs = (Array.isArray(errors) ? errors : [errors]).map(e => e.detail || e.message).join("; ");
+  if (!jobNumber) {
+    const errors = pr?.errors;
+    const msgs   = errors
+      ? (Array.isArray(errors) ? errors : [errors]).map(e => e.detail || e.message).join("; ")
+      : "No job number returned";
     throw new Error(`Aroflo task creation failed: ${msgs}`);
   }
 
-  const inserted  = pr?.inserts?.task;
-  const jobNumber = Array.isArray(inserted) ? inserted[0]?.jobnumber : inserted?.jobnumber;
+  const warnings = pr?.errors;
+  if (warnings) {
+    const msgs = (Array.isArray(warnings) ? warnings : [warnings]).map(e => e.detail || e.message).join("; ");
+    console.warn("Aroflo warnings (job still created):", msgs);
+  }
+
   console.log("AROFLO JOB CREATED — job number:", jobNumber);
   return zone;
 }
