@@ -80,31 +80,49 @@ function cleanHtml(html) {
     .trim();
 }
 
+// ---------------- Find work order link in raw HTML ----------------
+// Searches href attributes before cleaning strips them.
+// Handles SafeLinks → Inky → TAPI redirect chains.
+function findWorkOrderLink(rawHtml) {
+  const unescaped = rawHtml.replace(/&amp;/g, "&");
+  const hrefs = [...unescaped.matchAll(/href="([^"]+)"/gi)].map(m => m[1]);
+
+  for (const href of hrefs) {
+    if (/tapihq\.com/i.test(href)) return href;
+    if (/shared\.outlook\.inky\.com/i.test(href)) return href;
+    if (/safelinks\.protection\.outlook\.com/i.test(href)) {
+      // Decode once to see if it wraps an Inky or TAPI link
+      try {
+        const decoded = decodeURIComponent(href);
+        if (/tapihq\.com|inky\.com/i.test(decoded)) return href;
+      } catch { /* ignore malformed URLs */ }
+    }
+  }
+
+  // Fallback: plain text TAPI URL in body
+  const plainText = unescaped.replace(/<[^>]*>/g, " ");
+  const m = plainText.match(/https:\/\/url\d+\.tapihq\.com\/ls\/click\S+/i);
+  if (m) return m[0].split(/[>")\s]/)[0].trim();
+
+  return null;
+}
+
 // ---------------- Process a single message ----------------
 async function processMessage(message) {
   console.log("WORK ORDER EMAIL RECEIVED:", message.subject);
 
   const attachments = message.attachments || [];
-  let textForAI = message.body?.contentType === "html"
-    ? cleanHtml(message.body.content)
-    : (message.body?.content || "");
+  const rawBody = message.body?.content || "";
+  let textForAI = message.body?.contentType === "html" ? cleanHtml(rawBody) : rawBody;
 
-  // ---------------- TAPI LINK DETECTION ----------------
-  const tapiMatch = textForAI.match(/https:\/\/url\d+\.tapihq\.com\/ls\/click\S+/i);
+  // ---------------- WORK ORDER LINK DETECTION ----------------
+  const workOrderLink = findWorkOrderLink(rawBody);
 
-  if (tapiMatch) {
-    console.log("RAW TAPI MATCH:", tapiMatch[0]);
-
-    const tapiLink = tapiMatch[0]
-      .split(">")[0]
-      .split('"')[0]
-      .split(")")[0]
-      .trim();
-
-    console.log("CLEAN TAPI LINK:", tapiLink);
+  if (workOrderLink) {
+    console.log("WORK ORDER LINK FOUND:", workOrderLink.slice(0, 120));
 
     try {
-      const response = await fetch(tapiLink, {
+      const response = await fetch(workOrderLink, {
         redirect: "follow",
         headers: { "User-Agent": "Mozilla/5.0" },
       });
@@ -140,8 +158,8 @@ async function processMessage(message) {
 
     textForAI = pdfText.replace(/\s+/g, " ").trim();
     console.log("USING PDF CONTENT FOR AI");
-  } else if (!tapiMatch) {
-    console.log("NO PDF OR TAPI - USING EMAIL BODY");
+  } else if (!workOrderLink) {
+    console.log("NO PDF OR LINK - USING EMAIL BODY");
     textForAI = textForAI.replace(/\s+/g, " ").trim();
   }
 
