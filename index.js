@@ -491,12 +491,9 @@ async function pollEmails() {
     if (messages.length) console.log(`Found ${messages.length} email(s) to process`);
 
     for (const message of messages) {
-      // Lock the email immediately — removes "Bara AI", adds "Processing"
-      // so it won't be picked up again even if this run crashes mid-way.
-      const lockedCategories = [
-        ...message.categories.filter(c => c !== TRIGGER_CATEGORY),
-        PROCESSING_CATEGORY,
-      ];
+      // Lock the email — keep "Bara AI", add "Processing" so it won't re-trigger.
+      // If something fails, just remove "Processing" in Outlook to retry.
+      const lockedCategories = [...message.categories, PROCESSING_CATEGORY];
       await graphFetch(`/users/${process.env.GRAPH_RECIPIENT}/messages/${message.id}`, {
         method: "PATCH",
         body: JSON.stringify({ categories: lockedCategories }),
@@ -509,7 +506,7 @@ async function pollEmails() {
 
         await createArofloJob(result);
 
-        // Success — swap "Processing" for "Job created"
+        // Success — remove "Processing", add "Job created", keep everything else
         const doneCategories = [
           ...lockedCategories.filter(c => c !== PROCESSING_CATEGORY),
           DONE_CATEGORY,
@@ -532,7 +529,7 @@ async function pollEmails() {
           });
           console.log("Tagged as client not found:", message.subject);
         }
-        // Any other error: leave "Processing" tag on — visible, won't re-trigger
+        // Any other error: leave "Processing" on — remove it in Outlook to retry
       }
     }
   } catch (err) {
