@@ -2,7 +2,7 @@ import express from "express";
 import OpenAI from "openai";
 import * as pdfjsLib from "pdfjs-dist/legacy/build/pdf.mjs";
 
-const REQUIRED_ENV = ["OPENAI_API_KEY", "TENANT_ID", "CLIENT_ID", "CLIENT_SECRET", "USER_EMAIL"];
+const REQUIRED_ENV = ["OPENAI_API_KEY", "GRAPH_TENANT_ID", "GRAPH_CLIENT_ID", "GRAPH_CLIENT_SECRET", "GRAPH_RECIPIENT"];
 for (const key of REQUIRED_ENV) {
   if (!process.env[key]) {
     console.error(`${key} is not set`);
@@ -27,14 +27,14 @@ async function getAccessToken() {
     return tokenCache.token;
   }
   const res = await fetch(
-    `https://login.microsoftonline.com/${process.env.TENANT_ID}/oauth2/v2.0/token`,
+    `https://login.microsoftonline.com/${process.env.GRAPH_TENANT_ID}/oauth2/v2.0/token`,
     {
       method: "POST",
       headers: { "Content-Type": "application/x-www-form-urlencoded" },
       body: new URLSearchParams({
         grant_type: "client_credentials",
-        client_id: process.env.CLIENT_ID,
-        client_secret: process.env.CLIENT_SECRET,
+        client_id: process.env.GRAPH_CLIENT_ID,
+        client_secret: process.env.GRAPH_CLIENT_SECRET,
         scope: "https://graph.microsoft.com/.default",
       }),
     }
@@ -132,7 +132,7 @@ async function processMessage(message) {
     console.log("FOUND WORK ORDER PDF:", workorderAttachment.name);
 
     const attachRes = await graphFetch(
-      `/users/${process.env.USER_EMAIL}/messages/${message.id}/attachments/${workorderAttachment.id}`
+      `/users/${process.env.GRAPH_RECIPIENT}/messages/${message.id}/attachments/${workorderAttachment.id}`
     );
     const attachData = await attachRes.json();
     const data = Uint8Array.from(atob(attachData.contentBytes), c => c.charCodeAt(0));
@@ -206,7 +206,7 @@ async function pollEmails() {
     );
 
     const res = await graphFetch(
-      `/users/${process.env.USER_EMAIL}/mailFolders/inbox/messages` +
+      `/users/${process.env.GRAPH_RECIPIENT}/mailFolders/inbox/messages` +
       `?$filter=${filter}` +
       `&$select=id,subject,body,categories` +
       `&$expand=attachments($select=id,name,contentType,size)` +
@@ -223,7 +223,7 @@ async function pollEmails() {
         console.log("AI RESULT:", result);
 
         // Tag as done
-        await graphFetch(`/users/${process.env.USER_EMAIL}/messages/${message.id}`, {
+        await graphFetch(`/users/${process.env.GRAPH_RECIPIENT}/messages/${message.id}`, {
           method: "PATCH",
           body: JSON.stringify({ categories: [...message.categories, DONE_CATEGORY] }),
         });
