@@ -488,7 +488,9 @@ async function pollEmails() {
     const messages = data.value || [];
     console.log(`Poll: ${messages.length} email(s) found`);
 
-    if (messages.length) console.log(`Found ${messages.length} email(s) to process`);
+    // Temp debug — show categories on recent inbox emails
+    const dbg = await (await graphFetch(`/users/${process.env.GRAPH_RECIPIENT}/mailFolders/inbox/messages?$select=subject,categories&$top=10&$orderby=receivedDateTime desc`)).json();
+    for (const m of dbg.value || []) console.log("  >>", JSON.stringify(m.categories), m.subject?.slice(0, 60));
 
     for (const message of messages) {
       // Lock the email — keep "Bara AI", add "Processing" so it won't re-trigger.
