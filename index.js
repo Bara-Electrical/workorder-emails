@@ -15,10 +15,13 @@ for (const key of REQUIRED_ENV) {
   }
 }
 
-const TRIGGER_CATEGORY       = "Bara AI";
-const DONE_CATEGORY          = "Job created";
+const TRIGGER_CATEGORY          = "Bara AI";
+const PROCESSING_CATEGORY       = "Processing";
+const DONE_CATEGORY             = "Job created";
 const CLIENT_NOT_FOUND_CATEGORY = "Client not found";
-const POLL_INTERVAL_MS       = 60 * 1000;
+const POLL_INTERVAL_MS          = 60 * 1000;
+
+let pollRunning = false;
 
 const app = express();
 app.use(express.json({ limit: "25mb" }));
@@ -127,6 +130,14 @@ const TASK_TYPE_MAP = {
   "Real Estate General Maintenance": "JCYqWyVQICAgCg==", // Real-Estate General Maintenance
 };
 
+const SUBSTATUS_MAP = {
+  "EC1":                            "IyQ6SyYK", // Ready to schedule PPM1
+  "AC1":                            "IyQ6SyYK", // Ready to schedule PPM1
+  "AC2":                            "Iyc6LyUK", // Ready to schedule (Specialised)
+  "Real Estate Aircon Maintenance":  "Iyc6LyYK", // Ready to schedule
+  "Real Estate General Maintenance": "Iyc6LyYK", // Ready to schedule
+};
+
 // Search Aroflo for a client by name using the API where clause.
 // Tries progressively shorter variants: full name, before-pipe, first word.
 async function findClient(realEstateName) {
@@ -213,7 +224,8 @@ async function findOrUpdateLocation(clientId, address, tenantName, tenantContact
 async function createArofloJob(result) {
   console.log("CREATING AROFLO JOB...");
 
-  const taskTypeId = TASK_TYPE_MAP[result["task-type"]];
+  const taskTypeId  = TASK_TYPE_MAP[result["task-type"]];
+  const substatusId = SUBSTATUS_MAP[result["task-type"]] || "Iyc6LyYK"; // default: Ready to schedule
   if (!taskTypeId) console.warn("Unknown task type:", result["task-type"]);
 
   const client = await findClient(result["real-estate"]);
@@ -257,6 +269,8 @@ async function createArofloJob(result) {
     <taskname>${taskName}</taskname>
     <description>${result["task-description"] || result["task-type"] || ""}</description>
     <duedate>${dueDate}</duedate>
+    <substatus><substatusid>${substatusId}</substatusid></substatus>
+    <enteredby>Bara AI</enteredby>
     ${notes ? `<notes><note><content><![CDATA[${notes}]]></content></note></notes>` : ""}
   </task>
 </tasks>`;
@@ -444,9 +458,14 @@ ${textForAI}
 // POLL LOOP
 // ================================================================
 async function pollEmails() {
+  if (pollRunning) {
+    console.log("Poll skipped — previous run still in progress");
+    return;
+  }
+  pollRunning = true;
   try {
     const filter = encodeURIComponent(
-      `categories/any(c:c eq '${TRIGGER_CATEGORY}') and not categories/any(c:c eq '${DONE_CATEGORY}') and not categories/any(c:c eq '${CLIENT_NOT_FOUND_CATEGORY}')`
+      `categories/any(c:c eq '${TRIGGER_CATEGORY}') and not categories/any(c:c eq '${DONE_CATEGORY}') and not categories/any(c:c eq '${CLIENT_NOT_FOUND_CATEGORY}') and not categories/any(c:c eq '${PROCESSING_CATEGORY}')`
     );
 
     const res  = await graphFetch(
@@ -462,31 +481,54 @@ async function pollEmails() {
     if (messages.length) console.log(`Found ${messages.length} email(s) to process`);
 
     for (const message of messages) {
+      // Lock the email immediately — removes "Bara AI", adds "Processing"
+      // so it won't be picked up again even if this run crashes mid-way.
+      const lockedCategories = [
+        ...message.categories.filter(c => c !== TRIGGER_CATEGORY),
+        PROCESSING_CATEGORY,
+      ];
+      await graphFetch(`/users/${process.env.GRAPH_RECIPIENT}/messages/${message.id}`, {
+        method: "PATCH",
+        body: JSON.stringify({ categories: lockedCategories }),
+      });
+      console.log("Locked for processing:", message.subject);
+
       try {
         const result = await processMessage(message);
         console.log("AI RESULT:", result);
 
         await createArofloJob(result);
 
-        // Only tag as done after successful job creation
+        // Success — swap "Processing" for "Job created"
+        const doneCategories = [
+          ...lockedCategories.filter(c => c !== PROCESSING_CATEGORY),
+          DONE_CATEGORY,
+        ];
         await graphFetch(`/users/${process.env.GRAPH_RECIPIENT}/messages/${message.id}`, {
           method: "PATCH",
-          body: JSON.stringify({ categories: [...message.categories, DONE_CATEGORY] }),
+          body: JSON.stringify({ categories: doneCategories }),
         });
         console.log("Tagged as done:", message.subject);
       } catch (err) {
         console.error("Error processing message:", message.subject, err.message);
         if (err.message.startsWith("Client not found")) {
+          const clientNotFoundCategories = [
+            ...lockedCategories.filter(c => c !== PROCESSING_CATEGORY),
+            CLIENT_NOT_FOUND_CATEGORY,
+          ];
           await graphFetch(`/users/${process.env.GRAPH_RECIPIENT}/messages/${message.id}`, {
             method: "PATCH",
-            body: JSON.stringify({ categories: [...message.categories, CLIENT_NOT_FOUND_CATEGORY] }),
+            body: JSON.stringify({ categories: clientNotFoundCategories }),
           });
           console.log("Tagged as client not found:", message.subject);
         }
+        // Any other error: leave "Processing" tag on — visible, won't re-trigger
       }
     }
   } catch (err) {
     console.error("Poll error:", err);
+  } finally {
+    pollRunning = false;
   }
 }
 
