@@ -15,9 +15,10 @@ for (const key of REQUIRED_ENV) {
   }
 }
 
-const TRIGGER_CATEGORY = "Bara AI";
-const DONE_CATEGORY    = "Job created";
-const POLL_INTERVAL_MS = 60 * 1000;
+const TRIGGER_CATEGORY       = "Bara AI";
+const DONE_CATEGORY          = "Job created";
+const CLIENT_NOT_FOUND_CATEGORY = "Client not found";
+const POLL_INTERVAL_MS       = 60 * 1000;
 
 const app = express();
 app.use(express.json({ limit: "25mb" }));
@@ -408,7 +409,7 @@ ${textForAI}
 async function pollEmails() {
   try {
     const filter = encodeURIComponent(
-      `categories/any(c:c eq '${TRIGGER_CATEGORY}') and not categories/any(c:c eq '${DONE_CATEGORY}')`
+      `categories/any(c:c eq '${TRIGGER_CATEGORY}') and not categories/any(c:c eq '${DONE_CATEGORY}') and not categories/any(c:c eq '${CLIENT_NOT_FOUND_CATEGORY}')`
     );
 
     const res  = await graphFetch(
@@ -438,6 +439,13 @@ async function pollEmails() {
         console.log("Tagged as done:", message.subject);
       } catch (err) {
         console.error("Error processing message:", message.subject, err.message);
+        if (err.message.startsWith("Client not found")) {
+          await graphFetch(`/users/${process.env.GRAPH_RECIPIENT}/messages/${message.id}`, {
+            method: "PATCH",
+            body: JSON.stringify({ categories: [...message.categories, CLIENT_NOT_FOUND_CATEGORY] }),
+          });
+          console.log("Tagged as client not found:", message.subject);
+        }
       }
     }
   } catch (err) {
