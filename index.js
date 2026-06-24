@@ -151,18 +151,20 @@ async function findClient(realEstateName) {
   return null;
 }
 
-// Find a location by street address, then update SiteContact/SitePhone if stale.
-async function findOrUpdateLocation(address, tenantName, tenantContact) {
+// Find a location by street address under a client, then update SiteContact/SitePhone if stale.
+// Fetches all locations linked to the client and matches by street address locally —
+// the locationname|like WHERE clause is not supported by Aroflo.
+async function findOrUpdateLocation(clientId, address, tenantName, tenantContact) {
   if (!address) return null;
 
-  // Strip unit: "1412/380 Murray Street, Perth WA" → "380 Murray Street"
-  const streetPart = address.replace(/^\d+\//, "").split(",")[0].trim();
+  // Strip unit prefix: "1412/380 Murray Street, Perth WA" → "380 Murray Street"
+  const streetPart = address.replace(/^\d+\//, "").split(",")[0].trim().toLowerCase();
 
   let zone;
   try {
     zone = await arofloGet(
       "zone=locations" +
-      "&where=" + encodeURIComponent(`and|locationname|like|${streetPart}`) +
+      "&where=" + encodeURIComponent(`and|linkedtoid|=|${clientId}`) +
       "&page=1"
     );
   } catch (err) {
@@ -171,9 +173,16 @@ async function findOrUpdateLocation(address, tenantName, tenantContact) {
   }
 
   const raw = zone.locations;
-  if (!raw) { console.log("No location found for:", streetPart); return null; }
+  if (!raw) { console.log("No locations found for client"); return null; }
 
-  const location = Array.isArray(raw) ? raw[0] : raw;
+  const all      = Array.isArray(raw) ? raw : [raw];
+  const location = all.find(l => l.locationname?.toLowerCase().includes(streetPart));
+
+  if (!location) {
+    console.log("No location matching:", streetPart, "— available:", all.map(l => l.locationname));
+    return null;
+  }
+
   console.log("FOUND LOCATION:", location.locationid, location.locationname);
 
   const needsUpdate =
@@ -212,6 +221,7 @@ async function createArofloJob(result) {
   console.log("CLIENT:", client.clientid, client.clientname);
 
   const location = await findOrUpdateLocation(
+    client.clientid,
     result.address,
     result["tenant-name"],
     result["tenant-contact"]
@@ -225,6 +235,12 @@ async function createArofloJob(result) {
     result["account-to"]       ? `Account To: ${result["account-to"]}`             : null,
   ].filter(Boolean).join("\n");
 
+  const dueDate = (() => {
+    const d = new Date();
+    d.setDate(d.getDate() + 30);
+    return `${d.getFullYear()}/${String(d.getMonth() + 1).padStart(2, "0")}/${String(d.getDate()).padStart(2, "0")}`;
+  })();
+
   const xml =
 `<tasks>
   <task>
@@ -233,12 +249,23 @@ async function createArofloJob(result) {
     ${location                     ? `<locationid>${location.locationid}</locationid>` : ""}
     ${result.address && !location  ? `<sitename>${result.address}</sitename>`          : ""}
     <description>${result["task-description"] || result["task-type"] || ""}</description>
+    <duedate>${dueDate}</duedate>
     ${notes ? `<notes><note><content><![CDATA[${notes}]]></content></note></notes>` : ""}
   </task>
 </tasks>`;
 
-  const zone = await arofloPost("zone=tasks&postxml=" + encodeURIComponent(xml));
-  console.log("AROFLO JOB CREATED:", JSON.stringify(zone));
+  const zone   = await arofloPost("zone=tasks&postxml=" + encodeURIComponent(xml));
+  const pr     = zone.postresults;
+  const errors = pr?.errors;
+
+  if (errors) {
+    const msgs = (Array.isArray(errors) ? errors : [errors]).map(e => e.detail || e.message).join("; ");
+    throw new Error(`Aroflo task creation failed: ${msgs}`);
+  }
+
+  const inserted  = pr?.inserts?.task;
+  const jobNumber = Array.isArray(inserted) ? inserted[0]?.jobnumber : inserted?.jobnumber;
+  console.log("AROFLO JOB CREATED — job number:", jobNumber);
   return zone;
 }
 
