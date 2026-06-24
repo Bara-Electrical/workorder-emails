@@ -244,7 +244,6 @@ async function createArofloJob(result) {
     result["tenant-name"]      ? `Tenant: ${result["tenant-name"]}`                : null,
     result["tenant-contact"]   ? `Tenant Contact: ${result["tenant-contact"]}`     : null,
     result["property-manager"] ? `Property Manager: ${result["property-manager"]}` : null,
-    result["account-to"]       ? `Account To: ${result["account-to"]}`             : null,
   ].filter(Boolean).join("\n");
 
   const dueDate = (() => {
@@ -271,6 +270,7 @@ async function createArofloJob(result) {
     <duedate>${dueDate}</duedate>
     ${result["order-number"] ? `<custon>${result["order-number"]}</custon>` : ""}
     ${notes ? `<notes><note><content><![CDATA[${notes}]]></content></note></notes>` : ""}
+    ${result["account-to"] ? `<customfields><customfield><name><![CDATA[ Account To: ]]></name><type><![CDATA[ text ]]></type><value><![CDATA[${result["account-to"]}]]></value></customfield></customfields>` : ""}
   </task>
 </tasks>`;
 
