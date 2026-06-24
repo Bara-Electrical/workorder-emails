@@ -123,10 +123,19 @@ async function processMessage(message) {
     console.log("WORK ORDER LINK FOUND:", workOrderLink.slice(0, 120));
 
     try {
-      const response = await fetch(workOrderLink, {
+      let response = await fetch(workOrderLink, {
         redirect: "follow",
         headers: { "User-Agent": "Mozilla/5.0" },
       });
+
+      // Inky link protection stops the redirect chain — bypass with confirm=True
+      if (response.url.includes("shared.outlook.inky.com") && !response.url.includes("confirm=True")) {
+        console.log("INKY BYPASS:", response.url.slice(0, 120));
+        response = await fetch(response.url + "&confirm=True", {
+          redirect: "follow",
+          headers: { "User-Agent": "Mozilla/5.0" },
+        });
+      }
 
       console.log("FINAL URL:", response.url);
 
