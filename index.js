@@ -484,8 +484,10 @@ async function pollEmails() {
       `&$expand=attachments($select=id,name,contentType,size)` +
       `&$top=10`
     );
-    const data     = await res.json();
+    const data = await res.json();
+    if (!res.ok) throw new Error(`Graph API error ${res.status}: ${JSON.stringify(data?.error || data)}`);
     const messages = data.value || [];
+    console.log(`Poll: ${messages.length} email(s) found`);
 
     if (messages.length) console.log(`Found ${messages.length} email(s) to process`);
 
