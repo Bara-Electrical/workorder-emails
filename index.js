@@ -144,12 +144,12 @@ async function findContact(clientId, pmName) {
   const firstName = pmName.trim().split(" ")[0];
   try {
     const zone = await arofloGet(
-      "zone=contacts" +
+      "zone=clientcontacts" +
       "&where=" + encodeURIComponent(`and|firstname|like|${firstName}`) +
       "&page=1"
     );
     console.log("Contact search raw response:", JSON.stringify(zone).slice(0, 300));
-    const raw = zone.contacts;
+    const raw = zone.clientcontacts ?? zone.contacts;
     if (!raw) return null;
     const arr = Array.isArray(raw) ? raw : [raw];
     const nameLower = pmName.toLowerCase();
