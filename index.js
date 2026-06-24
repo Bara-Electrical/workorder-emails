@@ -271,7 +271,6 @@ async function createArofloJob(result) {
     <duedate>${dueDate}</duedate>
     <substatus><substatusid>${substatusId}</substatusid></substatus>
     ${result["order-number"] ? `<custon>${result["order-number"]}</custon>` : ""}
-    ${result["account-to"] ? `<customfields><customfield><fieldname>Account To</fieldname><value>${result["account-to"]}</value></customfield></customfields>` : ""}
     ${notes ? `<notes><note><content><![CDATA[${notes}]]></content></note></notes>` : ""}
   </task>
 </tasks>`;
@@ -488,11 +487,6 @@ async function pollEmails() {
     if (!res.ok) throw new Error(`Graph API error ${res.status}: ${JSON.stringify(data?.error || data)}`);
     const messages = data.value || [];
     console.log(`Poll: ${messages.length} email(s) found`);
-
-    // DEBUG: log categories of last 5 inbox emails to catch name mismatches
-    const debugRes  = await graphFetch(`/users/${process.env.GRAPH_RECIPIENT}/mailFolders/inbox/messages?$select=subject,categories&$top=5`);
-    const debugData = await debugRes.json();
-    for (const m of debugData.value || []) console.log("DEBUG email:", m.subject, "| categories:", JSON.stringify(m.categories));
 
     if (messages.length) console.log(`Found ${messages.length} email(s) to process`);
 
