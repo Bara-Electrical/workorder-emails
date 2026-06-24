@@ -269,7 +269,6 @@ async function createArofloJob(result) {
     <taskname>${taskName}</taskname>
     <description>${result["task-description"] || result["task-type"] || ""}</description>
     <duedate>${dueDate}</duedate>
-    <substatus><substatusid>${substatusId}</substatusid></substatus>
     ${result["order-number"] ? `<custon>${result["order-number"]}</custon>` : ""}
     ${notes ? `<notes><note><content><![CDATA[${notes}]]></content></note></notes>` : ""}
   </task>
@@ -289,8 +288,29 @@ async function createArofloJob(result) {
 
   const inserted  = pr?.inserts?.tasks;
   const task      = Array.isArray(inserted) ? inserted[0] : inserted;
-  const jobNumber = task?.jobnumber || task?.taskid || "(see Aroflo)";
+  const taskId    = task?.taskid;
+  const jobNumber = task?.jobnumber || taskId || "(see Aroflo)";
   console.log("AROFLO JOB CREATED — job number:", jobNumber);
+
+  // Aroflo doesn't apply substatus on create — do a follow-up update
+  if (taskId && substatusId) {
+    const updateXml =
+`<tasks>
+  <task>
+    <taskid>${taskId}</taskid>
+    <status>not started</status>
+    <substatus><substatusid>${substatusId}</substatusid></substatus>
+  </task>
+</tasks>`;
+    const upZone = await arofloPost("zone=tasks&postxml=" + encodeURIComponent(updateXml));
+    const upPr   = upZone.postresults;
+    if (Number(upPr?.updatetotal ?? 0) > 0) {
+      console.log("Substatus set:", substatusId);
+    } else {
+      console.warn("Substatus update returned 0 updates — may not have applied");
+    }
+  }
+
   return zone;
 }
 
