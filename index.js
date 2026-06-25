@@ -380,13 +380,33 @@ function cleanHtml(html) {
     .trim();
 }
 
+// Decode SafeLinks/Inky wrapped URLs back to their original URLs
+function decodeSafeLinks(html) {
+  return html.replace(/href="([^"]+)"/gi, (match, href) => {
+    try {
+      const decoded = href.replace(/&amp;/g, "&");
+      if (/safelinks\.protection\.outlook\.com/i.test(decoded)) {
+        const url = new URL(decoded).searchParams.get("url");
+        if (url) return `href="${decodeURIComponent(url)}"`;
+      }
+      if (/shared\.outlook\.inky\.com/i.test(decoded)) {
+        const url = new URL(decoded).searchParams.get("url");
+        if (url) return `href="${decodeURIComponent(url)}"`;
+      }
+    } catch { /* malformed URL — leave as-is */ }
+    return match;
+  });
+}
+
 // Strip scripts/styles/tracking pixels but keep HTML structure for display in Aroflo notes
 function emailHtmlForNote(html) {
-  return html
-    .replace(/<script[\s\S]*?<\/script>/gi, "")
-    .replace(/<style[\s\S]*?<\/style>/gi, "")
-    .replace(/<img[^>]*>/gi, "")
-    .trim();
+  return decodeSafeLinks(
+    html
+      .replace(/<script[\s\S]*?<\/script>/gi, "")
+      .replace(/<style[\s\S]*?<\/style>/gi, "")
+      .replace(/<img[^>]*>/gi, "")
+      .trim()
+  );
 }
 
 // Search raw HTML href attributes before cleaning strips them.
