@@ -702,10 +702,6 @@ async function processAiTestingEmails() {
                 contentType: "HTML",
                 content: `<p><strong>AI extracted the following from this work order:</strong></p><table style="font-family:sans-serif;font-size:14px;border-collapse:collapse">${rows}</table>`,
               },
-              internetMessageHeaders: [
-                { name: "In-Reply-To",  value: message.internetMessageId },
-                { name: "References",   value: message.internetMessageId },
-              ],
             },
             saveToSentItems: false,
           }),
