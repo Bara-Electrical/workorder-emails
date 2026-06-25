@@ -484,7 +484,12 @@ async function processMessage(message, mailbox = process.env.GRAPH_RECIPIENT) {
 
   const attachments = message.attachments || [];
   const rawBody     = message.body?.content || "";
-  let   textForAI   = message.body?.contentType === "html" ? cleanHtml(rawBody) : rawBody;
+  const emailBodyText = (message.body?.contentType === "html" ? cleanHtml(rawBody) : rawBody).replace(/\s+/g, " ").trim();
+  let   textForAI     = emailBodyText;
+
+  function withEmailBody(primary) {
+    return `--- WORK ORDER CONTENT (prefer this) ---\n${primary}\n\n--- EMAIL BODY (use for anything not found above) ---\n${emailBodyText}`;
+  }
 
   // Work order link detection
   const workOrderLink = findWorkOrderLink(rawBody);
@@ -511,15 +516,15 @@ async function processMessage(message, mailbox = process.env.GRAPH_RECIPIENT) {
       if (contentType.includes("pdf")) {
         const buffer  = await response.arrayBuffer();
         const pdfText = await extractPDF(new Uint8Array(buffer));
-        textForAI = pdfText.replace(/\s+/g, " ").trim();
-        console.log("USING LINKED PDF FOR AI, length:", textForAI.length);
+        textForAI = withEmailBody(pdfText.replace(/\s+/g, " ").trim());
+        console.log("USING LINKED PDF + EMAIL BODY FOR AI");
       } else {
         const html     = await response.text();
         const linkText = cleanHtml(html).slice(0, 50000);
         console.log("LINK CLEAN TEXT LENGTH:", linkText.length);
         if (linkText.length > 200) {
-          textForAI = linkText;
-          console.log("USING LINK CONTENT FOR AI");
+          textForAI = withEmailBody(linkText);
+          console.log("USING LINK CONTENT + EMAIL BODY FOR AI");
         } else {
           console.log("LINK CONTENT TOO SHORT — FALLING BACK TO EMAIL BODY");
         }
@@ -530,7 +535,7 @@ async function processMessage(message, mailbox = process.env.GRAPH_RECIPIENT) {
     }
   }
 
-  // Work order PDF attachment — takes priority over link and email body
+  // Work order PDF attachment — takes priority over link
   const workorderAttachment = attachments.find(a =>
     (a.name || "").toLowerCase().endsWith(".pdf")
   );
@@ -543,12 +548,10 @@ async function processMessage(message, mailbox = process.env.GRAPH_RECIPIENT) {
     const attachData = await attachRes.json();
     const data       = Uint8Array.from(atob(attachData.contentBytes), c => c.charCodeAt(0));
     const pdfText    = await extractPDF(data);
-    const emailBody  = textForAI.replace(/\s+/g, " ").trim();
-    textForAI = `--- PDF CONTENT (prefer this) ---\n${pdfText.replace(/\s+/g, " ").trim()}\n\n--- EMAIL BODY (use for anything not found in PDF) ---\n${emailBody}`;
-    console.log("USING PDF + EMAIL BODY FOR AI");
+    textForAI = withEmailBody(pdfText.replace(/\s+/g, " ").trim());
+    console.log("USING PDF ATTACHMENT + EMAIL BODY FOR AI");
   } else if (!workOrderLink) {
-    console.log("NO PDF OR LINK - USING EMAIL BODY");
-    textForAI = textForAI.replace(/\s+/g, " ").trim();
+    console.log("NO PDF OR LINK - USING EMAIL BODY ONLY");
   }
 
   console.log("TEXT LENGTH:", textForAI.length);
