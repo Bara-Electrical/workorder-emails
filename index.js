@@ -611,25 +611,18 @@ app.get("/test-contact", async (req, res) => {
     const client = await findClient(clientName);
     if (!client) return res.json({ error: `Client not found: ${clientName}` });
 
-    // PMs are client records linked to the org — search by linkedtoid
-    const orgId = client.link?.orgid || client.clientid;
-    const linkedZone = await arofloGet(
-      "zone=clients&where=" + encodeURIComponent(`and|linkedtoid|=|${orgId}`) + "&page=1"
+    // Search for the PM directly by surname across all clients
+    const surname = pmName.trim().split(" ").slice(-1)[0];
+    const searchZone = await arofloGet(
+      "zone=clients&where=" + encodeURIComponent(`and|surname|like|${surname}`) + "&page=1"
     );
-    const linkedRaw = linkedZone.clients;
-    const linkedArr = linkedRaw ? (Array.isArray(linkedRaw) ? linkedRaw : [linkedRaw]) : [];
-
-    const match = linkedArr.find(c => {
-      const name = (c.clientname || `${c.firstname || ""} ${c.surname || ""}`).toLowerCase();
-      return name.includes(pmName.toLowerCase());
-    });
+    const searchRaw = searchZone.clients;
+    const searchArr = searchRaw ? (Array.isArray(searchRaw) ? searchRaw : [searchRaw]) : [];
 
     res.json({
-      clientId: client.clientid,
-      orgId,
-      totalLinkedClients: linkedArr.length,
-      linkedClients: linkedArr.map(c => ({ clientid: c.clientid, clientname: c.clientname, firstname: c.firstname, surname: c.surname })),
-      match: match ? { clientid: match.clientid, clientname: match.clientname } : null,
+      searchedSurname: surname,
+      totalFound: searchArr.length,
+      results: searchArr.map(c => ({ clientid: c.clientid, clientname: c.clientname, firstname: c.firstname, surname: c.surname, link: c.link })),
     });
   } catch (err) {
     res.json({ error: err.message });
