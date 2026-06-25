@@ -617,27 +617,29 @@ app.get("/test-contact", async (req, res) => {
     const allContacts  = contactsZone.contacts || [];
     const arr          = Array.isArray(allContacts) ? allContacts : [allContacts];
 
-    // Paginate through all contacts
-    let allArr = [...arr];
-    let page = 1;
-    while (arr.length > 0 && allArr.length === page * 500) {
-      page++;
-      const nextZone = await arofloGet(`zone=contacts&page=${page}`);
-      const nextRaw  = nextZone.contacts || [];
-      const nextArr  = Array.isArray(nextRaw) ? nextRaw : [nextRaw];
-      if (nextArr.length === 0) break;
-      allArr = allArr.concat(nextArr);
-    }
+    // Fetch client with contacts using join=contacts
+    const joinZone = await arofloGet(
+      "zone=clients" +
+      "&join=" + encodeURIComponent("contacts") +
+      "&where=" + encodeURIComponent(`and|clientid|=|${client.clientid}`) +
+      "&where=" + encodeURIComponent("and|archived|=|false") +
+      "&page=1"
+    );
+    const joinClient  = joinZone.clients;
+    const fullClient  = Array.isArray(joinClient) ? joinClient[0] : joinClient;
+    const contacts    = fullClient?.contacts || [];
+    const contactsArr = Array.isArray(contacts) ? contacts : [contacts];
 
-    const nameMatch = allArr.filter(c => {
+    const nameMatch = contactsArr.find(c => {
       const fullName = `${c.givennames} ${c.surname}`.toLowerCase();
       return fullName.includes(pmName.toLowerCase());
     });
 
     res.json({
-      orgId,
-      totalContacts: allArr.length,
-      nameMatches: nameMatch.map(c => ({ userid: c.userid, name: `${c.givennames} ${c.surname}`, org: c.org })),
+      clientId: client.clientid,
+      totalContacts: contactsArr.length,
+      contacts: contactsArr.map(c => ({ userid: c.userid, name: `${c.givennames} ${c.surname}` })),
+      match: nameMatch ? { userid: nameMatch.userid, name: `${nameMatch.givennames} ${nameMatch.surname}` } : null,
     });
   } catch (err) {
     res.json({ error: err.message });
