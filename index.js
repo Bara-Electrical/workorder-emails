@@ -595,7 +595,7 @@ async function forwardRicaEmails() {
       // Dedup: check if Brandon's mailbox already has a forward of this email.
       // Searches all folders so it works even after Outlook moves it to "AI testing".
       const safeSubj    = email.subject.replace(/'/g, "''");
-      const dedupFilter = encodeURIComponent(`subject eq 'AI testing - FW: ${safeSubj}'`);
+      const dedupFilter = encodeURIComponent(`subject eq 'AI testing - ${safeSubj}'`);
       const dedupRes    = await graphFetch(
         `/users/${BRANDON_EMAIL}/messages?$filter=${dedupFilter}&$select=id&$top=1`
       );
@@ -605,37 +605,26 @@ async function forwardRicaEmails() {
         continue;
       }
 
-      // Forward via the proven /forward endpoint
-      const fwdRes = await graphFetch(
-        `/users/${WORKORDERS_EMAIL}/messages/${email.id}/forward`,
+      // Create the message directly in Brandon's inbox — no sending, no SMTP,
+      // zero trace in workorders (we only read from there)
+      const createRes = await graphFetch(
+        `/users/${BRANDON_EMAIL}/mailFolders/inbox/messages`,
         {
           method: "POST",
           body: JSON.stringify({
+            subject:      `AI testing - ${email.subject}`,
+            body:         email.body,
             toRecipients: [{ emailAddress: { address: BRANDON_EMAIL } }],
           }),
         }
       );
 
-      if (!fwdRes.ok) {
-        const fwdErr = await fwdRes.json().catch(() => ({}));
-        console.warn("Rica forward failed:", email.subject, fwdRes.status, JSON.stringify(fwdErr?.error));
+      if (!createRes.ok) {
+        const createErr = await createRes.json().catch(() => ({}));
+        console.warn("Rica create failed:", email.subject, createRes.status, JSON.stringify(createErr?.error));
         continue;
       }
-      console.log("Rica forwarded to Brandon:", email.subject);
-
-      // Delete the sent item from workorders so it leaves no trace there
-      await new Promise(r => setTimeout(r, 2000));
-      const sentFilter = encodeURIComponent(`subject eq 'FW: ${safeSubj}'`);
-      const sentRes    = await graphFetch(
-        `/users/${WORKORDERS_EMAIL}/mailFolders/sentItems/messages` +
-        `?$filter=${sentFilter}&$select=id&$top=1`
-      );
-      const sentData = await sentRes.json();
-      const sentId   = sentData.value?.[0]?.id;
-      if (sentId) {
-        await graphFetch(`/users/${WORKORDERS_EMAIL}/messages/${sentId}`, { method: "DELETE" });
-        console.log("Rica: cleaned sent item from workorders");
-      }
+      console.log("Rica: placed in Brandon's inbox:", email.subject);
     }
   } catch (err) {
     console.error("Rica forward error:", err.message);
