@@ -650,7 +650,8 @@ async function forwardRicaEmails() {
 // AI TESTING LOOP — process emails in Brandon's "AI testing" folder,
 // reply with extracted info, no Aroflo job created
 // ================================================================
-let aiTestingFolderId = null;
+let aiTestingFolderId  = null;
+let aiTestingRunning   = false;
 
 async function getAiTestingFolderId() {
   if (aiTestingFolderId) return aiTestingFolderId;
@@ -663,6 +664,8 @@ async function getAiTestingFolderId() {
 }
 
 async function processAiTestingEmails() {
+  if (aiTestingRunning) return;
+  aiTestingRunning = true;
   try {
     const folderId = await getAiTestingFolderId();
     if (!folderId) return;
@@ -677,7 +680,7 @@ async function processAiTestingEmails() {
     const data = await res.json();
     if (!res.ok) throw new Error(`Graph error ${res.status}: ${JSON.stringify(data?.error)}`);
 
-    const messages = (data.value || []).filter(m => !m.subject?.startsWith("RE:"));
+    const messages = (data.value || []).filter(m => !/^re:/i.test(m.subject));
     if (messages.length) console.log(`AI testing: ${messages.length} email(s) to process`);
 
     for (const message of messages) {
@@ -714,6 +717,8 @@ async function processAiTestingEmails() {
     }
   } catch (err) {
     console.error("AI testing poll error:", err.message);
+  } finally {
+    aiTestingRunning = false;
   }
 }
 
