@@ -297,10 +297,6 @@ async function createArofloJob(result, rawEmail) {
     <description>${result["task-description"] || result["task-type"] || ""}</description>
     <duedate>${dueDate}</duedate>
     ${result["order-number"] ? `<custon>${result["order-number"]}</custon>` : ""}
-    <notes>
-      ${notes ? `<note><content><![CDATA[${notes}]]></content></note>` : ""}
-      ${rawEmail ? `<note><content><![CDATA[${emailHtmlForNote(rawEmail)}]]></content></note>` : ""}
-    </notes>
     ${result["account-to"] ? `<customfields><customfield><name><![CDATA[ Account To: ]]></name><type><![CDATA[ text ]]></type><value><![CDATA[${result["account-to"]}]]></value></customfield></customfields>` : ""}
   </task>
 </tasks>`;
@@ -322,6 +318,21 @@ async function createArofloJob(result, rawEmail) {
   const taskId    = task?.taskid;
   const jobNumber = task?.jobnumber || taskId || "(see Aroflo)";
   console.log("AROFLO JOB CREATED — job number:", jobNumber);
+
+  // Post notes separately — inline notes on task creation are not supported
+  if (taskId && (notes || rawEmail)) {
+    const noteItems = [
+      notes    ? `<tasknote><taskid>${taskId}</taskid><content><![CDATA[${notes}]]></content></tasknote>` : "",
+      rawEmail ? `<tasknote><taskid>${taskId}</taskid><content><![CDATA[${emailHtmlForNote(rawEmail)}]]></content></tasknote>` : "",
+    ].join("");
+    const notesXml = `<tasknotes>${noteItems}</tasknotes>`;
+    try {
+      const notesZone = await arofloPost("zone=tasknotes&postxml=" + encodeURIComponent(notesXml));
+      console.log("Notes posted:", notesZone.postresults?.inserttotal ?? "unknown");
+    } catch (err) {
+      console.warn("Notes post failed:", err.message);
+    }
+  }
 
   // Aroflo doesn't apply substatus on create — do a follow-up update
   if (taskId && substatusId) {
