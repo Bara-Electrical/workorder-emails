@@ -25,8 +25,7 @@ const WORKORDERS_EMAIL          = "workorders@baraelectrical.com.au";
 const BRANDON_EMAIL             = "brandon.roberts@baraelectrical.com.au";
 const POLL_INTERVAL_MS          = 60 * 1000;
 
-let pollRunning  = false;
-const ricaForwarded = new Set(); // in-memory dedup — resets on restart
+let pollRunning = false;
 
 const app = express();
 app.use(express.json({ limit: "25mb" }));
@@ -581,58 +580,71 @@ ${textForAI}
 // ================================================================
 async function forwardRicaEmails() {
   try {
+    // Read Rica-tagged emails from workorders inbox — read-only, nothing changes there
     const filter = encodeURIComponent(`categories/any(c:c eq '${RICA_CATEGORY}')`);
     const res    = await graphFetch(
       `/users/${WORKORDERS_EMAIL}/mailFolders/inbox/messages` +
-      `?$filter=${filter}&$select=id,subject&$top=50`
+      `?$filter=${filter}&$select=id,subject,body&$top=50`
     );
-    const data   = await res.json();
+    const data = await res.json();
     if (!res.ok) throw new Error(`Graph API error ${res.status}: ${JSON.stringify(data?.error)}`);
 
-    const toForward = (data.value || []).filter(e => !ricaForwarded.has(e.id));
-    if (toForward.length) console.log(`Rica: ${toForward.length} email(s) to forward`);
+    const emails = data.value || [];
+    if (emails.length) console.log(`Rica: ${emails.length} tagged email(s) in workorders inbox`);
 
-    for (const email of toForward) {
-      // Forward from workorders → Brandon (no changes to workorders inbox)
-      const fwdRes = await graphFetch(
-        `/users/${WORKORDERS_EMAIL}/messages/${email.id}/forward`,
-        {
-          method: "POST",
-          body: JSON.stringify({
-            toRecipients: [{ emailAddress: { address: BRANDON_EMAIL } }],
-          }),
-        }
+    for (const email of emails) {
+      const fwdSubject = `FW: ${email.subject}`;
+
+      // Dedup: check if Brandon's inbox already has an 'AI testing' email with this subject.
+      // This survives server restarts without touching the workorders mailbox.
+      const safeSubj  = fwdSubject.replace(/'/g, "''");
+      const dedupFilter = encodeURIComponent(
+        `categories/any(c:c eq '${AI_TESTING_CATEGORY}') and subject eq '${safeSubj}'`
       );
+      const dedupRes  = await graphFetch(
+        `/users/${BRANDON_EMAIL}/mailFolders/inbox/messages?$filter=${dedupFilter}&$select=id&$top=1`
+      );
+      const dedupData = await dedupRes.json();
+      if (dedupData.value?.length > 0) continue;
 
-      if (!fwdRes.ok) {
-        const fwdErr = await fwdRes.json().catch(() => ({}));
-        console.warn("Rica forward failed:", email.subject, fwdRes.status, JSON.stringify(fwdErr?.error));
+      // Send from workorders to Brandon with saveToSentItems: false — leaves zero
+      // trace in the workorders mailbox (not even Sent Items)
+      const sendRes = await graphFetch(`/users/${WORKORDERS_EMAIL}/sendMail`, {
+        method: "POST",
+        body: JSON.stringify({
+          message: {
+            subject:      fwdSubject,
+            body:         email.body,
+            toRecipients: [{ emailAddress: { address: BRANDON_EMAIL } }],
+          },
+          saveToSentItems: false,
+        }),
+      });
+
+      if (!sendRes.ok) {
+        const sendErr = await sendRes.json().catch(() => ({}));
+        console.warn("Rica send failed:", email.subject, sendRes.status, JSON.stringify(sendErr?.error));
         continue;
       }
+      console.log("Rica sent to Brandon:", email.subject);
 
-      ricaForwarded.add(email.id);
-      console.log("Rica forwarded:", email.subject);
-
-      // Wait for delivery, then find + tag the forwarded email in Brandon's inbox.
-      // Graph API doesn't support contains() in $filter for messages, so we fetch
-      // recent emails and match the subject client-side.
+      // Wait for delivery then find and tag it in Brandon's inbox
       await new Promise(r => setTimeout(r, 5000));
 
-      const since      = new Date(Date.now() - 120000).toISOString();
-      const sinceFilter = encodeURIComponent(`receivedDateTime ge ${since}`);
-      const findRes  = await graphFetch(
+      const since   = new Date(Date.now() - 120000).toISOString();
+      const findRes = await graphFetch(
         `/users/${BRANDON_EMAIL}/mailFolders/inbox/messages` +
-        `?$filter=${sinceFilter}&$select=id,subject,categories&$orderby=receivedDateTime desc&$top=20`
+        `?$filter=${encodeURIComponent(`receivedDateTime ge ${since}`)}` +
+        `&$select=id,subject,categories&$orderby=receivedDateTime desc&$top=20`
       );
       const findData = await findRes.json();
       if (!findRes.ok) {
         console.warn("Rica: could not read Brandon's inbox:", JSON.stringify(findData?.error));
         continue;
       }
+
       const subjectLower = email.subject.toLowerCase();
-      const fwd = (findData.value || []).find(m =>
-        m.subject?.toLowerCase().includes(subjectLower)
-      );
+      const fwd = (findData.value || []).find(m => m.subject?.toLowerCase().includes(subjectLower));
 
       if (fwd) {
         const cats = [...new Set([...(fwd.categories || []), AI_TESTING_CATEGORY])];
@@ -642,8 +654,8 @@ async function forwardRicaEmails() {
         });
         console.log("Rica: tagged 'AI testing' in Brandon's inbox:", fwd.subject);
       } else {
-        console.warn("Rica: could not find forwarded email in Brandon's inbox:", email.subject);
-        console.warn("Rica: recent subjects seen:", (findData.value || []).map(m => m.subject).join(" | "));
+        console.warn("Rica: could not find email in Brandon's inbox for:", email.subject);
+        console.warn("Rica: recent subjects:", (findData.value || []).map(m => m.subject).join(" | "));
       }
     }
   } catch (err) {
@@ -800,7 +812,7 @@ app.get("/test-rica", async (req, res) => {
     const filter = encodeURIComponent(`categories/any(c:c eq '${RICA_CATEGORY}')`);
     const listRes  = await graphFetch(
       `/users/${WORKORDERS_EMAIL}/mailFolders/inbox/messages` +
-      `?$filter=${filter}&$select=id,subject,categories&$top=50`
+      `?$filter=${filter}&$select=id,subject,body,categories&$top=50`
     );
     const listData = await listRes.json();
     if (!listRes.ok) return res.json({ step: "list Rica", error: listData?.error });
@@ -816,19 +828,21 @@ app.get("/test-rica", async (req, res) => {
 
     if (emails.length === 0) return res.json({ found: 0, message: "No Rica-tagged emails found in workorders inbox", recentEmails: recentCats });
 
-    // 2. Forward the first one and report what happens
-    const email = emails[0];
-    const fwdRes = await graphFetch(
-      `/users/${WORKORDERS_EMAIL}/messages/${email.id}/forward`,
-      {
-        method: "POST",
-        body: JSON.stringify({
+    // 2. Send the first one via sendMail with saveToSentItems:false (no trace in workorders)
+    const email   = emails[0];
+    const sendRes = await graphFetch(`/users/${WORKORDERS_EMAIL}/sendMail`, {
+      method: "POST",
+      body: JSON.stringify({
+        message: {
+          subject:      `FW: ${email.subject}`,
+          body:         email.body,
           toRecipients: [{ emailAddress: { address: BRANDON_EMAIL } }],
-        }),
-      }
-    );
-    const fwdStatus = fwdRes.status;
-    const fwdBody   = fwdRes.status !== 202 ? await fwdRes.json().catch(() => null) : null;
+        },
+        saveToSentItems: false,
+      }),
+    });
+    const fwdStatus = sendRes.status;
+    const fwdBody   = sendRes.status !== 202 ? await sendRes.json().catch(() => null) : null;
 
     // 3. Wait then check Brandon's inbox for recent emails
     await new Promise(r => setTimeout(r, 6000));
