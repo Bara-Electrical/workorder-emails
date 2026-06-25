@@ -591,17 +591,20 @@ async function forwardRicaEmails() {
     const emails = data.value || [];
     if (emails.length) console.log(`Rica: ${emails.length} tagged email(s) in workorders inbox`);
 
+    const aiTestingFolder = await getAiTestingFolderId();
+
     for (const email of emails) {
       const fwdSubject = `AI testing - FW: ${email.subject}`;
 
-      // Dedup: check if Brandon's inbox already has an email with this exact subject.
-      // Survives server restarts without touching the workorders mailbox.
+      // Dedup: check the "AI testing" folder (where Outlook rule moves them),
+      // falling back to inbox if the folder isn't found.
       const safeSubj    = fwdSubject.replace(/'/g, "''");
       const dedupFilter = encodeURIComponent(`subject eq '${safeSubj}'`);
-      const dedupRes    = await graphFetch(
-        `/users/${BRANDON_EMAIL}/mailFolders/inbox/messages?$filter=${dedupFilter}&$select=id&$top=1`
-      );
-      const dedupData = await dedupRes.json();
+      const dedupFolder = aiTestingFolder
+        ? `/users/${BRANDON_EMAIL}/mailFolders/${aiTestingFolder}/messages`
+        : `/users/${BRANDON_EMAIL}/mailFolders/inbox/messages`;
+      const dedupRes    = await graphFetch(`${dedupFolder}?$filter=${dedupFilter}&$select=id&$top=1`);
+      const dedupData   = await dedupRes.json();
       if (dedupData.value?.length > 0) continue;
 
       // Send from workorders to Brandon with saveToSentItems: false — leaves zero
