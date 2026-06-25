@@ -611,15 +611,22 @@ app.get("/test-contact", async (req, res) => {
     const client = await findClient(clientName);
     if (!client) return res.json({ error: `Client not found: ${clientName}` });
 
-    const zone = await arofloGet(
-      "zone=clientcontacts" +
-      "&where=" + encodeURIComponent(`and|linkedtoid|=|${client.clientid}`) +
-      "&page=1"
-    );
-    const raw = zone.clientcontacts ?? zone.contacts;
-    const arr = raw ? (Array.isArray(raw) ? raw : [raw]) : [];
-    const match = arr.find(c => c.contactname?.toLowerCase().includes(pmName.toLowerCase()));
-    res.json({ clientId: client.clientid, totalContacts: arr.length, contacts: arr, match: match || null });
+    const results = {};
+
+    for (const zone of ["contacts", "clientcontact", "contact"]) {
+      try {
+        const r = await arofloGet(
+          `zone=${zone}` +
+          "&where=" + encodeURIComponent(`and|linkedtoid|=|${client.clientid}`) +
+          "&page=1"
+        );
+        results[zone] = r;
+      } catch (err) {
+        results[zone] = { error: err.message };
+      }
+    }
+
+    res.json({ clientId: client.clientid, results });
   } catch (err) {
     res.json({ error: err.message });
   }
