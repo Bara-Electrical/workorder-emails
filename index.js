@@ -611,31 +611,21 @@ app.get("/test-contact", async (req, res) => {
     const client = await findClient(clientName);
     if (!client) return res.json({ error: `Client not found: ${clientName}` });
 
-    const results = {};
+    // Contacts are nested in the client record — fetch the full client by ID
+    const clientZone = await arofloGet(
+      "zone=clients&where=" + encodeURIComponent(`and|clientid|=|${client.clientid}`) + "&page=1"
+    );
+    const clientRecord = clientZone.clients;
+    const fullClient   = Array.isArray(clientRecord) ? clientRecord[0] : clientRecord;
+    const contacts     = fullClient?.contacts || [];
+    const arr          = Array.isArray(contacts) ? contacts : [contacts];
 
-    // Try contacts zone with no filter to confirm zone is valid
-    try {
-      const r = await arofloGet("zone=contacts&page=1");
-      results["contacts_no_filter"] = r;
-    } catch (err) {
-      results["contacts_no_filter"] = { error: err.message };
-    }
+    const match = arr.find(c => {
+      const fullName = `${c.givennames} ${c.surname}`.toLowerCase();
+      return fullName.includes(pmName.toLowerCase());
+    });
 
-    // Try contacts zone with clientid filter (different field name)
-    for (const field of ["linkedtoid", "clientid", "client"]) {
-      try {
-        const r = await arofloGet(
-          "zone=contacts" +
-          "&where=" + encodeURIComponent(`and|${field}|=|${client.clientid}`) +
-          "&page=1"
-        );
-        results[`contacts_${field}`] = r;
-      } catch (err) {
-        results[`contacts_${field}`] = { error: err.message };
-      }
-    }
-
-    res.json({ clientId: client.clientid, results });
+    res.json({ clientId: client.clientid, totalContacts: arr.length, contacts: arr, match: match || null });
   } catch (err) {
     res.json({ error: err.message });
   }
