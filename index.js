@@ -138,22 +138,23 @@ const SUBSTATUS_MAP = {
   "Real Estate General Maintenance": "Iyc6LyYK", // Ready to schedule
 };
 
-// Search Aroflo for a contact by name.
+// Fetch contacts for a client using join=contacts, then match by PM name.
 async function findContact(clientId, pmName) {
   if (!clientId || !pmName) return null;
-  const firstName = pmName.trim().split(" ")[0];
   try {
     const zone = await arofloGet(
-      "zone=clientcontacts" +
-      "&where=" + encodeURIComponent(`and|firstname|like|${firstName}`) +
+      "zone=clients" +
+      "&join=" + encodeURIComponent("contacts") +
+      "&where=" + encodeURIComponent(`and|clientid|=|${clientId}`) +
+      "&where=" + encodeURIComponent("and|archived|=|false") +
       "&page=1"
     );
-    console.log("Contact search raw response:", JSON.stringify(zone).slice(0, 300));
-    const raw = zone.clientcontacts ?? zone.contacts;
-    if (!raw) return null;
-    const arr = Array.isArray(raw) ? raw : [raw];
+    const raw     = zone.clients;
+    const client  = Array.isArray(raw) ? raw[0] : raw;
+    const contacts = client?.contacts || [];
+    const arr      = Array.isArray(contacts) ? contacts : [contacts];
     const nameLower = pmName.toLowerCase();
-    return arr.find(c => c.contactname?.toLowerCase().includes(nameLower)) || null;
+    return arr.find(c => `${c.givennames} ${c.surname}`.toLowerCase().includes(nameLower)) || null;
   } catch (err) {
     console.warn("Contact search failed:", err.message);
     return null;
@@ -289,7 +290,7 @@ async function createArofloJob(result) {
     <org><orgid>JiYqTydSXDcmCg==</orgid></org>
     ${taskTypeId ? `<tasktype><tasktypeid>${taskTypeId}</tasktypeid></tasktype>`                  : ""}
     <client><clientid>${client.clientid}</clientid></client>
-    ${pmContact ? `<contact><contactid>${pmContact.contactid}</contactid></contact>` : ""}
+    ${pmContact ? `<contact><userid>${pmContact.userid}</userid></contact>` : ""}
     ${location ? `<location><locationid>${location.locationid}</locationid></location>` : ""}
     ${result.address && !location  ? `<sitename>${result.address}</sitename>`          : ""}
     <taskname>${taskName}</taskname>
@@ -597,54 +598,6 @@ async function pollEmails() {
     pollRunning = false;
   }
 }
-
-// ================================================================
-// TEMP TEST ENDPOINT — remove once contact lookup is confirmed working
-// Usage: GET /test-contact?client=Realmark Urban&pm=Sarah Highlands
-// ================================================================
-app.get("/test-contact", async (req, res) => {
-  const clientName = req.query.client;
-  const pmName     = req.query.pm;
-  if (!clientName || !pmName) return res.status(400).json({ error: "Pass ?client=...&pm=..." });
-
-  try {
-    const client = await findClient(clientName);
-    if (!client) return res.json({ error: `Client not found: ${clientName}` });
-
-    // Fetch all contacts and filter by org + name
-    const orgId = client.link?.orgid || client.clientid;
-    const contactsZone = await arofloGet("zone=contacts&page=1");
-    const allContacts  = contactsZone.contacts || [];
-    const arr          = Array.isArray(allContacts) ? allContacts : [allContacts];
-
-    // Fetch client with contacts using join=contacts
-    const joinZone = await arofloGet(
-      "zone=clients" +
-      "&join=" + encodeURIComponent("contacts") +
-      "&where=" + encodeURIComponent(`and|clientid|=|${client.clientid}`) +
-      "&where=" + encodeURIComponent("and|archived|=|false") +
-      "&page=1"
-    );
-    const joinClient  = joinZone.clients;
-    const fullClient  = Array.isArray(joinClient) ? joinClient[0] : joinClient;
-    const contacts    = fullClient?.contacts || [];
-    const contactsArr = Array.isArray(contacts) ? contacts : [contacts];
-
-    const nameMatch = contactsArr.find(c => {
-      const fullName = `${c.givennames} ${c.surname}`.toLowerCase();
-      return fullName.includes(pmName.toLowerCase());
-    });
-
-    res.json({
-      clientId: client.clientid,
-      totalContacts: contactsArr.length,
-      contacts: contactsArr.map(c => ({ userid: c.userid, name: `${c.givennames} ${c.surname}` })),
-      match: nameMatch ? { userid: nameMatch.userid, name: `${nameMatch.givennames} ${nameMatch.surname}` } : null,
-    });
-  } catch (err) {
-    res.json({ error: err.message });
-  }
-});
 
 // ================================================================
 // START
