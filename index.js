@@ -558,7 +558,7 @@ Return ONLY valid JSON with these exact keys:
   "account-to": "",
   "order-number": ""
 }`,
-    input: textForAI,
+    input: `Extract the following work order and return JSON:\n\n${textForAI}`,
   });
 
   const parsed = JSON.parse(responseAI.output_text);
