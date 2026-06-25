@@ -606,7 +606,7 @@ async function forwardRicaEmails() {
 
       // Send from workorders to Brandon with saveToSentItems: false — leaves zero
       // trace in the workorders mailbox (not even Sent Items)
-      const sendRes = await graphFetch(`/users/${WORKORDERS_EMAIL}/sendMail`, {
+      const sendRes = await graphFetch(`/users/${BRANDON_EMAIL}/sendMail`, {
         method: "POST",
         body: JSON.stringify({
           message: {
@@ -861,7 +861,7 @@ app.get("/test-rica", async (req, res) => {
 
     // 2. Send the first one via sendMail with saveToSentItems:false (no trace in workorders)
     const email   = emails[0];
-    const sendRes = await graphFetch(`/users/${WORKORDERS_EMAIL}/sendMail`, {
+    const sendRes = await graphFetch(`/users/${BRANDON_EMAIL}/sendMail`, {
       method: "POST",
       body: JSON.stringify({
         message: {
