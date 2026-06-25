@@ -129,6 +129,7 @@ const TASK_TYPE_MAP = {
   "EC1":                            "JCYqLyBSQCAgCg==", // $120 Standard Electrical Compliance
   "AC1":                            "JCYqWyVQUCAgCg==", // $180 Standard Air Con Service
   "AC2":                            "JCYqLyNRMCAgCg==", // $270 Deluxe Air Con Service
+  "ACEC1":                          "JCYqLyBRMCAgCg==", // $240 Air Con & Electrical Compliance
   "Real Estate Aircon Maintenance":  "JCZaSyBSQCAgCg==", // Real-Estate Air Con Maintenance
   "Real Estate General Maintenance": "JCYqWyVQICAgCg==", // Real-Estate General Maintenance
 };
@@ -137,6 +138,7 @@ const SUBSTATUS_MAP = {
   "EC1":                            "IyQ6SyYK", // Ready to schedule PPM1
   "AC1":                            "IyQ6SyYK", // Ready to schedule PPM1
   "AC2":                            "Iyc6LyUK", // Ready to schedule (Specialised)
+  "ACEC1":                          "IyQ6SyYK", // Ready to schedule PPM1
   "Real Estate Aircon Maintenance":  "Iyc6LyYK", // Ready to schedule
   "Real Estate General Maintenance": "Iyc6LyYK", // Ready to schedule
 };
@@ -541,9 +543,10 @@ CRITICAL RULES:
 - For task-type, look for keywords anywhere in the text — not just a page title.
 
 TASK TYPES:
-EC1 = Electrical Compliance Check
-AC1 = Aircon Servicing
+EC1 = Electrical Compliance Check only
+AC1 = Aircon Servicing only
 AC2 = Deluxe Aircon Clean
+ACEC1 = Aircon service AND electrical compliance check combined
 Real Estate Aircon Maintenance = aircon related jobs
 Real Estate General Maintenance = everything else
 
