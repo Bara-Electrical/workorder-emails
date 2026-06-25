@@ -583,7 +583,7 @@ async function forwardRicaEmails() {
     const filter = encodeURIComponent(`categories/any(c:c eq '${RICA_CATEGORY}')`);
     const res    = await graphFetch(
       `/users/${WORKORDERS_EMAIL}/mailFolders/inbox/messages` +
-      `?$filter=${filter}&$select=id,subject,body&$top=50`
+      `?$filter=${filter}&$select=id,subject,body,hasAttachments&$top=50`
     );
     const data = await res.json();
     if (!res.ok) throw new Error(`Graph API error ${res.status}: ${JSON.stringify(data?.error)}`);
@@ -607,18 +607,31 @@ async function forwardRicaEmails() {
       const dedupData   = await dedupRes.json();
       if (dedupData.value?.length > 0) continue;
 
+      // Fetch attachments if present
+      let attachments = [];
+      if (email.hasAttachments) {
+        const attRes  = await graphFetch(`/users/${WORKORDERS_EMAIL}/messages/${email.id}/attachments`);
+        const attData = await attRes.json();
+        attachments = (attData.value || []).map(a => ({
+          "@odata.type": "#microsoft.graph.fileAttachment",
+          name:         a.name,
+          contentType:  a.contentType,
+          contentBytes: a.contentBytes,
+        }));
+      }
+
       // Send from workorders to Brandon with saveToSentItems: false — leaves zero
       // trace in the workorders mailbox (not even Sent Items)
+      const message = {
+        subject:      fwdSubject,
+        body:         email.body,
+        toRecipients: [{ emailAddress: { address: BRANDON_EMAIL } }],
+      };
+      if (attachments.length) message.attachments = attachments;
+
       const sendRes = await graphFetch(`/users/${WORKORDERS_EMAIL}/sendMail`, {
         method: "POST",
-        body: JSON.stringify({
-          message: {
-            subject:      fwdSubject,
-            body:         email.body,
-            toRecipients: [{ emailAddress: { address: BRANDON_EMAIL } }],
-          },
-          saveToSentItems: false,
-        }),
+        body: JSON.stringify({ message, saveToSentItems: false }),
       });
 
       if (!sendRes.ok) {
