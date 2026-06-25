@@ -91,10 +91,10 @@ async function arofloGet(params) {
   const auth = arofloAuth();
   const res  = await fetch(AROFLO_BASE + "?" + params, {
     headers: {
-      Accept:              AROFLO_ACCEPT,
-      Authorization:       auth,
-      "af-hmac-signature": arofloSign("GET", params, ts),
-      "af-iso-timestamp":  ts,
+      Accept:          AROFLO_ACCEPT,
+      Authorization:   auth,
+      Authentication:  "HMAC " + arofloSign("GET", params, ts),
+      afdatetimeutc:   ts,
     },
   });
   const data = await res.json();
@@ -108,11 +108,11 @@ async function arofloPost(body) {
   const res  = await fetch(AROFLO_BASE + "?", {
     method: "POST",
     headers: {
-      Accept:              AROFLO_ACCEPT,
-      Authorization:       auth,
-      "af-hmac-signature": arofloSign("POST", body, ts),
-      "af-iso-timestamp":  ts,
-      "Content-Type":      "application/x-www-form-urlencoded",
+      Accept:          AROFLO_ACCEPT,
+      Authorization:   auth,
+      Authentication:  "HMAC " + arofloSign("POST", body, ts),
+      afdatetimeutc:   ts,
+      "Content-Type":  "application/x-www-form-urlencoded",
     },
     body,
   });
