@@ -677,7 +677,7 @@ async function processAiTestingEmails() {
     const data = await res.json();
     if (!res.ok) throw new Error(`Graph error ${res.status}: ${JSON.stringify(data?.error)}`);
 
-    const messages = data.value || [];
+    const messages = (data.value || []).filter(m => !m.subject?.startsWith("RE:"));
     if (messages.length) console.log(`AI testing: ${messages.length} email(s) to process`);
 
     for (const message of messages) {
