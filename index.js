@@ -577,7 +577,7 @@ CRITICAL RULES:
 - Do NOT guess missing fields — if missing return null.
 - The text may be a structured form (with clear sections) OR plain prose in an email. Extract the same fields either way — don't return null just because sections aren't labelled.
 - If the input contains both a PDF CONTENT section and an EMAIL BODY section, prefer the PDF for all fields but check the email body for anything not found in the PDF.
-- For task-type, look for keywords anywhere in the text — not just a page title.
+- For task-type: if the text explicitly mentions EC1, AC1, AC2, or ACEC1 anywhere, use that — it takes priority over everything else, even if other work is also mentioned.
 
 TASK TYPES:
 EC1 = Electrical Compliance Check only
