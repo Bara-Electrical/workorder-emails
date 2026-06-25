@@ -673,7 +673,7 @@ async function processAiTestingEmails() {
     const res  = await graphFetch(
       `/users/${BRANDON_EMAIL}/mailFolders/${folderId}/messages` +
       `?$filter=${encodeURIComponent("not categories/any(c:c eq 'AI Replied')")}` +
-      `&$select=id,subject,body,categories` +
+      `&$select=id,subject,body,categories,internetMessageId` +
       `&$expand=attachments($select=id,name,contentType,size)` +
       `&$top=10`
     );
@@ -692,16 +692,22 @@ async function processAiTestingEmails() {
           .map(([k, v]) => `<tr><td style="padding:3px 16px 3px 0;font-weight:bold;vertical-align:top">${k}</td><td style="padding:3px 0">${v ?? "<em>not found</em>"}</td></tr>`)
           .join("");
 
-        await graphFetch(`/users/${BRANDON_EMAIL}/messages/${message.id}/reply`, {
+        await graphFetch(`/users/invoicing@baraelectrical.com.au/sendMail`, {
           method: "POST",
           body: JSON.stringify({
             message: {
+              subject:      `RE: ${message.subject}`,
               toRecipients: [{ emailAddress: { address: BRANDON_EMAIL } }],
               body: {
                 contentType: "HTML",
                 content: `<p><strong>AI extracted the following from this work order:</strong></p><table style="font-family:sans-serif;font-size:14px;border-collapse:collapse">${rows}</table>`,
               },
+              internetMessageHeaders: [
+                { name: "In-Reply-To",  value: message.internetMessageId },
+                { name: "References",   value: message.internetMessageId },
+              ],
             },
+            saveToSentItems: false,
           }),
         });
 
