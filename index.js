@@ -592,39 +592,38 @@ async function forwardRicaEmails() {
     if (emails.length) console.log(`Rica: ${emails.length} tagged email(s) in workorders inbox`);
 
     for (const email of emails) {
-      // Dedup: check if Brandon's mailbox already has a forward of this email.
-      // Searches all folders so it works even after Outlook moves it to "AI testing".
-      const safeSubj    = email.subject.replace(/'/g, "''");
-      const dedupFilter = encodeURIComponent(`subject eq 'AI testing - ${safeSubj}'`);
+      const fwdSubject = `AI testing - FW: ${email.subject}`;
+
+      // Dedup: check if Brandon's inbox already has an email with this exact subject.
+      // Survives server restarts without touching the workorders mailbox.
+      const safeSubj    = fwdSubject.replace(/'/g, "''");
+      const dedupFilter = encodeURIComponent(`subject eq '${safeSubj}'`);
       const dedupRes    = await graphFetch(
-        `/users/${BRANDON_EMAIL}/messages?$filter=${dedupFilter}&$select=id&$top=1`
+        `/users/${BRANDON_EMAIL}/mailFolders/inbox/messages?$filter=${dedupFilter}&$select=id&$top=1`
       );
       const dedupData = await dedupRes.json();
-      if (dedupData.value?.length > 0) {
-        console.log("Rica: already forwarded, skipping:", email.subject);
-        continue;
-      }
+      if (dedupData.value?.length > 0) continue;
 
-      // Create the message directly in Brandon's inbox — no sending, no SMTP,
-      // zero trace in workorders (we only read from there)
-      const createRes = await graphFetch(
-        `/users/${BRANDON_EMAIL}/mailFolders/inbox/messages`,
-        {
-          method: "POST",
-          body: JSON.stringify({
-            subject:      `AI testing - ${email.subject}`,
+      // Send from workorders to Brandon with saveToSentItems: false — leaves zero
+      // trace in the workorders mailbox (not even Sent Items)
+      const sendRes = await graphFetch(`/users/${WORKORDERS_EMAIL}/sendMail`, {
+        method: "POST",
+        body: JSON.stringify({
+          message: {
+            subject:      fwdSubject,
             body:         email.body,
             toRecipients: [{ emailAddress: { address: BRANDON_EMAIL } }],
-          }),
-        }
-      );
+          },
+          saveToSentItems: false,
+        }),
+      });
 
-      if (!createRes.ok) {
-        const createErr = await createRes.json().catch(() => ({}));
-        console.warn("Rica create failed:", email.subject, createRes.status, JSON.stringify(createErr?.error));
+      if (!sendRes.ok) {
+        const sendErr = await sendRes.json().catch(() => ({}));
+        console.warn("Rica send failed:", email.subject, sendRes.status, JSON.stringify(sendErr?.error));
         continue;
       }
-      console.log("Rica: placed in Brandon's inbox:", email.subject);
+      console.log("Rica sent to Brandon:", fwdSubject);
     }
   } catch (err) {
     console.error("Rica forward error:", err.message);
