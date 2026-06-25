@@ -819,6 +819,18 @@ async function pollEmails() {
 }
 
 // ================================================================
+// TEMP: List Aroflo task types — GET /task-types
+// ================================================================
+app.get("/task-types", async (req, res) => {
+  try {
+    const data = await arofloGet("zone=tasktypes&page=1");
+    res.json(data);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ================================================================
 // TEMP: Test note posting — GET /test-note?job=103245
 // ================================================================
 app.get("/test-note", async (req, res) => {
