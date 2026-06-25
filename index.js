@@ -592,37 +592,50 @@ async function forwardRicaEmails() {
     if (emails.length) console.log(`Rica: ${emails.length} tagged email(s) in workorders inbox`);
 
     for (const email of emails) {
-      const fwdSubject = `AI testing - FW: ${email.subject}`;
-
-      // Dedup: check if Brandon's inbox already has an email with this exact subject.
-      // Survives server restarts without touching the workorders mailbox.
-      const safeSubj    = fwdSubject.replace(/'/g, "''");
-      const dedupFilter = encodeURIComponent(`subject eq '${safeSubj}'`);
+      // Dedup: check if Brandon's mailbox already has a forward of this email.
+      // Searches all folders so it works even after Outlook moves it to "AI testing".
+      const safeSubj    = email.subject.replace(/'/g, "''");
+      const dedupFilter = encodeURIComponent(`subject eq 'AI testing - FW: ${safeSubj}'`);
       const dedupRes    = await graphFetch(
         `/users/${BRANDON_EMAIL}/messages?$filter=${dedupFilter}&$select=id&$top=1`
       );
       const dedupData = await dedupRes.json();
-      if (dedupData.value?.length > 0) continue;
-
-      // Send from workorders to Brandon with saveToSentItems: false — leaves zero
-      // trace in the workorders mailbox (not even Sent Items)
-      const sendRes = await graphFetch(`/users/${WORKORDERS_EMAIL}/sendMail`, {
-        method: "POST",
-        body: JSON.stringify({
-          message: {
-            subject:      fwdSubject,
-            body:         email.body,
-            toRecipients: [{ emailAddress: { address: BRANDON_EMAIL } }],
-          },
-        }),
-      });
-
-      if (!sendRes.ok) {
-        const sendErr = await sendRes.json().catch(() => ({}));
-        console.warn("Rica send failed:", email.subject, sendRes.status, JSON.stringify(sendErr?.error));
+      if (dedupData.value?.length > 0) {
+        console.log("Rica: already forwarded, skipping:", email.subject);
         continue;
       }
-      console.log("Rica sent to Brandon:", fwdSubject);
+
+      // Forward via the proven /forward endpoint
+      const fwdRes = await graphFetch(
+        `/users/${WORKORDERS_EMAIL}/messages/${email.id}/forward`,
+        {
+          method: "POST",
+          body: JSON.stringify({
+            toRecipients: [{ emailAddress: { address: BRANDON_EMAIL } }],
+          }),
+        }
+      );
+
+      if (!fwdRes.ok) {
+        const fwdErr = await fwdRes.json().catch(() => ({}));
+        console.warn("Rica forward failed:", email.subject, fwdRes.status, JSON.stringify(fwdErr?.error));
+        continue;
+      }
+      console.log("Rica forwarded to Brandon:", email.subject);
+
+      // Delete the sent item from workorders so it leaves no trace there
+      await new Promise(r => setTimeout(r, 2000));
+      const sentFilter = encodeURIComponent(`subject eq 'FW: ${safeSubj}'`);
+      const sentRes    = await graphFetch(
+        `/users/${WORKORDERS_EMAIL}/mailFolders/sentItems/messages` +
+        `?$filter=${sentFilter}&$select=id&$top=1`
+      );
+      const sentData = await sentRes.json();
+      const sentId   = sentData.value?.[0]?.id;
+      if (sentId) {
+        await graphFetch(`/users/${WORKORDERS_EMAIL}/messages/${sentId}`, { method: "DELETE" });
+        console.log("Rica: cleaned sent item from workorders");
+      }
     }
   } catch (err) {
     console.error("Rica forward error:", err.message);
@@ -858,18 +871,17 @@ app.get("/test-rica", async (req, res) => {
 
     if (emails.length === 0) return res.json({ found: 0, message: "No Rica-tagged emails found in workorders inbox", recentEmails: recentCats });
 
-    // 2. Send the first one via sendMail with saveToSentItems:false (no trace in workorders)
+    // 2. Forward the first one using the /forward endpoint (proven to work)
     const email   = emails[0];
-    const sendRes = await graphFetch(`/users/${WORKORDERS_EMAIL}/sendMail`, {
-      method: "POST",
-      body: JSON.stringify({
-        message: {
-          subject:      `AI testing - FW: ${email.subject}`,
-          body:         email.body,
+    const sendRes = await graphFetch(
+      `/users/${WORKORDERS_EMAIL}/messages/${email.id}/forward`,
+      {
+        method: "POST",
+        body: JSON.stringify({
           toRecipients: [{ emailAddress: { address: BRANDON_EMAIL } }],
-        },
-      }),
-    });
+        }),
+      }
+    );
     const fwdStatus = sendRes.status;
     const fwdBody   = sendRes.status !== 202 ? await sendRes.json().catch(() => null) : null;
 
