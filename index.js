@@ -630,6 +630,70 @@ async function forwardRicaEmails() {
   }
 }
 
+// ================================================================
+// AI TESTING LOOP — process emails in Brandon's "AI testing" folder,
+// reply with extracted info, no Aroflo job created
+// ================================================================
+let aiTestingFolderId = null;
+
+async function getAiTestingFolderId() {
+  if (aiTestingFolderId) return aiTestingFolderId;
+  const res  = await graphFetch(`/users/${BRANDON_EMAIL}/mailFolders?$select=id,displayName&$top=50`);
+  const data = await res.json();
+  const folder = (data.value || []).find(f => f.displayName === "AI testing");
+  aiTestingFolderId = folder?.id || null;
+  if (!aiTestingFolderId) console.warn("AI testing: 'AI testing' folder not found in Brandon's mailbox");
+  return aiTestingFolderId;
+}
+
+async function processAiTestingEmails() {
+  try {
+    const folderId = await getAiTestingFolderId();
+    if (!folderId) return;
+
+    const res  = await graphFetch(
+      `/users/${BRANDON_EMAIL}/mailFolders/${folderId}/messages` +
+      `?$filter=${encodeURIComponent("isReplied eq false")}` +
+      `&$select=id,subject,body,categories` +
+      `&$expand=attachments($select=id,name,contentType,size)` +
+      `&$top=10`
+    );
+    const data = await res.json();
+    if (!res.ok) throw new Error(`Graph error ${res.status}: ${JSON.stringify(data?.error)}`);
+
+    const messages = data.value || [];
+    if (messages.length) console.log(`AI testing: ${messages.length} email(s) to process`);
+
+    for (const message of messages) {
+      try {
+        const { result } = await processMessage(message);
+        console.log("AI testing result:", result);
+
+        const rows = Object.entries(result)
+          .map(([k, v]) => `<tr><td style="padding:3px 16px 3px 0;font-weight:bold;vertical-align:top">${k}</td><td style="padding:3px 0">${v ?? "<em>not found</em>"}</td></tr>`)
+          .join("");
+
+        await graphFetch(`/users/${BRANDON_EMAIL}/messages/${message.id}/reply`, {
+          method: "POST",
+          body: JSON.stringify({
+            message: {
+              body: {
+                contentType: "HTML",
+                content: `<p><strong>AI extracted the following from this work order:</strong></p><table style="font-family:sans-serif;font-size:14px;border-collapse:collapse">${rows}</table>`,
+              },
+            },
+          }),
+        });
+        console.log("AI testing: replied to", message.subject);
+      } catch (err) {
+        console.error("AI testing error:", message.subject, err.message);
+      }
+    }
+  } catch (err) {
+    console.error("AI testing poll error:", err.message);
+  }
+}
+
 // POLL LOOP
 // ================================================================
 async function pollEmails() {
@@ -840,6 +904,8 @@ app.listen(process.env.PORT || 3000, () => {
   console.log("Server running");
   pollEmails();
   forwardRicaEmails();
+  processAiTestingEmails();
   setInterval(pollEmails, POLL_INTERVAL_MS);
   setInterval(forwardRicaEmails, POLL_INTERVAL_MS);
+  setInterval(processAiTestingEmails, POLL_INTERVAL_MS);
 });
