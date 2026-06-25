@@ -692,18 +692,16 @@ async function processAiTestingEmails() {
           .map(([k, v]) => `<tr><td style="padding:3px 16px 3px 0;font-weight:bold;vertical-align:top">${k}</td><td style="padding:3px 0">${v ?? "<em>not found</em>"}</td></tr>`)
           .join("");
 
-        const sendRes = await graphFetch(`/users/${WORKORDERS_EMAIL}/sendMail`, {
+        const sendRes = await graphFetch(`/users/${BRANDON_EMAIL}/messages/${message.id}/reply`, {
           method: "POST",
           body: JSON.stringify({
             message: {
-              subject:      `RE: ${message.subject}`,
               toRecipients: [{ emailAddress: { address: BRANDON_EMAIL } }],
               body: {
                 contentType: "HTML",
                 content: `<p><strong>AI extracted the following from this work order:</strong></p><table style="font-family:sans-serif;font-size:14px;border-collapse:collapse">${rows}</table>`,
               },
             },
-            saveToSentItems: false,
           }),
         });
         if (!sendRes.ok) {
