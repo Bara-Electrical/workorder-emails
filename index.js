@@ -754,10 +754,11 @@ async function processAiTestingEmails() {
           .map(([k, v]) => `<tr><td style="padding:3px 16px 3px 0;font-weight:bold;vertical-align:top">${k}</td><td style="padding:3px 0">${v ?? "<em>not found</em>"}</td></tr>`)
           .join("");
 
-        const sendRes = await graphFetch(`/users/${BRANDON_EMAIL}/messages/${message.id}/reply`, {
+        const sendRes = await graphFetch(`/users/invoicing@baraelectrical.com.au/sendMail`, {
           method: "POST",
           body: JSON.stringify({
             message: {
+              subject: `AI Result: ${message.subject}`,
               toRecipients: [{ emailAddress: { address: BRANDON_EMAIL } }],
               body: {
                 contentType: "HTML",
