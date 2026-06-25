@@ -305,7 +305,7 @@ async function createArofloJob(result, rawEmail) {
     <description>${result["task-description"] || result["task-type"] || ""}</description>
     <duedate>${dueDate}</duedate>
     ${result["order-number"] ? `<custon>${result["order-number"]}</custon>` : ""}
-    ${result["account-to"] ? `<customfields><customfield><name><![CDATA[ Account To: ]]></name><type><![CDATA[ text ]]></type><value><![CDATA[${result["account-to"]}]]></value></customfield></customfields>` : ""}
+    ${(result["account-to"] || result["real-estate"]) ? `<customfields><customfield><name><![CDATA[ Account To: ]]></name><type><![CDATA[ text ]]></type><value><![CDATA[${result["account-to"] || result["real-estate"]}]]></value></customfield></customfields>` : ""}
   </task>
 </tasks>`;
 
