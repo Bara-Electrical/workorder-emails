@@ -611,16 +611,15 @@ app.get("/test-contact", async (req, res) => {
     const client = await findClient(clientName);
     if (!client) return res.json({ error: `Client not found: ${clientName}` });
 
-    // Search for the PM directly by surname across all clients
-    const surname = pmName.trim().split(" ").slice(-1)[0];
+    // Search for the PM directly by clientname
     const searchZone = await arofloGet(
-      "zone=clients&where=" + encodeURIComponent(`and|surname|like|${surname}`) + "&page=1"
+      "zone=clients&where=" + encodeURIComponent(`and|clientname|like|${pmName}`) + "&page=1"
     );
     const searchRaw = searchZone.clients;
     const searchArr = searchRaw ? (Array.isArray(searchRaw) ? searchRaw : [searchRaw]) : [];
 
     res.json({
-      searchedSurname: surname,
+      searchedName: pmName,
       totalFound: searchArr.length,
       results: searchArr.map(c => ({ clientid: c.clientid, clientname: c.clientname, firstname: c.firstname, surname: c.surname, link: c.link })),
     });
