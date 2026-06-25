@@ -573,7 +573,7 @@ CRITICAL RULES:
 - account-to must include ALL owners exactly as written, always in the format: owners c/o real estate.
 - real-estate: if you cannot find it directly, look for it in account-to after the c/o.
 - order-number is the job/work order number.
-- task-description must be a concise electrician job summary.
+- task-description must be a concise electrician job summary. If anything is listed as conditional or requires approval (e.g. "deluxe clean if approved", "AC2 if required"), include that in the description too.
 - Do NOT guess missing fields — if missing return null.
 - The text may be a structured form (with clear sections) OR plain prose in an email. Extract the same fields either way — don't return null just because sections aren't labelled.
 - If the input contains both a PDF CONTENT section and an EMAIL BODY section, prefer the PDF for all fields but check the email body for anything not found in the PDF.
