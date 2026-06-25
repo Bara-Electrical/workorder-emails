@@ -493,14 +493,22 @@ async function processMessage(message, mailbox = process.env.GRAPH_RECIPIENT) {
       }
 
       console.log("FINAL URL:", response.url);
-      const html     = await response.text();
-      const linkText = cleanHtml(html).slice(0, 50000);
-      console.log("LINK CLEAN TEXT LENGTH:", linkText.length);
-      if (linkText.length > 200) {
-        textForAI = linkText;
-        console.log("USING LINK CONTENT FOR AI");
+      const contentType = response.headers.get("content-type") || "";
+      if (contentType.includes("pdf")) {
+        const buffer  = await response.arrayBuffer();
+        const pdfText = await extractPDF(new Uint8Array(buffer));
+        textForAI = pdfText.replace(/\s+/g, " ").trim();
+        console.log("USING LINKED PDF FOR AI, length:", textForAI.length);
       } else {
-        console.log("LINK CONTENT TOO SHORT — FALLING BACK TO EMAIL BODY");
+        const html     = await response.text();
+        const linkText = cleanHtml(html).slice(0, 50000);
+        console.log("LINK CLEAN TEXT LENGTH:", linkText.length);
+        if (linkText.length > 200) {
+          textForAI = linkText;
+          console.log("USING LINK CONTENT FOR AI");
+        } else {
+          console.log("LINK CONTENT TOO SHORT — FALLING BACK TO EMAIL BODY");
+        }
       }
     } catch (err) {
       console.error("LINK FETCH ERROR:", err.message);
