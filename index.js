@@ -525,24 +525,19 @@ async function processMessage(message) {
   const responseAI = await openai.responses.create({
     model: "gpt-5-mini",
     text: { format: { type: "json_object" } },
-    input: `
-You are a work order extraction system for an electrical company.
+    instructions: `You are a work order extraction system for an electrical company in Australia.
 
 CRITICAL RULES:
-- tenant-name must ONLY come from Tenant Details section.
-- property-manager must ONLY come from Property Manager section
-- account-to must include ALL owners exactly as written, and always be owners c/o real estate.
-- do NOT guess missing fields
-- if missing return null
-- task-description must be concise electrician job summary
-- order-number is the job/work order number
-- if you cant find the real estate name, it'll be in the account to after the owners name or after the c/o.
-- make sure to get all tenants names and numbers, there is often more than one and seperate them with commas not an array.
-- Use tenants mobile numbers over home numbers if there is both.
-- Australian phone numbers always start with 0 (e.g. 0412 345 678). Always include the leading 0.
-- Check the page title to determine the task type.
-- if there is no tenant details look for other access eg. lockbox with location. Put this in the tenant-name field and leave the contact blank.
-
+- tenant-name must ONLY come from Tenant Details section. If no tenant details exist, look for alternative access info (e.g. lockbox with location) and put that in tenant-name instead, leaving tenant-contact null.
+- tenant-contact must contain phone numbers ONLY — no names, no labels, just the numbers. If there are multiple, separate with commas. Prefer mobile over home numbers. Australian numbers always start with 0 (e.g. 0412 345 678) — always include the leading 0.
+- property-manager must ONLY come from Property Manager section.
+- account-to must include ALL owners exactly as written, always in the format: owners c/o real estate.
+- real-estate: if you cannot find it directly, look for it in account-to after the c/o.
+- order-number is the job/work order number.
+- task-description must be a concise electrician job summary.
+- Do NOT guess missing fields — if missing return null.
+- The text may be a structured form (with clear sections) OR plain prose in an email. Extract the same fields either way — don't return null just because sections aren't labelled.
+- For task-type, look for keywords anywhere in the text — not just a page title.
 
 TASK TYPES:
 EC1 = Electrical Compliance Check
@@ -551,8 +546,7 @@ AC2 = Deluxe Aircon Clean
 Real Estate Aircon Maintenance = aircon related jobs
 Real Estate General Maintenance = everything else
 
-Return ONLY JSON:
-
+Return ONLY valid JSON with these exact keys:
 {
   "task-type": "",
   "tenant-name": "",
@@ -563,11 +557,8 @@ Return ONLY JSON:
   "property-manager": "",
   "account-to": "",
   "order-number": ""
-}
-
-TEXT:
-${textForAI}
-    `,
+}`,
+    input: textForAI,
   });
 
   const parsed = JSON.parse(responseAI.output_text);
