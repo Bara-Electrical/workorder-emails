@@ -806,26 +806,6 @@ async function pollEmails() {
 }
 
 // ================================================================
-// TEMP: Test contactname (entered by) update
-// ================================================================
-app.get("/test-contactname", async (req, res) => {
-  try {
-    const zone = await arofloGet(
-      "zone=tasks&where=" + encodeURIComponent("and|jobnumber|=|103122") + "&page=1"
-    );
-    const taskArr = Array.isArray(zone.tasks) ? zone.tasks : [zone.tasks];
-    if (!taskArr.length) return res.json({ error: "Job not found" });
-    const taskId = taskArr[0].taskid;
-
-    const xml = `<tasks><task><taskid>${taskId}</taskid><contactname>Bara AI</contactname></task></tasks>`;
-    const result = await arofloPost("zone=tasks&postxml=" + encodeURIComponent(xml));
-    res.json({ taskId, result });
-  } catch (err) {
-    res.json({ error: err.message });
-  }
-});
-
-// ================================================================
 // TEMP: Test note posting — GET /test-note?job=103245
 // ================================================================
 app.get("/test-note", async (req, res) => {
