@@ -599,7 +599,7 @@ async function forwardRicaEmails() {
       const safeSubj    = fwdSubject.replace(/'/g, "''");
       const dedupFilter = encodeURIComponent(`subject eq '${safeSubj}'`);
       const dedupRes    = await graphFetch(
-        `/users/${BRANDON_EMAIL}/mailFolders/inbox/messages?$filter=${dedupFilter}&$select=id&$top=1`
+        `/users/${BRANDON_EMAIL}/messages?$filter=${dedupFilter}&$select=id&$top=1`
       );
       const dedupData = await dedupRes.json();
       if (dedupData.value?.length > 0) continue;
