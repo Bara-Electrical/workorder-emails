@@ -323,7 +323,7 @@ async function createArofloJob(result, rawEmail) {
   if (taskId && (notes || rawEmail)) {
     const noteItems = [
       notes    ? `<tasknote><taskid>${taskId}</taskid><content><![CDATA[${notes}]]></content></tasknote>` : "",
-      rawEmail ? `<tasknote><taskid>${taskId}</taskid><content><![CDATA[${emailHtmlForNote(rawEmail)}]]></content></tasknote>` : "",
+      rawEmail ? `<tasknote><taskid>${taskId}</taskid><content><![CDATA[${await emailHtmlForNote(rawEmail)}]]></content></tasknote>` : "",
     ].join("");
     const notesXml = `<tasknotes>${noteItems}</tasknotes>`;
     try {
@@ -380,33 +380,41 @@ function cleanHtml(html) {
     .trim();
 }
 
-// Decode SafeLinks/Inky wrapped URLs back to their original URLs
-function decodeSafeLinks(html) {
-  return html.replace(/href="([^"]+)"/gi, (match, href) => {
+// Decode SafeLinks/Inky wrapped URLs. Inky requires following the redirect.
+async function decodeWrappedLinks(html) {
+  const matches = [...html.matchAll(/href="([^"]+)"/gi)];
+  const unique  = [...new Set(matches.map(m => m[1]))];
+  const map     = {};
+
+  await Promise.all(unique.map(async href => {
+    const decoded = href.replace(/&amp;/g, "&");
     try {
-      const decoded = href.replace(/&amp;/g, "&");
       if (/safelinks\.protection\.outlook\.com/i.test(decoded)) {
         const url = new URL(decoded).searchParams.get("url");
-        if (url) return `href="${decodeURIComponent(url)}"`;
+        if (url) map[href] = decodeURIComponent(url);
+      } else if (/shared\.outlook\.inky\.com/i.test(decoded)) {
+        const res = await fetch(decoded.includes("confirm=True") ? decoded : decoded + "&confirm=True", {
+          redirect: "follow",
+          headers: { "User-Agent": "Mozilla/5.0" },
+        });
+        map[href] = res.url;
       }
-      if (/shared\.outlook\.inky\.com/i.test(decoded)) {
-        const url = new URL(decoded).searchParams.get("url");
-        if (url) return `href="${decodeURIComponent(url)}"`;
-      }
-    } catch { /* malformed URL — leave as-is */ }
-    return match;
-  });
+    } catch { /* leave as-is */ }
+  }));
+
+  return html.replace(/href="([^"]+)"/gi, (match, href) =>
+    map[href] ? `href="${map[href]}"` : match
+  );
 }
 
 // Strip scripts/styles/tracking pixels but keep HTML structure for display in Aroflo notes
-function emailHtmlForNote(html) {
-  return decodeSafeLinks(
-    html
-      .replace(/<script[\s\S]*?<\/script>/gi, "")
-      .replace(/<style[\s\S]*?<\/style>/gi, "")
-      .replace(/<img[^>]*>/gi, "")
-      .trim()
-  );
+async function emailHtmlForNote(html) {
+  const cleaned = html
+    .replace(/<script[\s\S]*?<\/script>/gi, "")
+    .replace(/<style[\s\S]*?<\/style>/gi, "")
+    .replace(/<img[^>]*>/gi, "")
+    .trim();
+  return await decodeWrappedLinks(cleaned);
 }
 
 // Search raw HTML href attributes before cleaning strips them.
@@ -673,7 +681,7 @@ app.get("/test-note", async (req, res) => {
     // Extract a sample href to debug SafeLinks decoding
     const sampleHref = (rawEmail.match(/href="([^"]{30,})"/i) || [])[1] || "none found";
 
-    const noteHtml  = emailHtmlForNote(rawEmail);
+    const noteHtml  = await emailHtmlForNote(rawEmail);
 
     // 3. Try posting note via zone=tasknotes
     const results = {};
