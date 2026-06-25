@@ -440,40 +440,32 @@ async function emailHtmlForNote(html) {
 // Known work order portal domains
 const WORKORDER_DOMAINS = /tapihq\.com|propertytree\.com|propertyme\.com\.au|console\.net\.au|inspection\.express/i;
 
-// Search raw HTML href attributes before cleaning strips them.
-// Prefers links whose decoded destination contains "workorder" or is a known portal.
+// Search raw HTML anchor tags — match on link text containing "work order" or "workorder".
 function findWorkOrderLink(rawHtml) {
   const unescaped = rawHtml.replace(/&amp;/g, "&");
-  const hrefs     = [...unescaped.matchAll(/href="([^"]+)"/gi)].map(m => m[1]);
 
-  // Decode a SafeLinks or plain https URL to its destination for inspection
-  function decode(href) {
-    if (/safelinks\.protection\.outlook\.com/i.test(href)) {
-      try { return decodeURIComponent(new URL(href).searchParams.get("url") || href); } catch { return href; }
-    }
-    return href;
-  }
+  // Extract <a href="...">text</a> pairs
+  const anchors = [...unescaped.matchAll(/<a\s[^>]*href="([^"]+)"[^>]*>([\s\S]*?)<\/a>/gi)];
 
-  let fallback = null;
-
-  for (const href of hrefs) {
+  for (const [, href, rawText] of anchors) {
     if (!href.startsWith("https://")) continue;
-    const dest = decode(href);
-    console.log("LINK CANDIDATE:", dest.slice(0, 120));
-    // Highest priority: destination explicitly contains "workorder" or is a known portal
-    if (/workorder/i.test(dest) || WORKORDER_DOMAINS.test(dest)) {
-      console.log("SELECTED WORKORDER LINK:", dest.slice(0, 120));
+    const text = rawText.replace(/<[^>]*>/g, "").trim();
+    if (/work\s*order/i.test(text)) {
+      console.log("SELECTED WORKORDER LINK by text:", text.slice(0, 60), "->", href.slice(0, 80));
       return href;
     }
-    // Keep first inky/safelinks/tapi link as fallback
-    if (!fallback && (/shared\.outlook\.inky\.com|safelinks\.protection\.outlook\.com|tapihq\.com/i.test(href))) {
-      fallback = href;
-    }
   }
 
-  if (fallback) {
-    console.log("USING FALLBACK LINK:", decode(fallback).slice(0, 120));
-    return fallback;
+  // Fallback: known portal domains or "workorder" in the URL itself
+  for (const [, href] of anchors) {
+    if (!href.startsWith("https://")) continue;
+    const dest = /safelinks\.protection\.outlook\.com/i.test(href)
+      ? (() => { try { return decodeURIComponent(new URL(href).searchParams.get("url") || href); } catch { return href; } })()
+      : href;
+    if (/workorder/i.test(dest) || WORKORDER_DOMAINS.test(dest)) {
+      console.log("SELECTED WORKORDER LINK by domain/url:", dest.slice(0, 80));
+      return href;
+    }
   }
 
   // Last resort: plain-text TAPI URL
@@ -761,12 +753,10 @@ async function processAiTestingEmails() {
           .map(([k, v]) => `<tr><td style="padding:3px 16px 3px 0;font-weight:bold;vertical-align:top">${k}</td><td style="padding:3px 0">${v ?? "<em>not found</em>"}</td></tr>`)
           .join("");
 
-        const sendRes = await graphFetch(`/users/${BRANDON_EMAIL}/sendMail`, {
+        const sendRes = await graphFetch(`/users/${BRANDON_EMAIL}/messages/${message.id}/reply`, {
           method: "POST",
           body: JSON.stringify({
-            saveToSentItems: false,
             message: {
-              subject: `Re: ${message.subject}`,
               toRecipients: [{ emailAddress: { address: BRANDON_EMAIL } }],
               body: {
                 contentType: "HTML",
