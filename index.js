@@ -17,7 +17,6 @@ for (const key of REQUIRED_ENV) {
 
 const TRIGGER_CATEGORY          = "Bara AI";
 const PROCESSING_CATEGORY       = "Processing";
-const DONE_CATEGORY             = "Bara AI Done";
 const CLIENT_NOT_FOUND_CATEGORY = "Client not found";
 const RICA_CATEGORY             = "Rica";
 const WORKORDERS_EMAIL          = "workorders@baraelectrical.com.au";
@@ -749,7 +748,7 @@ async function pollEmails() {
   pollRunning = true;
   try {
     const filter = encodeURIComponent(
-      `categories/any(c:c eq '${TRIGGER_CATEGORY}') and not categories/any(c:c eq '${DONE_CATEGORY}') and not categories/any(c:c eq '${CLIENT_NOT_FOUND_CATEGORY}') and not categories/any(c:c eq '${PROCESSING_CATEGORY}')`
+      `categories/any(c:c eq '${TRIGGER_CATEGORY}') and not categories/any(c:c eq '${CLIENT_NOT_FOUND_CATEGORY}') and not categories/any(c:c eq '${PROCESSING_CATEGORY}')`
     );
 
     const res  = await graphFetch(
@@ -761,7 +760,9 @@ async function pollEmails() {
     );
     const data = await res.json();
     if (!res.ok) throw new Error(`Graph API error ${res.status}: ${JSON.stringify(data?.error || data)}`);
-    const messages = data.value || [];
+    const messages = (data.value || []).filter(m =>
+      !m.categories.some(c => c.startsWith("Job created"))
+    );
     console.log(`Poll: ${messages.length} email(s) found`);
 
     // Temp debug — show categories on recent inbox emails
@@ -784,11 +785,10 @@ async function pollEmails() {
 
         const { jobNumber } = await createArofloJob(result, rawEmail);
 
-        // Success — remove "Processing", add filter tag + visible job tag, keep everything else
+        // Success — remove "Processing", add job tag, keep everything else
         const jobTag = `Job created - ${jobNumber}`;
         const doneCategories = [
           ...lockedCategories.filter(c => c !== PROCESSING_CATEGORY),
-          DONE_CATEGORY,
           jobTag,
         ];
         await graphFetch(`/users/${process.env.GRAPH_RECIPIENT}/messages/${message.id}`, {
