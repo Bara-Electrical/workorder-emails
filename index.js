@@ -22,7 +22,7 @@ const CLIENT_NOT_FOUND_CATEGORY = "Client not found";
 const RICA_CATEGORY             = "Rica";
 const WORKORDERS_EMAIL          = "workorders@baraelectrical.com.au";
 const BRANDON_EMAIL             = "brandon.roberts@baraelectrical.com.au";
-const POLL_INTERVAL_MS          = 60 * 1000;
+const POLL_INTERVAL_MS          = 5 * 60 * 1000;
 
 let pollRunning = false;
 
