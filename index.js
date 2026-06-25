@@ -612,20 +612,26 @@ async function forwardRicaEmails() {
       ricaForwarded.add(email.id);
       console.log("Rica forwarded:", email.subject);
 
-      // Wait for delivery, then find + tag the forwarded email in Brandon's inbox
+      // Wait for delivery, then find + tag the forwarded email in Brandon's inbox.
+      // Graph API doesn't support contains() in $filter for messages, so we fetch
+      // recent emails and match the subject client-side.
       await new Promise(r => setTimeout(r, 5000));
 
-      const since      = new Date(Date.now() - 60000).toISOString();
-      const safeSubj   = email.subject.replace(/'/g, "''");
-      const findFilter = encodeURIComponent(
-        `receivedDateTime ge ${since} and contains(subject, '${safeSubj}')`
-      );
+      const since      = new Date(Date.now() - 120000).toISOString();
+      const sinceFilter = encodeURIComponent(`receivedDateTime ge ${since}`);
       const findRes  = await graphFetch(
         `/users/${BRANDON_EMAIL}/mailFolders/inbox/messages` +
-        `?$filter=${findFilter}&$select=id,categories&$orderby=receivedDateTime desc&$top=1`
+        `?$filter=${sinceFilter}&$select=id,subject,categories&$orderby=receivedDateTime desc&$top=20`
       );
       const findData = await findRes.json();
-      const fwd      = findData.value?.[0];
+      if (!findRes.ok) {
+        console.warn("Rica: could not read Brandon's inbox:", JSON.stringify(findData?.error));
+        continue;
+      }
+      const subjectLower = email.subject.toLowerCase();
+      const fwd = (findData.value || []).find(m =>
+        m.subject?.toLowerCase().includes(subjectLower)
+      );
 
       if (fwd) {
         const cats = [...new Set([...(fwd.categories || []), AI_TESTING_CATEGORY])];
@@ -633,9 +639,10 @@ async function forwardRicaEmails() {
           method: "PATCH",
           body: JSON.stringify({ categories: cats }),
         });
-        console.log("Rica: tagged 'AI testing' in Brandon's inbox:", email.subject);
+        console.log("Rica: tagged 'AI testing' in Brandon's inbox:", fwd.subject);
       } else {
         console.warn("Rica: could not find forwarded email in Brandon's inbox:", email.subject);
+        console.warn("Rica: recent subjects seen:", (findData.value || []).map(m => m.subject).join(" | "));
       }
     }
   } catch (err) {
@@ -778,6 +785,59 @@ app.get("/test-note", async (req, res) => {
     }
 
     res.json({ taskId, jobNumber, emailSubject: message.subject, sampleHref, results });
+  } catch (err) {
+    res.json({ error: err.message });
+  }
+});
+
+// ================================================================
+// TEMP: Test Rica forwarding — GET /test-rica
+// ================================================================
+app.get("/test-rica", async (req, res) => {
+  try {
+    // 1. Check what Rica emails exist in workorders inbox
+    const filter = encodeURIComponent(`categories/any(c:c eq '${RICA_CATEGORY}')`);
+    const listRes  = await graphFetch(
+      `/users/${process.env.GRAPH_RECIPIENT}/mailFolders/inbox/messages` +
+      `?$filter=${filter}&$select=id,subject,categories&$top=50`
+    );
+    const listData = await listRes.json();
+    if (!listRes.ok) return res.json({ step: "list Rica", error: listData?.error });
+    const emails = listData.value || [];
+
+    if (emails.length === 0) return res.json({ found: 0, message: "No Rica-tagged emails found in workorders inbox" });
+
+    // 2. Forward the first one and report what happens
+    const email = emails[0];
+    const fwdRes = await graphFetch(
+      `/users/${process.env.GRAPH_RECIPIENT}/messages/${email.id}/forward`,
+      {
+        method: "POST",
+        body: JSON.stringify({
+          toRecipients: [{ emailAddress: { address: BRANDON_EMAIL } }],
+        }),
+      }
+    );
+    const fwdStatus = fwdRes.status;
+    const fwdBody   = fwdRes.status !== 202 ? await fwdRes.json().catch(() => null) : null;
+
+    // 3. Wait then check Brandon's inbox for recent emails
+    await new Promise(r => setTimeout(r, 6000));
+    const since     = new Date(Date.now() - 120000).toISOString();
+    const findRes   = await graphFetch(
+      `/users/${BRANDON_EMAIL}/mailFolders/inbox/messages` +
+      `?$filter=${encodeURIComponent(`receivedDateTime ge ${since}`)}` +
+      `&$select=id,subject,categories&$orderby=receivedDateTime desc&$top=10`
+    );
+    const findData  = await findRes.json();
+
+    res.json({
+      ricaEmailsFound:  emails.map(e => ({ id: e.id, subject: e.subject })),
+      forwardStatus:    fwdStatus,
+      forwardError:     fwdBody,
+      brandonRecentEmails: (findData.value || []).map(m => ({ subject: m.subject, categories: m.categories })),
+      brandonInboxError:   findRes.ok ? null : findData?.error,
+    });
   } catch (err) {
     res.json({ error: err.message });
   }
