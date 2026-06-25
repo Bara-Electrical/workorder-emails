@@ -590,6 +590,18 @@ Return ONLY valid JSON with these exact keys:
     parsed.address = parsed.address.replace(/\b\w+/g, w =>
       w.length <= 2 ? w.toUpperCase() : w.charAt(0).toUpperCase() + w.slice(1).toLowerCase()
     );
+    // Expand common street type abbreviations
+    const streetAbbr = {
+      "\\bSt\\b": "Street", "\\bRd\\b": "Road",    "\\bAve\\b": "Avenue",
+      "\\bDr\\b": "Drive",  "\\bLn\\b": "Lane",     "\\bCt\\b": "Court",
+      "\\bPl\\b": "Place",  "\\bCl\\b": "Close",    "\\bCres\\b": "Crescent",
+      "\\bBlvd\\b": "Boulevard", "\\bHwy\\b": "Highway", "\\bFwy\\b": "Freeway",
+      "\\bTce\\b": "Terrace",    "\\bPde\\b": "Parade",  "\\bGr\\b": "Grove",
+      "\\bBvd\\b": "Boulevard",  "\\bCct\\b": "Circuit", "\\bEsp\\b": "Esplanade",
+    };
+    for (const [abbr, full] of Object.entries(streetAbbr)) {
+      parsed.address = parsed.address.replace(new RegExp(abbr, "gi"), full);
+    }
   }
 
   // Australian mobile numbers are 10 digits starting with 0 — if AI drops the leading 0, restore it
