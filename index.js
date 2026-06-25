@@ -599,6 +599,33 @@ async function pollEmails() {
 }
 
 // ================================================================
+// TEMP TEST ENDPOINT — remove once contact lookup is confirmed working
+// Usage: GET /test-contact?client=Realmark Urban&pm=Sarah Highlands
+// ================================================================
+app.get("/test-contact", async (req, res) => {
+  const clientName = req.query.client;
+  const pmName     = req.query.pm;
+  if (!clientName || !pmName) return res.status(400).json({ error: "Pass ?client=...&pm=..." });
+
+  try {
+    const client = await findClient(clientName);
+    if (!client) return res.json({ error: `Client not found: ${clientName}` });
+
+    const zone = await arofloGet(
+      "zone=clientcontacts" +
+      "&where=" + encodeURIComponent(`and|linkedtoid|=|${client.clientid}`) +
+      "&page=1"
+    );
+    const raw = zone.clientcontacts ?? zone.contacts;
+    const arr = raw ? (Array.isArray(raw) ? raw : [raw]) : [];
+    const match = arr.find(c => c.contactname?.toLowerCase().includes(pmName.toLowerCase()));
+    res.json({ clientId: client.clientid, totalContacts: arr.length, contacts: arr, match: match || null });
+  } catch (err) {
+    res.json({ error: err.message });
+  }
+});
+
+// ================================================================
 // START
 // ================================================================
 app.listen(process.env.PORT || 3000, () => {
