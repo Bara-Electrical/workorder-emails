@@ -611,21 +611,24 @@ app.get("/test-contact", async (req, res) => {
     const client = await findClient(clientName);
     if (!client) return res.json({ error: `Client not found: ${clientName}` });
 
-    // Contacts are nested in the client record — fetch the full client by ID
+    // Log what the initial findClient returned
+    const initialContacts = client.contacts || null;
+
+    // Fetch full client by ID
     const clientZone = await arofloGet(
       "zone=clients&where=" + encodeURIComponent(`and|clientid|=|${client.clientid}`) + "&page=1"
     );
     const clientRecord = clientZone.clients;
     const fullClient   = Array.isArray(clientRecord) ? clientRecord[0] : clientRecord;
-    const contacts     = fullClient?.contacts || [];
-    const arr          = Array.isArray(contacts) ? contacts : [contacts];
 
-    const match = arr.find(c => {
-      const fullName = `${c.givennames} ${c.surname}`.toLowerCase();
-      return fullName.includes(pmName.toLowerCase());
+    res.json({
+      clientId: client.clientid,
+      initialClientKeys: Object.keys(client),
+      initialContacts,
+      fullClientKeys: fullClient ? Object.keys(fullClient) : null,
+      fullClientContacts: fullClient?.contacts ?? "key missing",
+      rawFullClient: JSON.stringify(fullClient).slice(0, 500),
     });
-
-    res.json({ clientId: client.clientid, totalContacts: arr.length, contacts: arr, match: match || null });
   } catch (err) {
     res.json({ error: err.message });
   }
