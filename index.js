@@ -460,7 +460,7 @@ function findWorkOrderLink(rawHtml) {
 // ================================================================
 // EMAIL PROCESSING
 // ================================================================
-async function processMessage(message) {
+async function processMessage(message, mailbox = process.env.GRAPH_RECIPIENT) {
   console.log("WORK ORDER EMAIL RECEIVED:", message.subject);
 
   const attachments = message.attachments || [];
@@ -507,7 +507,7 @@ async function processMessage(message) {
   if (workorderAttachment) {
     console.log("FOUND WORK ORDER PDF:", workorderAttachment.name);
     const attachRes  = await graphFetch(
-      `/users/${process.env.GRAPH_RECIPIENT}/messages/${message.id}/attachments/${workorderAttachment.id}`
+      `/users/${mailbox}/messages/${message.id}/attachments/${workorderAttachment.id}`
     );
     const attachData = await attachRes.json();
     const data       = Uint8Array.from(atob(attachData.contentBytes), c => c.charCodeAt(0));
@@ -688,7 +688,7 @@ async function processAiTestingEmails() {
 
     for (const message of messages) {
       try {
-        const { result } = await processMessage(message);
+        const { result } = await processMessage(message, BRANDON_EMAIL);
         console.log("AI testing result:", result);
 
         const rows = Object.entries(result)
