@@ -459,15 +459,22 @@ function findWorkOrderLink(rawHtml) {
   for (const href of hrefs) {
     if (!href.startsWith("https://")) continue;
     const dest = decode(href);
+    console.log("LINK CANDIDATE:", dest.slice(0, 120));
     // Highest priority: destination explicitly contains "workorder" or is a known portal
-    if (/workorder/i.test(dest) || WORKORDER_DOMAINS.test(dest)) return href;
+    if (/workorder/i.test(dest) || WORKORDER_DOMAINS.test(dest)) {
+      console.log("SELECTED WORKORDER LINK:", dest.slice(0, 120));
+      return href;
+    }
     // Keep first inky/safelinks/tapi link as fallback
     if (!fallback && (/shared\.outlook\.inky\.com|safelinks\.protection\.outlook\.com|tapihq\.com/i.test(href))) {
       fallback = href;
     }
   }
 
-  if (fallback) return fallback;
+  if (fallback) {
+    console.log("USING FALLBACK LINK:", decode(fallback).slice(0, 120));
+    return fallback;
+  }
 
   // Last resort: plain-text TAPI URL
   const plainText = unescaped.replace(/<[^>]*>/g, " ");
