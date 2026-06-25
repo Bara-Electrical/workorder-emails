@@ -611,17 +611,23 @@ app.get("/test-contact", async (req, res) => {
     const client = await findClient(clientName);
     if (!client) return res.json({ error: `Client not found: ${clientName}` });
 
-    // Search for the PM directly by clientname
-    const searchZone = await arofloGet(
-      "zone=clients&where=" + encodeURIComponent(`and|clientname|like|${pmName}`) + "&page=1"
-    );
-    const searchRaw = searchZone.clients;
-    const searchArr = searchRaw ? (Array.isArray(searchRaw) ? searchRaw : [searchRaw]) : [];
+    // Fetch all contacts and filter by org + name
+    const orgId = client.link?.orgid || client.clientid;
+    const contactsZone = await arofloGet("zone=contacts&page=1");
+    const allContacts  = contactsZone.contacts || [];
+    const arr          = Array.isArray(allContacts) ? allContacts : [allContacts];
+
+    const orgContacts = arr.filter(c => c.org?.orgid === orgId);
+    const match = orgContacts.find(c => {
+      const fullName = `${c.givennames} ${c.surname}`.toLowerCase();
+      return fullName.includes(pmName.toLowerCase());
+    });
 
     res.json({
-      searchedName: pmName,
-      totalFound: searchArr.length,
-      results: searchArr.map(c => ({ clientid: c.clientid, clientname: c.clientname, firstname: c.firstname, surname: c.surname, link: c.link })),
+      orgId,
+      totalContacts: arr.length,
+      orgContacts: orgContacts.map(c => ({ userid: c.userid, name: `${c.givennames} ${c.surname}` })),
+      match: match ? { userid: match.userid, name: `${match.givennames} ${match.surname}` } : null,
     });
   } catch (err) {
     res.json({ error: err.message });
