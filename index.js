@@ -1050,7 +1050,7 @@ app.get("/test-rica", async (req, res) => {
 // START
 // ================================================================
 app.listen(process.env.PORT || 3000, () => {
-  console.log("Server running");
+  console.log(`Server running — deployed ${new Date().toISOString()}`);
   pollEmails();
   forwardRicaEmails();
   setInterval(pollEmails, POLL_INTERVAL_MS);
