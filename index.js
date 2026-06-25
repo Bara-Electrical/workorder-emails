@@ -613,16 +613,25 @@ app.get("/test-contact", async (req, res) => {
 
     const results = {};
 
-    for (const zone of ["contacts", "clientcontact", "contact"]) {
+    // Try contacts zone with no filter to confirm zone is valid
+    try {
+      const r = await arofloGet("zone=contacts&page=1");
+      results["contacts_no_filter"] = r;
+    } catch (err) {
+      results["contacts_no_filter"] = { error: err.message };
+    }
+
+    // Try contacts zone with clientid filter (different field name)
+    for (const field of ["linkedtoid", "clientid", "client"]) {
       try {
         const r = await arofloGet(
-          `zone=${zone}` +
-          "&where=" + encodeURIComponent(`and|linkedtoid|=|${client.clientid}`) +
+          "zone=contacts" +
+          "&where=" + encodeURIComponent(`and|${field}|=|${client.clientid}`) +
           "&page=1"
         );
-        results[zone] = r;
+        results[`contacts_${field}`] = r;
       } catch (err) {
-        results[zone] = { error: err.message };
+        results[`contacts_${field}`] = { error: err.message };
       }
     }
 
