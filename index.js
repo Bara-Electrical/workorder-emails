@@ -26,6 +26,17 @@ const POLL_INTERVAL_MS          = 5 * 60 * 1000;
 
 let pollRunning = false;
 
+async function ensureCategoryColor(email, displayName, color) {
+  const res = await graphFetch(`/users/${email}/outlook/masterCategories`, {
+    method: "POST",
+    body: JSON.stringify({ displayName, color }),
+  });
+  if (!res.ok && res.status !== 409) {
+    const err = await res.json().catch(() => ({}));
+    console.warn(`Category colour set failed for "${displayName}":`, err?.error?.message);
+  }
+}
+
 const app = express();
 app.use(express.json({ limit: "25mb" }));
 
@@ -357,7 +368,7 @@ async function createArofloJob(result, rawEmail) {
     }
   }
 
-  return zone;
+  return { zone, jobNumber };
 }
 
 // ================================================================
@@ -770,12 +781,15 @@ async function pollEmails() {
         const { result, rawEmail } = await processMessage(message);
         console.log("AI RESULT:", result);
 
-        await createArofloJob(result, rawEmail);
+        const { jobNumber } = await createArofloJob(result, rawEmail);
 
-        // Success — remove "Processing", add "Job created", keep everything else
+        // Success — remove "Processing", add "Job created" (for filter) + dynamic tag, keep everything else
+        const jobTag = `Job created - ${jobNumber}`;
+        await ensureCategoryColor(process.env.GRAPH_RECIPIENT, jobTag, "preset5");
         const doneCategories = [
           ...lockedCategories.filter(c => c !== PROCESSING_CATEGORY),
           DONE_CATEGORY,
+          jobTag,
         ];
         await graphFetch(`/users/${process.env.GRAPH_RECIPIENT}/messages/${message.id}`, {
           method: "PATCH",
@@ -936,6 +950,7 @@ app.listen(process.env.PORT || 3000, () => {
   pollEmails();
   forwardRicaEmails();
   processAiTestingEmails();
+  ensureCategoryColor(process.env.GRAPH_RECIPIENT, PROCESSING_CATEGORY, "preset5");
   setInterval(pollEmails, POLL_INTERVAL_MS);
   setInterval(forwardRicaEmails, POLL_INTERVAL_MS);
   setInterval(processAiTestingEmails, POLL_INTERVAL_MS);
