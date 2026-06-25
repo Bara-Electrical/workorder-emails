@@ -585,6 +585,13 @@ Return ONLY valid JSON with these exact keys:
 
   const parsed = JSON.parse(responseAI.output_text);
 
+  // Normalise address to title case in case the source had ALL CAPS suburb
+  if (parsed.address) {
+    parsed.address = parsed.address.replace(/\b\w+/g, w =>
+      w.length <= 2 ? w.toUpperCase() : w.charAt(0).toUpperCase() + w.slice(1).toLowerCase()
+    );
+  }
+
   // Australian mobile numbers are 10 digits starting with 0 — if AI drops the leading 0, restore it
   if (parsed["tenant-contact"]) {
     parsed["tenant-contact"] = parsed["tenant-contact"]
