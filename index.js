@@ -682,7 +682,7 @@ async function processAiTestingEmails() {
       `/users/${BRANDON_EMAIL}/mailFolders/${folderId}/messages` +
       `?$select=id,subject,body,categories,internetMessageId` +
       `&$expand=attachments($select=id,name,contentType,size)` +
-      `&$top=20`
+      `&$top=50`
     );
     const data = await res.json();
     if (!res.ok) throw new Error(`Graph error ${res.status}: ${JSON.stringify(data?.error)}`);
