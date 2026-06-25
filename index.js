@@ -244,7 +244,7 @@ async function findOrUpdateLocation(clientId, address, tenantName, tenantContact
   return location;
 }
 
-async function createArofloJob(result) {
+async function createArofloJob(result, rawEmail) {
   console.log("CREATING AROFLO JOB...");
 
   const taskTypeId  = TASK_TYPE_MAP[result["task-type"]];
@@ -297,7 +297,10 @@ async function createArofloJob(result) {
     <description>${result["task-description"] || result["task-type"] || ""}</description>
     <duedate>${dueDate}</duedate>
     ${result["order-number"] ? `<custon>${result["order-number"]}</custon>` : ""}
-    ${notes ? `<notes><note><content><![CDATA[${notes}]]></content></note></notes>` : ""}
+    <notes>
+      ${notes ? `<note><content><![CDATA[${notes}]]></content></note>` : ""}
+      ${rawEmail ? `<note><content><![CDATA[${emailHtmlForNote(rawEmail)}]]></content></note>` : ""}
+    </notes>
     ${result["account-to"] ? `<customfields><customfield><name><![CDATA[ Account To: ]]></name><type><![CDATA[ text ]]></type><value><![CDATA[${result["account-to"]}]]></value></customfield></customfields>` : ""}
   </task>
 </tasks>`;
@@ -363,6 +366,15 @@ function cleanHtml(html) {
     .replace(/<style[\s\S]*?<\/style>/gi, "")
     .replace(/<[^>]*>/g, " ")
     .replace(/\s+/g, " ")
+    .trim();
+}
+
+// Strip scripts/styles/tracking pixels but keep HTML structure for display in Aroflo notes
+function emailHtmlForNote(html) {
+  return html
+    .replace(/<script[\s\S]*?<\/script>/gi, "")
+    .replace(/<style[\s\S]*?<\/style>/gi, "")
+    .replace(/<img[^>]*>/gi, "")
     .trim();
 }
 
@@ -517,7 +529,7 @@ ${textForAI}
       .join(", ");
   }
 
-  return parsed;
+  return { result: parsed, rawEmail: rawBody };
 }
 
 // ================================================================
@@ -561,10 +573,10 @@ async function pollEmails() {
       console.log("Locked for processing:", message.subject);
 
       try {
-        const result = await processMessage(message);
+        const { result, rawEmail } = await processMessage(message);
         console.log("AI RESULT:", result);
 
-        await createArofloJob(result);
+        await createArofloJob(result, rawEmail);
 
         // Success — remove "Processing", add "Job created", keep everything else
         const doneCategories = [
