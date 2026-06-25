@@ -437,24 +437,39 @@ async function emailHtmlForNote(html) {
   return await decodeWrappedLinks(cleaned);
 }
 
+// Known work order portal domains
+const WORKORDER_DOMAINS = /tapihq\.com|propertytree\.com|propertyme\.com\.au|console\.net\.au|inspection\.express/i;
+
 // Search raw HTML href attributes before cleaning strips them.
-// Handles SafeLinks → Inky → TAPI redirect chains.
+// Prefers links whose decoded destination contains "workorder" or is a known portal.
 function findWorkOrderLink(rawHtml) {
   const unescaped = rawHtml.replace(/&amp;/g, "&");
   const hrefs     = [...unescaped.matchAll(/href="([^"]+)"/gi)].map(m => m[1]);
 
+  // Decode a SafeLinks or plain https URL to its destination for inspection
+  function decode(href) {
+    if (/safelinks\.protection\.outlook\.com/i.test(href)) {
+      try { return decodeURIComponent(new URL(href).searchParams.get("url") || href); } catch { return href; }
+    }
+    return href;
+  }
+
+  let fallback = null;
+
   for (const href of hrefs) {
     if (!href.startsWith("https://")) continue;
-    if (/tapihq\.com/i.test(href)) return href;
-    if (/shared\.outlook\.inky\.com/i.test(href)) return href;
-    if (/safelinks\.protection\.outlook\.com/i.test(href)) {
-      try {
-        if (/tapihq\.com|inky\.com/i.test(decodeURIComponent(href))) return href;
-      } catch { /* malformed URL */ }
+    const dest = decode(href);
+    // Highest priority: destination explicitly contains "workorder" or is a known portal
+    if (/workorder/i.test(dest) || WORKORDER_DOMAINS.test(dest)) return href;
+    // Keep first inky/safelinks/tapi link as fallback
+    if (!fallback && (/shared\.outlook\.inky\.com|safelinks\.protection\.outlook\.com|tapihq\.com/i.test(href))) {
+      fallback = href;
     }
   }
 
-  // Fallback: plain-text TAPI URL
+  if (fallback) return fallback;
+
+  // Last resort: plain-text TAPI URL
   const plainText = unescaped.replace(/<[^>]*>/g, " ");
   const m = plainText.match(/https:\/\/url\d+\.tapihq\.com\/ls\/click\S+/i);
   if (m) return m[0].split(/[>")\s]/)[0].trim();
