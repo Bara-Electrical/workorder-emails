@@ -617,17 +617,27 @@ app.get("/test-contact", async (req, res) => {
     const allContacts  = contactsZone.contacts || [];
     const arr          = Array.isArray(allContacts) ? allContacts : [allContacts];
 
-    // Search all contacts for the PM name regardless of org
-    const nameMatch = arr.filter(c => {
+    // Paginate through all contacts
+    let allArr = [...arr];
+    let page = 1;
+    while (arr.length > 0 && allArr.length === page * 500) {
+      page++;
+      const nextZone = await arofloGet(`zone=contacts&page=${page}`);
+      const nextRaw  = nextZone.contacts || [];
+      const nextArr  = Array.isArray(nextRaw) ? nextRaw : [nextRaw];
+      if (nextArr.length === 0) break;
+      allArr = allArr.concat(nextArr);
+    }
+
+    const nameMatch = allArr.filter(c => {
       const fullName = `${c.givennames} ${c.surname}`.toLowerCase();
       return fullName.includes(pmName.toLowerCase());
     });
 
     res.json({
       orgId,
-      totalContacts: arr.length,
+      totalContacts: allArr.length,
       nameMatches: nameMatch.map(c => ({ userid: c.userid, name: `${c.givennames} ${c.surname}`, org: c.org })),
-      allContacts: arr.map(c => ({ userid: c.userid, name: `${c.givennames} ${c.surname}`, orgid: c.org?.orgid, orgname: c.org?.orgname })),
     });
   } catch (err) {
     res.json({ error: err.message });
