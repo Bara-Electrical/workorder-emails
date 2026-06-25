@@ -1,3 +1,4 @@
+import "dotenv/config";
 import express from "express";
 import OpenAI from "openai";
 import * as pdfjsLib from "pdfjs-dist/legacy/build/pdf.mjs";
