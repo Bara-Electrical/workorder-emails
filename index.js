@@ -566,6 +566,8 @@ CRITICAL RULES:
 - tenant-name and tenant-contact come from the Tenant Details section OR any section labelled "Contact for job access" or similar. If neither exists, look for alternative access info (e.g. lockbox with location) and put that in tenant-name instead, leaving tenant-contact null.
 - access-details is ONLY physical access codes/numbers — key numbers, lockbox codes, gate codes, swipe card numbers. e.g. "Key: 1234", "Lockbox code: 56", "Gate code: 789". Do NOT include contact instructions, tenant names, safety instructions, or anything that is not a physical code or number.
 - expenditure-limit is the dollar amount only — e.g. "$330". Strip any conditions, notes, or extra text after the amount.
+- confidence is a float 0.0–1.0 rating how confident you are in the overall extraction. 1.0 = all fields clearly present, 0.0 = guessing most fields.
+- notes is any concerns, ambiguities, or flags worth mentioning — e.g. missing fields, conflicting info, unusual job details. Leave null if nothing to flag.
 - tenant-contact must contain phone numbers ONLY — no names, no labels, just the numbers. If there are multiple, separate with commas. Prefer mobile over home numbers. Australian numbers always start with 0 (e.g. 0412 345 678) — always include the leading 0.
 - property-manager comes from the Property Manager section, OR from an Agency Details section where the manager is listed (e.g. "Manager: Jane Smith"). Use the person's name only, not the agency name.
 - account-to must include ALL owners exactly as written, always in the format: owners c/o real estate.
@@ -597,7 +599,9 @@ Return ONLY valid JSON with these exact keys:
   "account-to": "",
   "order-number": "",
   "access-details": "",
-  "expenditure-limit": ""
+  "expenditure-limit": "",
+  "confidence": 0.0,
+  "notes": ""
 }`,
     input: `Extract the following work order and return JSON:\n\n${textForAI}`,
   });
@@ -714,6 +718,7 @@ async function forwardRicaEmails() {
 // reply with extracted info, no Aroflo job created
 // ================================================================
 let aiTestingFolderId  = null;
+let aiDoneFolderId     = null;
 let aiTestingRunning   = false;
 
 async function getAiTestingFolderId() {
@@ -724,6 +729,16 @@ async function getAiTestingFolderId() {
   aiTestingFolderId = folder?.id || null;
   if (!aiTestingFolderId) console.warn("AI testing: 'AI testing' folder not found in Brandon's mailbox");
   return aiTestingFolderId;
+}
+
+async function getAiDoneFolderId() {
+  if (aiDoneFolderId) return aiDoneFolderId;
+  const res  = await graphFetch(`/users/${BRANDON_EMAIL}/mailFolders?$select=id,displayName&$top=50`);
+  const data = await res.json();
+  const folder = (data.value || []).find(f => f.displayName === "AI done");
+  aiDoneFolderId = folder?.id || null;
+  if (!aiDoneFolderId) console.warn("AI testing: 'AI done' folder not found in Brandon's mailbox");
+  return aiDoneFolderId;
 }
 
 async function processAiTestingEmails() {
@@ -754,9 +769,21 @@ async function processAiTestingEmails() {
         const { result } = await processMessage(message, BRANDON_EMAIL);
         console.log("AI testing result:", result);
 
+        const confidence = result["confidence"] ?? null;
+        const aiNotes    = result["notes"] || null;
+        const skipKeys   = new Set(["confidence", "notes"]);
         const rows = Object.entries(result)
+          .filter(([k]) => !skipKeys.has(k))
           .map(([k, v]) => `<tr><td style="padding:3px 16px 3px 0;font-weight:bold;vertical-align:top">${k}</td><td style="padding:3px 0">${v ?? "<em>not found</em>"}</td></tr>`)
           .join("");
+
+        const confidenceColour = confidence >= 0.8 ? "#2e7d32" : confidence >= 0.5 ? "#e65100" : "#c62828";
+        const confidenceHtml = confidence !== null
+          ? `<p style="font-family:sans-serif;font-size:14px"><strong>Confidence:</strong> <span style="color:${confidenceColour};font-weight:bold">${confidence}</span></p>`
+          : "";
+        const notesHtml = aiNotes
+          ? `<p style="font-family:sans-serif;font-size:14px;color:#555"><strong>AI Notes:</strong> ${aiNotes}</p>`
+          : "";
 
         const sendRes = await graphFetch(`/users/${BRANDON_EMAIL}/messages/${message.id}/reply`, {
           method: "POST",
@@ -765,7 +792,7 @@ async function processAiTestingEmails() {
               toRecipients: [{ emailAddress: { address: BRANDON_EMAIL } }],
               body: {
                 contentType: "HTML",
-                content: `<p><strong>AI extracted the following from this work order:</strong></p><table style="font-family:sans-serif;font-size:14px;border-collapse:collapse">${rows}</table>`,
+                content: `${confidenceHtml}${notesHtml}<p><strong>AI extracted the following from this work order:</strong></p><table style="font-family:sans-serif;font-size:14px;border-collapse:collapse">${rows}</table>`,
               },
             },
           }),
@@ -773,6 +800,15 @@ async function processAiTestingEmails() {
         if (!sendRes.ok) {
           const err = await sendRes.json().catch(() => ({}));
           throw new Error(`Send failed ${sendRes.status}: ${JSON.stringify(err?.error)}`);
+        }
+
+        // Move to AI done folder so it won't be reprocessed
+        const doneFolderId = await getAiDoneFolderId();
+        if (doneFolderId) {
+          await graphFetch(`/users/${BRANDON_EMAIL}/messages/${message.id}/move`, {
+            method: "POST",
+            body: JSON.stringify({ destinationId: doneFolderId }),
+          });
         }
 
         console.log("AI testing: replied to", message.subject);
