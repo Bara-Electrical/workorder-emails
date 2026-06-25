@@ -680,6 +680,7 @@ async function processAiTestingEmails() {
           method: "POST",
           body: JSON.stringify({
             message: {
+              toRecipients: [{ emailAddress: { address: BRANDON_EMAIL } }],
               body: {
                 contentType: "HTML",
                 content: `<p><strong>AI extracted the following from this work order:</strong></p><table style="font-family:sans-serif;font-size:14px;border-collapse:collapse">${rows}</table>`,
