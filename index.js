@@ -669,6 +669,10 @@ app.get("/test-note", async (req, res) => {
     if (!message) return res.json({ error: "No emails found in inbox" });
 
     const rawEmail  = message.body?.content || "";
+
+    // Extract a sample href to debug SafeLinks decoding
+    const sampleHref = (rawEmail.match(/href="([^"]{30,})"/i) || [])[1] || "none found";
+
     const noteHtml  = emailHtmlForNote(rawEmail);
 
     // 3. Try posting note via zone=tasknotes
@@ -694,7 +698,7 @@ app.get("/test-note", async (req, res) => {
       results["task_update"] = { error: err.message };
     }
 
-    res.json({ taskId, jobNumber, emailSubject: message.subject, results });
+    res.json({ taskId, jobNumber, emailSubject: message.subject, sampleHref, results });
   } catch (err) {
     res.json({ error: err.message });
   }
