@@ -874,6 +874,13 @@ app.get("/test-note", async (req, res) => {
 });
 
 // ================================================================
+// Manual trigger for AI testing check
+// ================================================================
+app.get("/run-ai-test", async (req, res) => {
+  res.json({ status: "triggered" });
+  await processAiTestingEmails();
+});
+
 // TEMP: Test Rica forwarding — GET /test-rica
 // ================================================================
 app.get("/test-rica", async (req, res) => {
