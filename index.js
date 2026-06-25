@@ -690,11 +690,7 @@ async function processAiTestingEmails() {
     const data = await res.json();
     if (!res.ok) throw new Error(`Graph error ${res.status}: ${JSON.stringify(data?.error)}`);
 
-    console.log(`AI testing: folder returned ${data.value?.length ?? 0} raw emails`);
-    for (const m of data.value || []) console.log(`  >> cats=${JSON.stringify(m.categories)} subj=${m.subject?.slice(0,60)}`);
-    const messages = (data.value || []).filter(m =>
-      !m.categories?.includes("AI Replied") && !/^re:/i.test(m.subject)
-    );
+    const messages = data.value || [];
     console.log(`AI testing: ${messages.length} email(s) to process`);
 
     for (const message of messages) {
@@ -723,11 +719,6 @@ async function processAiTestingEmails() {
           throw new Error(`Send failed ${sendRes.status}: ${JSON.stringify(err?.error)}`);
         }
 
-        // Mark as processed so it won't be picked up again
-        await graphFetch(`/users/${BRANDON_EMAIL}/messages/${message.id}`, {
-          method: "PATCH",
-          body: JSON.stringify({ categories: [...(message.categories || []), "AI Replied"] }),
-        });
         console.log("AI testing: replied to", message.subject);
       } catch (err) {
         console.error("AI testing error:", message.subject, err.message);
