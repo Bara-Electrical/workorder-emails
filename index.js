@@ -692,7 +692,7 @@ async function processAiTestingEmails() {
           .map(([k, v]) => `<tr><td style="padding:3px 16px 3px 0;font-weight:bold;vertical-align:top">${k}</td><td style="padding:3px 0">${v ?? "<em>not found</em>"}</td></tr>`)
           .join("");
 
-        await graphFetch(`/users/invoicing@baraelectrical.com.au/sendMail`, {
+        await graphFetch(`/users/${WORKORDERS_EMAIL}/sendMail`, {
           method: "POST",
           body: JSON.stringify({
             message: {
