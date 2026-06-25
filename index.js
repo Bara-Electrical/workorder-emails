@@ -805,7 +805,15 @@ app.get("/test-rica", async (req, res) => {
     if (!listRes.ok) return res.json({ step: "list Rica", error: listData?.error });
     const emails = listData.value || [];
 
-    if (emails.length === 0) return res.json({ found: 0, message: "No Rica-tagged emails found in workorders inbox" });
+    // Also grab recent emails to show their actual category names for debugging
+    const recentRes  = await graphFetch(
+      `/users/${process.env.GRAPH_RECIPIENT}/mailFolders/inbox/messages` +
+      `?$select=subject,categories&$orderby=receivedDateTime desc&$top=20`
+    );
+    const recentData = await recentRes.json();
+    const recentCats = (recentData.value || []).map(m => ({ subject: m.subject?.slice(0, 60), categories: m.categories }));
+
+    if (emails.length === 0) return res.json({ found: 0, message: "No Rica-tagged emails found in workorders inbox", recentEmails: recentCats });
 
     // 2. Forward the first one and report what happens
     const email = emails[0];
