@@ -617,8 +617,8 @@ app.get("/test-contact", async (req, res) => {
     const allContacts  = contactsZone.contacts || [];
     const arr          = Array.isArray(allContacts) ? allContacts : [allContacts];
 
-    const orgContacts = arr.filter(c => c.org?.orgid === orgId);
-    const match = orgContacts.find(c => {
+    // Search all contacts for the PM name regardless of org
+    const nameMatch = arr.filter(c => {
       const fullName = `${c.givennames} ${c.surname}`.toLowerCase();
       return fullName.includes(pmName.toLowerCase());
     });
@@ -626,8 +626,8 @@ app.get("/test-contact", async (req, res) => {
     res.json({
       orgId,
       totalContacts: arr.length,
-      orgContacts: orgContacts.map(c => ({ userid: c.userid, name: `${c.givennames} ${c.surname}` })),
-      match: match ? { userid: match.userid, name: `${match.givennames} ${match.surname}` } : null,
+      nameMatches: nameMatch.map(c => ({ userid: c.userid, name: `${c.givennames} ${c.surname}`, org: c.org })),
+      allContacts: arr.map(c => ({ userid: c.userid, name: `${c.givennames} ${c.surname}`, orgid: c.org?.orgid, orgname: c.org?.orgname })),
     });
   } catch (err) {
     res.json({ error: err.message });
