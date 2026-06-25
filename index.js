@@ -651,16 +651,30 @@ app.get("/test-note", async (req, res) => {
     const rawEmail  = message.body?.content || "";
     const noteHtml  = emailHtmlForNote(rawEmail);
 
-    // 3. Post the note
-    const notesXml = `<tasknotes><tasknote><taskid>${taskId}</taskid><content><![CDATA[${noteHtml}]]></content></tasknote></tasknotes>`;
-    const notesZone = await arofloPost("zone=tasknotes&postxml=" + encodeURIComponent(notesXml));
+    // 3. Try posting note via zone=tasknotes
+    const results = {};
+    for (const zone of ["tasknotes", "notes"]) {
+      try {
+        const xml = zone === "tasknotes"
+          ? `<tasknotes><tasknote><taskid>${taskId}</taskid><content><![CDATA[${noteHtml}]]></content></tasknote></tasknotes>`
+          : `<notes><note><taskid>${taskId}</taskid><content><![CDATA[${noteHtml}]]></content></note></notes>`;
+        const r = await arofloPost(`zone=${zone}&postxml=` + encodeURIComponent(xml));
+        results[zone] = r ?? "returned undefined";
+      } catch (err) {
+        results[zone] = { error: err.message };
+      }
+    }
 
-    res.json({
-      taskId,
-      jobNumber,
-      emailSubject: message.subject,
-      notesResult: notesZone.postresults,
-    });
+    // Also try adding note via task update
+    try {
+      const updateXml = `<tasks><task><taskid>${taskId}</taskid><notes><note><content><![CDATA[${noteHtml}]]></content></note></notes></task></tasks>`;
+      const r = await arofloPost("zone=tasks&postxml=" + encodeURIComponent(updateXml));
+      results["task_update"] = r ?? "returned undefined";
+    } catch (err) {
+      results["task_update"] = { error: err.message };
+    }
+
+    res.json({ taskId, jobNumber, emailSubject: message.subject, results });
   } catch (err) {
     res.json({ error: err.message });
   }
