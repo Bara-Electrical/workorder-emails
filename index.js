@@ -692,7 +692,7 @@ async function processAiTestingEmails() {
           .map(([k, v]) => `<tr><td style="padding:3px 16px 3px 0;font-weight:bold;vertical-align:top">${k}</td><td style="padding:3px 0">${v ?? "<em>not found</em>"}</td></tr>`)
           .join("");
 
-        await graphFetch(`/users/${WORKORDERS_EMAIL}/sendMail`, {
+        const sendRes = await graphFetch(`/users/${WORKORDERS_EMAIL}/sendMail`, {
           method: "POST",
           body: JSON.stringify({
             message: {
@@ -710,6 +710,10 @@ async function processAiTestingEmails() {
             saveToSentItems: false,
           }),
         });
+        if (!sendRes.ok) {
+          const err = await sendRes.json().catch(() => ({}));
+          throw new Error(`Send failed ${sendRes.status}: ${JSON.stringify(err?.error)}`);
+        }
 
         // Mark as processed so it won't be picked up again
         await graphFetch(`/users/${BRANDON_EMAIL}/messages/${message.id}`, {
