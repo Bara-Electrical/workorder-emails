@@ -275,8 +275,9 @@ async function createArofloJob(result, rawEmail) {
     result["order-number"]     ? `Work Order: ${result["order-number"]}`          : null,
     result["tenant-name"]      ? `Tenant: ${result["tenant-name"]}`                : null,
     result["tenant-contact"]   ? `Tenant Contact: ${result["tenant-contact"]}`     : null,
-    result["access-details"]   ? `Access Details: ${result["access-details"]}`     : null,
-    result["property-manager"] ? `Property Manager: ${result["property-manager"]}` : null,
+    result["access-details"]      ? `Access Details: ${result["access-details"]}`           : null,
+    result["expenditure-limit"]   ? `Expenditure Limit: ${result["expenditure-limit"]}`     : null,
+    result["property-manager"]    ? `Property Manager: ${result["property-manager"]}`       : null,
   ].filter(Boolean).join("\n");
 
   const dueDate = (() => {
@@ -492,17 +493,22 @@ async function processMessage(message, mailbox = process.env.GRAPH_RECIPIENT) {
       }
 
       console.log("FINAL URL:", response.url);
-      const html = await response.text();
-      console.log("RAW HTML LENGTH:", html.length);
-      console.log("HTML PREVIEW:", html.slice(0, 300));
-      textForAI = cleanHtml(html).slice(0, 50000);
-      console.log("CLEAN TEXT LENGTH:", textForAI.length);
+      const html     = await response.text();
+      const linkText = cleanHtml(html).slice(0, 50000);
+      console.log("LINK CLEAN TEXT LENGTH:", linkText.length);
+      if (linkText.length > 200) {
+        textForAI = linkText;
+        console.log("USING LINK CONTENT FOR AI");
+      } else {
+        console.log("LINK CONTENT TOO SHORT — FALLING BACK TO EMAIL BODY");
+      }
     } catch (err) {
-      console.error("LINK FETCH ERROR:", err);
+      console.error("LINK FETCH ERROR:", err.message);
+      console.log("FALLING BACK TO EMAIL BODY");
     }
   }
 
-  // Work order PDF attachment
+  // Work order PDF attachment — takes priority over link and email body
   const workorderAttachment = attachments.find(a =>
     (a.name || "").toLowerCase().endsWith(".pdf")
   );
@@ -533,6 +539,7 @@ async function processMessage(message, mailbox = process.env.GRAPH_RECIPIENT) {
 CRITICAL RULES:
 - tenant-name and tenant-contact come from the Tenant Details section OR any section labelled "Contact for job access" or similar. If neither exists, look for alternative access info (e.g. lockbox with location) and put that in tenant-name instead, leaving tenant-contact null.
 - access-details captures any access info mentioned anywhere in the text — key numbers, lockbox codes, gate codes, swipe cards, etc. Format it descriptively, e.g. "Key: 1234", "Lockbox code: 56", "Gate code: 789". If multiple, separate with a comma. Do NOT put this info in tenant-name.
+- expenditure-limit is any spending/cost limit mentioned (e.g. "Expenditure limit: $300", "Auth limit $500"). Include the dollar amount and any conditions if stated.
 - tenant-contact must contain phone numbers ONLY — no names, no labels, just the numbers. If there are multiple, separate with commas. Prefer mobile over home numbers. Australian numbers always start with 0 (e.g. 0412 345 678) — always include the leading 0.
 - property-manager comes from the Property Manager section, OR from an Agency Details section where the manager is listed (e.g. "Manager: Jane Smith"). Use the person's name only, not the agency name.
 - account-to must include ALL owners exactly as written, always in the format: owners c/o real estate.
@@ -562,7 +569,8 @@ Return ONLY valid JSON with these exact keys:
   "property-manager": "",
   "account-to": "",
   "order-number": "",
-  "access-details": ""
+  "access-details": "",
+  "expenditure-limit": ""
 }`,
     input: `Extract the following work order and return JSON:\n\n${textForAI}`,
   });
