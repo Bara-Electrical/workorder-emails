@@ -503,10 +503,9 @@ async function processMessage(message, mailbox = process.env.GRAPH_RECIPIENT) {
   }
 
   // Work order PDF attachment
-  const workorderAttachment = attachments.find(a => {
-    const name = (a.name || "").toLowerCase();
-    return name.includes("workorder") && name.endsWith(".pdf");
-  });
+  const workorderAttachment = attachments.find(a =>
+    (a.name || "").toLowerCase().endsWith(".pdf")
+  );
 
   if (workorderAttachment) {
     console.log("FOUND WORK ORDER PDF:", workorderAttachment.name);
