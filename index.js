@@ -656,7 +656,7 @@ async function processAiTestingEmails() {
 
     const res  = await graphFetch(
       `/users/${BRANDON_EMAIL}/mailFolders/${folderId}/messages` +
-      `?$filter=${encodeURIComponent("isReplied eq false")}` +
+      `?$filter=${encodeURIComponent("not categories/any(c:c eq 'AI Replied')")}` +
       `&$select=id,subject,body,categories` +
       `&$expand=attachments($select=id,name,contentType,size)` +
       `&$top=10`
@@ -686,6 +686,12 @@ async function processAiTestingEmails() {
               },
             },
           }),
+        });
+
+        // Mark as processed so it won't be picked up again
+        await graphFetch(`/users/${BRANDON_EMAIL}/messages/${message.id}`, {
+          method: "PATCH",
+          body: JSON.stringify({ categories: [...(message.categories || []), "AI Replied"] }),
         });
         console.log("AI testing: replied to", message.subject);
       } catch (err) {
