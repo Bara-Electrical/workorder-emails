@@ -546,8 +546,8 @@ async function processMessage(message, mailbox = process.env.GRAPH_RECIPIENT) {
 
 CRITICAL RULES:
 - tenant-name and tenant-contact come from the Tenant Details section OR any section labelled "Contact for job access" or similar. If neither exists, look for alternative access info (e.g. lockbox with location) and put that in tenant-name instead, leaving tenant-contact null.
-- access-details captures any access info mentioned anywhere in the text — key numbers, lockbox codes, gate codes, swipe cards, etc. Format it descriptively, e.g. "Key: 1234", "Lockbox code: 56", "Gate code: 789". If multiple, separate with a comma. Do NOT put this info in tenant-name.
-- expenditure-limit is any spending/cost limit mentioned (e.g. "Expenditure limit: $300", "Auth limit $500"). Include the dollar amount and any conditions if stated.
+- access-details is ONLY physical access codes/numbers — key numbers, lockbox codes, gate codes, swipe card numbers. e.g. "Key: 1234", "Lockbox code: 56", "Gate code: 789". Do NOT include contact instructions, tenant names, safety instructions, or anything that is not a physical code or number.
+- expenditure-limit is the dollar amount only — e.g. "$330". Strip any conditions, notes, or extra text after the amount.
 - tenant-contact must contain phone numbers ONLY — no names, no labels, just the numbers. If there are multiple, separate with commas. Prefer mobile over home numbers. Australian numbers always start with 0 (e.g. 0412 345 678) — always include the leading 0.
 - property-manager comes from the Property Manager section, OR from an Agency Details section where the manager is listed (e.g. "Manager: Jane Smith"). Use the person's name only, not the agency name.
 - account-to must include ALL owners exactly as written, always in the format: owners c/o real estate.
