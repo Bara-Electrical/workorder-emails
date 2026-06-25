@@ -291,6 +291,7 @@ async function createArofloJob(result, rawEmail) {
 `<tasks>
   <task>
     <org><orgid>JiYqTydSXDcmCg==</orgid></org>
+    <contactname>Bara AI</contactname>
     ${taskTypeId ? `<tasktype><tasktypeid>${taskTypeId}</tasktypeid></tasktype>`                  : ""}
     <client><clientid>${client.clientid}</clientid></client>
     ${pmContact ? `<contact><userid>${pmContact.userid}</userid></contact>` : ""}
