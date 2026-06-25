@@ -21,6 +21,7 @@ const DONE_CATEGORY             = "Job created";
 const CLIENT_NOT_FOUND_CATEGORY = "Client not found";
 const RICA_CATEGORY             = "Rica";
 const AI_TESTING_CATEGORY       = "AI testing";
+const WORKORDERS_EMAIL          = "workorders@baraelectrical.com.au";
 const BRANDON_EMAIL             = "brandon.roberts@baraelectrical.com.au";
 const POLL_INTERVAL_MS          = 60 * 1000;
 
@@ -582,7 +583,7 @@ async function forwardRicaEmails() {
   try {
     const filter = encodeURIComponent(`categories/any(c:c eq '${RICA_CATEGORY}')`);
     const res    = await graphFetch(
-      `/users/${process.env.GRAPH_RECIPIENT}/mailFolders/inbox/messages` +
+      `/users/${WORKORDERS_EMAIL}/mailFolders/inbox/messages` +
       `?$filter=${filter}&$select=id,subject&$top=50`
     );
     const data   = await res.json();
@@ -594,7 +595,7 @@ async function forwardRicaEmails() {
     for (const email of toForward) {
       // Forward from workorders → Brandon (no changes to workorders inbox)
       const fwdRes = await graphFetch(
-        `/users/${process.env.GRAPH_RECIPIENT}/messages/${email.id}/forward`,
+        `/users/${WORKORDERS_EMAIL}/messages/${email.id}/forward`,
         {
           method: "POST",
           body: JSON.stringify({
@@ -798,16 +799,16 @@ app.get("/test-rica", async (req, res) => {
     // 1. Check what Rica emails exist in workorders inbox
     const filter = encodeURIComponent(`categories/any(c:c eq '${RICA_CATEGORY}')`);
     const listRes  = await graphFetch(
-      `/users/${process.env.GRAPH_RECIPIENT}/mailFolders/inbox/messages` +
+      `/users/${WORKORDERS_EMAIL}/mailFolders/inbox/messages` +
       `?$filter=${filter}&$select=id,subject,categories&$top=50`
     );
     const listData = await listRes.json();
     if (!listRes.ok) return res.json({ step: "list Rica", error: listData?.error });
     const emails = listData.value || [];
 
-    // Also grab recent emails to show their actual category names for debugging
+    // Also grab recent emails from workorders to show actual category names for debugging
     const recentRes  = await graphFetch(
-      `/users/${process.env.GRAPH_RECIPIENT}/mailFolders/inbox/messages` +
+      `/users/${WORKORDERS_EMAIL}/mailFolders/inbox/messages` +
       `?$select=subject,categories&$orderby=receivedDateTime desc&$top=20`
     );
     const recentData = await recentRes.json();
@@ -818,7 +819,7 @@ app.get("/test-rica", async (req, res) => {
     // 2. Forward the first one and report what happens
     const email = emails[0];
     const fwdRes = await graphFetch(
-      `/users/${process.env.GRAPH_RECIPIENT}/messages/${email.id}/forward`,
+      `/users/${WORKORDERS_EMAIL}/messages/${email.id}/forward`,
       {
         method: "POST",
         body: JSON.stringify({
