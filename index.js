@@ -623,6 +623,50 @@ async function pollEmails() {
 }
 
 // ================================================================
+// TEMP: Test note posting — GET /test-note?job=103245
+// ================================================================
+app.get("/test-note", async (req, res) => {
+  const jobNumber = req.query.job;
+  if (!jobNumber) return res.status(400).json({ error: "Pass ?job=..." });
+
+  try {
+    // 1. Find the taskId for the job number
+    const taskZone = await arofloGet(
+      "zone=tasks&where=" + encodeURIComponent(`and|jobnumber|=|${jobNumber}`) + "&page=1"
+    );
+    const taskRaw  = taskZone.tasks;
+    const taskArr  = taskRaw ? (Array.isArray(taskRaw) ? taskRaw : [taskRaw]) : [];
+    if (taskArr.length === 0) return res.json({ error: `Job ${jobNumber} not found in Aroflo` });
+    const taskId   = taskArr[0].taskid;
+
+    // 2. Fetch the latest email from inbox (read-only, no locking)
+    const emailRes  = await graphFetch(
+      `/users/${process.env.GRAPH_RECIPIENT}/mailFolders/inbox/messages` +
+      `?$select=id,subject,body&$orderby=receivedDateTime desc&$top=1`
+    );
+    const emailData = await emailRes.json();
+    const message   = emailData.value?.[0];
+    if (!message) return res.json({ error: "No emails found in inbox" });
+
+    const rawEmail  = message.body?.content || "";
+    const noteHtml  = emailHtmlForNote(rawEmail);
+
+    // 3. Post the note
+    const notesXml = `<tasknotes><tasknote><taskid>${taskId}</taskid><content><![CDATA[${noteHtml}]]></content></tasknote></tasknotes>`;
+    const notesZone = await arofloPost("zone=tasknotes&postxml=" + encodeURIComponent(notesXml));
+
+    res.json({
+      taskId,
+      jobNumber,
+      emailSubject: message.subject,
+      notesResult: notesZone.postresults,
+    });
+  } catch (err) {
+    res.json({ error: err.message });
+  }
+});
+
+// ================================================================
 // START
 // ================================================================
 app.listen(process.env.PORT || 3000, () => {
