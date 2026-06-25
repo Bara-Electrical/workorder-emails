@@ -671,21 +671,28 @@ async function processAiTestingEmails() {
   if (aiTestingRunning) return;
   aiTestingRunning = true;
   try {
+    console.log("AI testing: checking...");
     const folderId = await getAiTestingFolderId();
-    if (!folderId) return;
+    if (!folderId) {
+      console.log("AI testing: folder not found, skipping");
+      return;
+    }
 
     const res  = await graphFetch(
       `/users/${BRANDON_EMAIL}/mailFolders/${folderId}/messages` +
-      `?$filter=${encodeURIComponent("not categories/any(c:c eq 'AI Replied')")}` +
-      `&$select=id,subject,body,categories,internetMessageId` +
+      `?$select=id,subject,body,categories,internetMessageId` +
       `&$expand=attachments($select=id,name,contentType,size)` +
-      `&$top=10`
+      `&$top=20`
     );
     const data = await res.json();
     if (!res.ok) throw new Error(`Graph error ${res.status}: ${JSON.stringify(data?.error)}`);
 
-    const messages = (data.value || []).filter(m => !/^re:/i.test(m.subject));
-    if (messages.length) console.log(`AI testing: ${messages.length} email(s) to process`);
+    console.log(`AI testing: folder returned ${data.value?.length ?? 0} raw emails`);
+    for (const m of data.value || []) console.log(`  >> cats=${JSON.stringify(m.categories)} subj=${m.subject?.slice(0,60)}`);
+    const messages = (data.value || []).filter(m =>
+      !m.categories?.includes("AI Replied") && !/^re:/i.test(m.subject)
+    );
+    console.log(`AI testing: ${messages.length} email(s) to process`);
 
     for (const message of messages) {
       try {
