@@ -17,7 +17,6 @@ for (const key of REQUIRED_ENV) {
 
 const TRIGGER_CATEGORY          = "Bara AI";
 const PROCESSING_CATEGORY       = "Processing";
-const DONE_CATEGORY             = "Job created";
 const CLIENT_NOT_FOUND_CATEGORY = "Client not found";
 const RICA_CATEGORY             = "Rica";
 const WORKORDERS_EMAIL          = "workorders@baraelectrical.com.au";
@@ -328,10 +327,22 @@ async function createArofloJob(result, rawEmail) {
     throw new Error(`Aroflo task creation failed: ${msgs}`);
   }
 
-  const inserted  = pr?.inserts?.tasks;
-  const task      = Array.isArray(inserted) ? inserted[0] : inserted;
-  const taskId    = task?.taskid;
-  const jobNumber = task?.jobnumber || taskId || "(see Aroflo)";
+  const inserted = pr?.inserts?.tasks;
+  const task     = Array.isArray(inserted) ? inserted[0] : inserted;
+  const taskId   = task?.taskid;
+
+  // jobnumber isn't in the insert response — fetch it
+  let jobNumber = "(see Aroflo)";
+  if (taskId) {
+    try {
+      const fetched = await arofloGet("zone=tasks&where=" + encodeURIComponent(`and|taskid|=|${taskId}`) + "&page=1");
+      const arr = Array.isArray(fetched.tasks) ? fetched.tasks : [fetched.tasks];
+      jobNumber = arr[0]?.jobnumber || taskId;
+    } catch (err) {
+      console.warn("Could not fetch job number:", err.message);
+      jobNumber = taskId;
+    }
+  }
   console.log("AROFLO JOB CREATED — job number:", jobNumber);
 
   // Post notes separately — inline notes on task creation are not supported
@@ -748,7 +759,7 @@ async function pollEmails() {
   pollRunning = true;
   try {
     const filter = encodeURIComponent(
-      `categories/any(c:c eq '${TRIGGER_CATEGORY}') and not categories/any(c:c eq '${DONE_CATEGORY}') and not categories/any(c:c eq '${CLIENT_NOT_FOUND_CATEGORY}') and not categories/any(c:c eq '${PROCESSING_CATEGORY}')`
+      `categories/any(c:c eq '${TRIGGER_CATEGORY}') and not categories/any(c:startswith(c,'Job created')) and not categories/any(c:c eq '${CLIENT_NOT_FOUND_CATEGORY}') and not categories/any(c:c eq '${PROCESSING_CATEGORY}')`
     );
 
     const res  = await graphFetch(
@@ -783,12 +794,11 @@ async function pollEmails() {
 
         const { jobNumber } = await createArofloJob(result, rawEmail);
 
-        // Success — remove "Processing", add "Job created" (for filter) + dynamic tag, keep everything else
+        // Success — remove "Processing", add dynamic job tag, keep everything else
         const jobTag = `Job created - ${jobNumber}`;
         await ensureCategoryColor(process.env.GRAPH_RECIPIENT, jobTag, "preset5");
         const doneCategories = [
           ...lockedCategories.filter(c => c !== PROCESSING_CATEGORY),
-          DONE_CATEGORY,
           jobTag,
         ];
         await graphFetch(`/users/${process.env.GRAPH_RECIPIENT}/messages/${message.id}`, {
