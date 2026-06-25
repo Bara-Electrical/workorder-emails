@@ -611,23 +611,25 @@ app.get("/test-contact", async (req, res) => {
     const client = await findClient(clientName);
     if (!client) return res.json({ error: `Client not found: ${clientName}` });
 
-    // Log what the initial findClient returned
-    const initialContacts = client.contacts || null;
-
-    // Fetch full client by ID
-    const clientZone = await arofloGet(
-      "zone=clients&where=" + encodeURIComponent(`and|clientid|=|${client.clientid}`) + "&page=1"
+    // PMs are client records linked to the org — search by linkedtoid
+    const orgId = client.link?.orgid || client.clientid;
+    const linkedZone = await arofloGet(
+      "zone=clients&where=" + encodeURIComponent(`and|linkedtoid|=|${orgId}`) + "&page=1"
     );
-    const clientRecord = clientZone.clients;
-    const fullClient   = Array.isArray(clientRecord) ? clientRecord[0] : clientRecord;
+    const linkedRaw = linkedZone.clients;
+    const linkedArr = linkedRaw ? (Array.isArray(linkedRaw) ? linkedRaw : [linkedRaw]) : [];
+
+    const match = linkedArr.find(c => {
+      const name = (c.clientname || `${c.firstname || ""} ${c.surname || ""}`).toLowerCase();
+      return name.includes(pmName.toLowerCase());
+    });
 
     res.json({
       clientId: client.clientid,
-      initialClientKeys: Object.keys(client),
-      initialContacts,
-      fullClientKeys: fullClient ? Object.keys(fullClient) : null,
-      fullClientContacts: fullClient?.contacts ?? "key missing",
-      rawFullClient: JSON.stringify(fullClient).slice(0, 500),
+      orgId,
+      totalLinkedClients: linkedArr.length,
+      linkedClients: linkedArr.map(c => ({ clientid: c.clientid, clientname: c.clientname, firstname: c.firstname, surname: c.surname })),
+      match: match ? { clientid: match.clientid, clientname: match.clientname } : null,
     });
   } catch (err) {
     res.json({ error: err.message });
