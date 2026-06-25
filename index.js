@@ -543,8 +543,9 @@ async function processMessage(message, mailbox = process.env.GRAPH_RECIPIENT) {
     const attachData = await attachRes.json();
     const data       = Uint8Array.from(atob(attachData.contentBytes), c => c.charCodeAt(0));
     const pdfText    = await extractPDF(data);
-    textForAI = pdfText.replace(/\s+/g, " ").trim();
-    console.log("USING PDF CONTENT FOR AI");
+    const emailBody  = textForAI.replace(/\s+/g, " ").trim();
+    textForAI = `--- PDF CONTENT (prefer this) ---\n${pdfText.replace(/\s+/g, " ").trim()}\n\n--- EMAIL BODY (use for anything not found in PDF) ---\n${emailBody}`;
+    console.log("USING PDF + EMAIL BODY FOR AI");
   } else if (!workOrderLink) {
     console.log("NO PDF OR LINK - USING EMAIL BODY");
     textForAI = textForAI.replace(/\s+/g, " ").trim();
@@ -570,6 +571,7 @@ CRITICAL RULES:
 - task-description must be a concise electrician job summary.
 - Do NOT guess missing fields — if missing return null.
 - The text may be a structured form (with clear sections) OR plain prose in an email. Extract the same fields either way — don't return null just because sections aren't labelled.
+- If the input contains both a PDF CONTENT section and an EMAIL BODY section, prefer the PDF for all fields but check the email body for anything not found in the PDF.
 - For task-type, look for keywords anywhere in the text — not just a page title.
 
 TASK TYPES:
