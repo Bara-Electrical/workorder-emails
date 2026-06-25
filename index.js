@@ -17,6 +17,7 @@ for (const key of REQUIRED_ENV) {
 
 const TRIGGER_CATEGORY          = "Bara AI";
 const PROCESSING_CATEGORY       = "Processing";
+const DONE_CATEGORY             = "Bara AI Done";
 const CLIENT_NOT_FOUND_CATEGORY = "Client not found";
 const RICA_CATEGORY             = "Rica";
 const WORKORDERS_EMAIL          = "workorders@baraelectrical.com.au";
@@ -24,17 +25,6 @@ const BRANDON_EMAIL             = "brandon.roberts@baraelectrical.com.au";
 const POLL_INTERVAL_MS          = 5 * 60 * 1000;
 
 let pollRunning = false;
-
-async function ensureCategoryColor(email, displayName, color) {
-  const res = await graphFetch(`/users/${email}/outlook/masterCategories`, {
-    method: "POST",
-    body: JSON.stringify({ displayName, color }),
-  });
-  if (!res.ok && res.status !== 409) {
-    const err = await res.json().catch(() => ({}));
-    console.warn(`Category colour set failed for "${displayName}":`, err?.error?.message);
-  }
-}
 
 const app = express();
 app.use(express.json({ limit: "25mb" }));
@@ -759,7 +749,7 @@ async function pollEmails() {
   pollRunning = true;
   try {
     const filter = encodeURIComponent(
-      `categories/any(c:c eq '${TRIGGER_CATEGORY}') and not categories/any(c:startswith(c,'Job created')) and not categories/any(c:c eq '${CLIENT_NOT_FOUND_CATEGORY}') and not categories/any(c:c eq '${PROCESSING_CATEGORY}')`
+      `categories/any(c:c eq '${TRIGGER_CATEGORY}') and not categories/any(c:c eq '${DONE_CATEGORY}') and not categories/any(c:c eq '${CLIENT_NOT_FOUND_CATEGORY}') and not categories/any(c:c eq '${PROCESSING_CATEGORY}')`
     );
 
     const res  = await graphFetch(
@@ -794,11 +784,11 @@ async function pollEmails() {
 
         const { jobNumber } = await createArofloJob(result, rawEmail);
 
-        // Success — remove "Processing", add dynamic job tag, keep everything else
+        // Success — remove "Processing", add filter tag + visible job tag, keep everything else
         const jobTag = `Job created - ${jobNumber}`;
-        await ensureCategoryColor(process.env.GRAPH_RECIPIENT, jobTag, "preset5");
         const doneCategories = [
           ...lockedCategories.filter(c => c !== PROCESSING_CATEGORY),
+          DONE_CATEGORY,
           jobTag,
         ];
         await graphFetch(`/users/${process.env.GRAPH_RECIPIENT}/messages/${message.id}`, {
@@ -960,7 +950,6 @@ app.listen(process.env.PORT || 3000, () => {
   pollEmails();
   forwardRicaEmails();
   processAiTestingEmails();
-  ensureCategoryColor(process.env.GRAPH_RECIPIENT, PROCESSING_CATEGORY, "preset5");
   setInterval(pollEmails, POLL_INTERVAL_MS);
   setInterval(forwardRicaEmails, POLL_INTERVAL_MS);
   setInterval(processAiTestingEmails, POLL_INTERVAL_MS);
