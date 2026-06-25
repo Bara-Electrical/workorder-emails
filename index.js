@@ -275,6 +275,7 @@ async function createArofloJob(result, rawEmail) {
     result["order-number"]     ? `Work Order: ${result["order-number"]}`          : null,
     result["tenant-name"]      ? `Tenant: ${result["tenant-name"]}`                : null,
     result["tenant-contact"]   ? `Tenant Contact: ${result["tenant-contact"]}`     : null,
+    result["key-number"]       ? `Key Number: ${result["key-number"]}`             : null,
     result["property-manager"] ? `Property Manager: ${result["property-manager"]}` : null,
   ].filter(Boolean).join("\n");
 
@@ -531,7 +532,8 @@ async function processMessage(message, mailbox = process.env.GRAPH_RECIPIENT) {
     instructions: `You are a work order extraction system for an electrical company in Australia.
 
 CRITICAL RULES:
-- tenant-name must ONLY come from Tenant Details section. If no tenant details exist, look for alternative access info (e.g. lockbox with location) and put that in tenant-name instead, leaving tenant-contact null.
+- tenant-name and tenant-contact come from the Tenant Details section OR any section labelled "Contact for job access" or similar. If neither exists, look for alternative access info (e.g. lockbox with location) and put that in tenant-name instead, leaving tenant-contact null.
+- key-number is any key, lockbox, or gate key number/code mentioned anywhere in the text (e.g. "Key 1234", "Lockbox 56", "Gate code 789"). Do NOT put key numbers in tenant-name.
 - tenant-contact must contain phone numbers ONLY — no names, no labels, just the numbers. If there are multiple, separate with commas. Prefer mobile over home numbers. Australian numbers always start with 0 (e.g. 0412 345 678) — always include the leading 0.
 - property-manager must ONLY come from Property Manager section.
 - account-to must include ALL owners exactly as written, always in the format: owners c/o real estate.
@@ -560,7 +562,8 @@ Return ONLY valid JSON with these exact keys:
   "real-estate": "",
   "property-manager": "",
   "account-to": "",
-  "order-number": ""
+  "order-number": "",
+  "key-number": ""
 }`,
     input: `Extract the following work order and return JSON:\n\n${textForAI}`,
   });
