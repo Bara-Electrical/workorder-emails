@@ -19,9 +19,13 @@ const TRIGGER_CATEGORY          = "Bara AI";
 const PROCESSING_CATEGORY       = "Processing";
 const DONE_CATEGORY             = "Job created";
 const CLIENT_NOT_FOUND_CATEGORY = "Client not found";
+const RICA_CATEGORY             = "Rica";
+const AI_TESTING_CATEGORY       = "AI testing";
+const BRANDON_EMAIL             = "brandon.roberts@baraelectrical.com.au";
 const POLL_INTERVAL_MS          = 60 * 1000;
 
-let pollRunning = false;
+let pollRunning  = false;
+const ricaForwarded = new Set(); // in-memory dedup — resets on restart
 
 const app = express();
 app.use(express.json({ limit: "25mb" }));
@@ -572,6 +576,73 @@ ${textForAI}
 }
 
 // ================================================================
+// RICA FORWARD LOOP
+// ================================================================
+async function forwardRicaEmails() {
+  try {
+    const filter = encodeURIComponent(`categories/any(c:c eq '${RICA_CATEGORY}')`);
+    const res    = await graphFetch(
+      `/users/${process.env.GRAPH_RECIPIENT}/mailFolders/inbox/messages` +
+      `?$filter=${filter}&$select=id,subject&$top=50`
+    );
+    const data   = await res.json();
+    if (!res.ok) throw new Error(`Graph API error ${res.status}: ${JSON.stringify(data?.error)}`);
+
+    const toForward = (data.value || []).filter(e => !ricaForwarded.has(e.id));
+    if (toForward.length) console.log(`Rica: ${toForward.length} email(s) to forward`);
+
+    for (const email of toForward) {
+      // Forward from workorders → Brandon (no changes to workorders inbox)
+      const fwdRes = await graphFetch(
+        `/users/${process.env.GRAPH_RECIPIENT}/messages/${email.id}/forward`,
+        {
+          method: "POST",
+          body: JSON.stringify({
+            toRecipients: [{ emailAddress: { address: BRANDON_EMAIL } }],
+          }),
+        }
+      );
+
+      if (!fwdRes.ok) {
+        const fwdErr = await fwdRes.json().catch(() => ({}));
+        console.warn("Rica forward failed:", email.subject, fwdRes.status, JSON.stringify(fwdErr?.error));
+        continue;
+      }
+
+      ricaForwarded.add(email.id);
+      console.log("Rica forwarded:", email.subject);
+
+      // Wait for delivery, then find + tag the forwarded email in Brandon's inbox
+      await new Promise(r => setTimeout(r, 5000));
+
+      const since      = new Date(Date.now() - 60000).toISOString();
+      const safeSubj   = email.subject.replace(/'/g, "''");
+      const findFilter = encodeURIComponent(
+        `receivedDateTime ge ${since} and contains(subject, '${safeSubj}')`
+      );
+      const findRes  = await graphFetch(
+        `/users/${BRANDON_EMAIL}/mailFolders/inbox/messages` +
+        `?$filter=${findFilter}&$select=id,categories&$orderby=receivedDateTime desc&$top=1`
+      );
+      const findData = await findRes.json();
+      const fwd      = findData.value?.[0];
+
+      if (fwd) {
+        const cats = [...new Set([...(fwd.categories || []), AI_TESTING_CATEGORY])];
+        await graphFetch(`/users/${BRANDON_EMAIL}/messages/${fwd.id}`, {
+          method: "PATCH",
+          body: JSON.stringify({ categories: cats }),
+        });
+        console.log("Rica: tagged 'AI testing' in Brandon's inbox:", email.subject);
+      } else {
+        console.warn("Rica: could not find forwarded email in Brandon's inbox:", email.subject);
+      }
+    }
+  } catch (err) {
+    console.error("Rica forward error:", err.message);
+  }
+}
+
 // POLL LOOP
 // ================================================================
 async function pollEmails() {
@@ -718,5 +789,7 @@ app.get("/test-note", async (req, res) => {
 app.listen(process.env.PORT || 3000, () => {
   console.log("Server running");
   pollEmails();
+  forwardRicaEmails();
   setInterval(pollEmails, POLL_INTERVAL_MS);
+  setInterval(forwardRicaEmails, POLL_INTERVAL_MS);
 });
