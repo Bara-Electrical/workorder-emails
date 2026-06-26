@@ -218,7 +218,6 @@ async function createLocation(clientId, address, tenantName, tenantContact) {
   <clientid>${clientId}</clientid>
   <locations><location>
     <locationname><![CDATA[${address}]]></locationname>
-    <address><![CDATA[${street}]]></address>
     <suburb><![CDATA[${suburb}]]></suburb>
     <state><![CDATA[${state}]]></state>
     <postcode><![CDATA[${postcode}]]></postcode>
@@ -283,7 +282,12 @@ async function findOrUpdateLocation(clientId, address, tenantName, tenantContact
 
   if (!location) {
     console.log("No location matching:", streetPart, "— creating new location:", address);
-    return await createLocation(clientId, address, tenantName, tenantContact);
+    try {
+      return await createLocation(clientId, address, tenantName, tenantContact);
+    } catch (err) {
+      console.warn("Location creation failed:", err.message);
+      return null;
+    }
   }
 
   console.log("FOUND LOCATION:", location.locationid, location.locationname);
