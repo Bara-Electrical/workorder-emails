@@ -269,9 +269,10 @@ function buildDescription(result) {
     parts.push(`<p><span style="background:#ccffcc;font-weight:bold">Access Details: ${result["access-details"]}</span></p>`);
   }
 
-  if (result["package"] && PACKAGE_TEMPLATES[result["package"]]) {
+  const pkg = result["package"] && result["package"] !== "null" ? result["package"] : null;
+  if (pkg && PACKAGE_TEMPLATES[pkg]) {
     parts.push(spacer);
-    parts.push(PACKAGE_TEMPLATES[result["package"]]);
+    parts.push(PACKAGE_TEMPLATES[pkg]);
   }
 
   return parts.join("\n");
@@ -606,7 +607,7 @@ CRITICAL RULES:
 - The text may be a structured form (with clear sections) OR plain prose in an email. Extract the same fields either way — don't return null just because sections aren't labelled.
 - If the input contains both a PDF CONTENT section and an EMAIL BODY section, prefer the PDF for all fields but check the email body for anything not found in the PDF.
 - For task-type: if the text explicitly mentions EC1, AC1, AC2, or ACEC1 anywhere, use that — it takes priority over everything else, even if other work is also mentioned. If a compliance check or aircon service is recommended or suggested (e.g. "recommend compliance check", "suggest an EC1"), treat it as that task type — recommendations from a PM or owner should be acted on. EXCEPTION: if the work order includes a package (EC1/AC1/AC2/ACEC1) AND additional work beyond the package, set task-type to "Real Estate General Maintenance" (or "Real Estate Aircon Maintenance" if the extra work is aircon-related) — but still set the package field to the package code.
-- package: if the job involves one of the standard packages (EC1, AC1, AC2, ACEC1), set this to that code regardless of what task-type is. If no package is involved, set package to null.
+- package: set to "EC1", "AC1", "AC2", or "ACEC1" if the job involves one of these standard packages — even if task-type has been set to general/aircon maintenance due to extra work being present. Only return null if there is genuinely no package involved at all (e.g. a pure repair or general maintenance job with no compliance check or aircon service).
 
 TASK TYPES:
 EC1 = Electrical Compliance Check only
@@ -629,7 +630,7 @@ Return ONLY valid JSON with these exact keys:
   "order-number": "",
   "access-details": "",
   "expenditure-limit": "",
-  "package": null,
+  "package": "EC1 | AC1 | AC2 | ACEC1 | null",
   "confidence": 0.0,
   "notes": ""
 }`,
