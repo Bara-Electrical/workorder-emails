@@ -377,6 +377,7 @@ async function createArofloJob(result, rawEmail) {
   const noteContents = [];
   if (confirmedTaskId && notes) noteContents.push(notes);
   if (confirmedTaskId && rawEmail) noteContents.push(await emailHtmlForNote(rawEmail));
+  console.log("Notes debug — confirmedTaskId:", confirmedTaskId, "noteContents count:", noteContents.length, "notes length:", notes?.length ?? 0, "rawEmail length:", rawEmail?.length ?? 0);
 
   for (const content of noteContents) {
     let posted = false;
