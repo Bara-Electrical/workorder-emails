@@ -3,6 +3,7 @@ import express from "express";
 import OpenAI from "openai";
 import * as pdfjsLib from "pdfjs-dist/legacy/build/pdf.mjs";
 import { createHmac } from "crypto";
+import { PACKAGE_TEMPLATES } from "./templates.js";
 
 const REQUIRED_ENV = [
   "OPENAI_API_KEY",
@@ -302,7 +303,7 @@ async function createArofloJob(result, rawEmail) {
     ${location ? `<location><locationid>${location.locationid}</locationid></location>` : ""}
     ${result.address && !location  ? `<sitename>${result.address}</sitename>`          : ""}
     <taskname>${taskName}</taskname>
-    <description>${result["task-description"] || result["task-type"] || ""}</description>
+    <description>${[result["task-description"] || result["task-type"] || "", PACKAGE_TEMPLATES[result["package"]] || ""].filter(Boolean).join("\n")}</description>
     <duedate>${dueDate}</duedate>
     ${result["order-number"] ? `<custon>${result["order-number"]}</custon>` : ""}
     ${(result["account-to"] || result["real-estate"]) ? `<customfields><customfield><name><![CDATA[ Account To: ]]></name><type><![CDATA[ text ]]></type><value><![CDATA[${result["account-to"] || result["real-estate"]}]]></value></customfield></customfields>` : ""}
@@ -563,7 +564,7 @@ async function processMessage(message, mailbox = process.env.GRAPH_RECIPIENT) {
     instructions: `You are a work order extraction system for an electrical company in Australia.
 
 CRITICAL RULES:
-- tenant-name and tenant-contact come from the Tenant Details section OR any section labelled "Contact for job access" or similar. If neither exists, look for alternative access info (e.g. lockbox with location) and put that in tenant-name instead, leaving tenant-contact null. If multiple tenants are listed, include ALL of them separated by commas — do not drop any.
+- tenant-name and tenant-contact come from the Tenant Details section OR any section labelled "Contact for job access" or similar. If no tenant is listed and the property is explicitly stated as vacant, set tenant-name to "Vacant" and ensure access-details captures any lockbox or key collection info. If no tenant is listed and the property is NOT stated as vacant, leave tenant-name null. Never use access details, lockbox info, or key numbers as the tenant name. If multiple tenants are listed, include ALL of them separated by commas — do not drop any.
 - access-details is ONLY physical access codes/numbers — key numbers, lockbox codes, gate codes, swipe card numbers. e.g. "Key: 1234", "Lockbox code: 56", "Gate code: 789". Do NOT include contact instructions, tenant names, safety instructions, or anything that is not a physical code or number.
 - expenditure-limit is the dollar amount only — e.g. "$330". Strip any conditions, notes, or extra text after the amount.
 - confidence is a float 0.0–1.0 rating how confident you are in the overall extraction. 1.0 = all fields clearly present, 0.0 = guessing most fields.
@@ -571,13 +572,14 @@ CRITICAL RULES:
 - tenant-contact must contain phone numbers ONLY — no names, no labels, just the numbers. If there are multiple, separate with commas. Prefer mobile over home numbers. Australian numbers always start with 0 (e.g. 0412 345 678) — always include the leading 0.
 - property-manager comes from the Property Manager section, OR from an Agency Details section where the manager is listed (e.g. "Manager: Jane Smith"). Use the person's name only, not the agency name.
 - account-to must include ALL owners exactly as written, always in the format: owners c/o real estate.
-- real-estate: if you cannot find it directly, look for it in account-to after the c/o.
+- real-estate must always be a company or agency name — never a URL or domain. If the source contains something like "aussieproperty.com.au", convert it to a readable name (e.g. "Aussie Property") by stripping the domain extension and formatting as a proper name. If you cannot find it directly, look for it in account-to after the c/o.
 - order-number is the job/work order number.
 - task-description must be a concise electrician job summary. If anything is listed as conditional or requires approval (e.g. "deluxe clean if approved", "AC2 if required"), include that in the description too.
 - Do NOT guess missing fields — if missing return null.
 - The text may be a structured form (with clear sections) OR plain prose in an email. Extract the same fields either way — don't return null just because sections aren't labelled.
 - If the input contains both a PDF CONTENT section and an EMAIL BODY section, prefer the PDF for all fields but check the email body for anything not found in the PDF.
-- For task-type: if the text explicitly mentions EC1, AC1, AC2, or ACEC1 anywhere, use that — it takes priority over everything else, even if other work is also mentioned. If a compliance check or aircon service is recommended or suggested (e.g. "recommend compliance check", "suggest an EC1"), treat it as that task type — recommendations from a PM or owner should be acted on.
+- For task-type: if the text explicitly mentions EC1, AC1, AC2, or ACEC1 anywhere, use that — it takes priority over everything else, even if other work is also mentioned. If a compliance check or aircon service is recommended or suggested (e.g. "recommend compliance check", "suggest an EC1"), treat it as that task type — recommendations from a PM or owner should be acted on. EXCEPTION: if the work order includes a package (EC1/AC1/AC2/ACEC1) AND additional work beyond the package, set task-type to "Real Estate General Maintenance" (or "Real Estate Aircon Maintenance" if the extra work is aircon-related) — but still set the package field to the package code.
+- package: if the job involves one of the standard packages (EC1, AC1, AC2, ACEC1), set this to that code regardless of what task-type is. If no package is involved, set package to null.
 
 TASK TYPES:
 EC1 = Electrical Compliance Check only
@@ -600,6 +602,7 @@ Return ONLY valid JSON with these exact keys:
   "order-number": "",
   "access-details": "",
   "expenditure-limit": "",
+  "package": null,
   "confidence": 0.0,
   "notes": ""
 }`,
@@ -625,6 +628,15 @@ Return ONLY valid JSON with these exact keys:
     for (const [abbr, full] of Object.entries(streetAbbr)) {
       parsed.address = parsed.address.replace(new RegExp(abbr, "gi"), full);
     }
+  }
+
+  // If AI returned a URL/domain for real-estate, strip the TLD and convert to a readable name
+  if (parsed["real-estate"] && /\.(com\.au|net\.au|org\.au|com|net|org|io|au)$/i.test(parsed["real-estate"])) {
+    parsed["real-estate"] = parsed["real-estate"]
+      .replace(/\.(com\.au|net\.au|org\.au|com|net|org|io|au)$/i, "")
+      .replace(/[-_.]/g, " ")
+      .replace(/\b\w/g, c => c.toUpperCase())
+      .trim();
   }
 
   // Australian mobile numbers are 10 digits starting with 0 — if AI drops the leading 0, restore it
