@@ -20,10 +20,20 @@ for (const key of REQUIRED_ENV) {
 const TRIGGER_CATEGORY          = "Bara AI";
 const PROCESSING_CATEGORY       = "Processing";
 const CLIENT_NOT_FOUND_CATEGORY = "Client not found";
+const READING_EMAIL_CATEGORY    = "Reading Email";
+const SENDING_TO_AI_CATEGORY    = "Sending to AI";
+const CREATING_JOB_CATEGORY     = "Creating Job";
 const RICA_CATEGORY             = "Rica";
 const WORKORDERS_EMAIL          = "workorders@baraelectrical.com.au";
 const BRANDON_EMAIL             = "brandon.roberts@baraelectrical.com.au";
 const POLL_INTERVAL_MS          = 5 * 60 * 1000;
+
+// All transient status categories — stripped when transitioning to next stage
+const STATUS_CATEGORIES = [
+  PROCESSING_CATEGORY, READING_EMAIL_CATEGORY,
+  SENDING_TO_AI_CATEGORY, CREATING_JOB_CATEGORY,
+  CLIENT_NOT_FOUND_CATEGORY,
+];
 
 let pollRunning = false;
 
@@ -373,19 +383,15 @@ async function createArofloJob(result, rawEmail) {
   }
   console.log("AROFLO JOB CREATED — job number:", jobNumber, "taskId:", confirmedTaskId);
 
-  // Try posting each note via zone=tasknotes then zone=notes as fallback
-  const noteContents = [];
-  if (confirmedTaskId && notes) noteContents.push(notes);
-  if (confirmedTaskId && rawEmail) noteContents.push(await emailHtmlForNote(rawEmail));
-  console.log("Notes debug — confirmedTaskId:", confirmedTaskId, "noteContents count:", noteContents.length, "notes length:", notes?.length ?? 0, "rawEmail length:", rawEmail?.length ?? 0);
-
-  for (const content of noteContents) {
-    const xml = `<tasks><task><taskid>${confirmedTaskId}</taskid><notes><note><content><![CDATA[${content}]]></content></note></notes></task></tasks>`;
+  // Post the original email as a note on the task
+  if (confirmedTaskId && rawEmail) {
     try {
-      const r = await arofloPost("zone=tasks&postxml=" + encodeURIComponent(xml));
-      console.log("Note posted via task update:", JSON.stringify(r?.postresults ?? null));
+      const noteHtml = await emailHtmlForNote(rawEmail);
+      const xml = `<tasks><task><taskid>${confirmedTaskId}</taskid><notes><note><content><![CDATA[${noteHtml}]]></content></note></notes></task></tasks>`;
+      await arofloPost("zone=tasks&postxml=" + encodeURIComponent(xml));
+      console.log("Email note posted");
     } catch (err) {
-      console.warn("Note post failed:", err.message);
+      console.warn("Email note post failed:", err.message);
     }
   }
 
@@ -464,12 +470,18 @@ async function decodeWrappedLinks(html) {
 
 // Strip scripts/styles/tracking pixels but keep HTML structure for display in Aroflo notes
 async function emailHtmlForNote(html) {
-  const cleaned = html
+  let cleaned = html
     .replace(/<script[\s\S]*?<\/script>/gi, "")
     .replace(/<style[\s\S]*?<\/style>/gi, "")
     .replace(/<img[^>]*>/gi, "")
     .trim();
-  return await decodeWrappedLinks(cleaned);
+
+  // Remove Inky security banner — identified by 'inky' in element class/id attributes
+  cleaned = cleaned.replace(/<(div|table)\b[^>]*\b(?:class|id)="[^"]*inky[^"]*"[^>]*>[\s\S]*?<\/\1>/gi, "");
+
+  cleaned = await decodeWrappedLinks(cleaned);
+
+  return `<p><strong>Work Order Email</strong></p>${cleaned}`;
 }
 
 // Known work order portal domains
@@ -514,7 +526,7 @@ function findWorkOrderLink(rawHtml) {
 // ================================================================
 // EMAIL PROCESSING
 // ================================================================
-async function processMessage(message, mailbox = process.env.GRAPH_RECIPIENT) {
+async function processMessage(message, mailbox = process.env.GRAPH_RECIPIENT, onStatus = null) {
   console.log("WORK ORDER EMAIL RECEIVED:", message.subject);
 
   const attachments = message.attachments || [];
@@ -590,7 +602,7 @@ async function processMessage(message, mailbox = process.env.GRAPH_RECIPIENT) {
   }
 
   console.log("TEXT LENGTH:", textForAI.length);
-  console.log("ABOUT TO CALL AI");
+  if (onStatus) await onStatus(SENDING_TO_AI_CATEGORY);
 
   const responseAI = await openai.responses.create({
     model: "gpt-5-mini",
@@ -878,9 +890,26 @@ async function processAiTestingEmails() {
 
 // POLL LOOP
 // ================================================================
+async function setJobStatus(mailbox, messageId, currentCategories, newStatus) {
+  const updated = [
+    ...currentCategories.filter(c => !STATUS_CATEGORIES.includes(c)),
+    newStatus,
+  ];
+  await graphFetch(`/users/${mailbox}/messages/${messageId}`, {
+    method: "PATCH",
+    body: JSON.stringify({ categories: updated }),
+  });
+  return updated;
+}
+
 async function pollInbox(mailbox) {
   const filter = encodeURIComponent(
-    `categories/any(c:c eq '${TRIGGER_CATEGORY}') and not categories/any(c:c eq '${CLIENT_NOT_FOUND_CATEGORY}') and not categories/any(c:c eq '${PROCESSING_CATEGORY}')`
+    `categories/any(c:c eq '${TRIGGER_CATEGORY}')` +
+    ` and not categories/any(c:c eq '${CLIENT_NOT_FOUND_CATEGORY}')` +
+    ` and not categories/any(c:c eq '${PROCESSING_CATEGORY}')` +
+    ` and not categories/any(c:c eq '${READING_EMAIL_CATEGORY}')` +
+    ` and not categories/any(c:c eq '${SENDING_TO_AI_CATEGORY}')` +
+    ` and not categories/any(c:c eq '${CREATING_JOB_CATEGORY}')`
   );
 
   const res  = await graphFetch(
@@ -903,46 +932,33 @@ async function pollInbox(mailbox) {
   for (const m of dbg.value || []) console.log("  >>", JSON.stringify(m.categories), m.subject?.slice(0, 60));
 
   for (const message of messages) {
-    // Lock the email — keep "Bara AI", add "Processing" so it won't re-trigger.
-    // If something fails, just remove "Processing" in Outlook to retry.
-    const lockedCategories = [...message.categories, PROCESSING_CATEGORY];
-    await graphFetch(`/users/${mailbox}/messages/${message.id}`, {
-      method: "PATCH",
-      body: JSON.stringify({ categories: lockedCategories }),
-    });
-    console.log("Locked for processing:", message.subject);
+    let currentCategories = await setJobStatus(mailbox, message.id, message.categories, READING_EMAIL_CATEGORY);
+    console.log("Reading:", message.subject);
 
     try {
-      const { result, rawEmail } = await processMessage(message, mailbox);
+      const onStatus = async (status) => {
+        currentCategories = await setJobStatus(mailbox, message.id, currentCategories, status);
+      };
+
+      const { result, rawEmail } = await processMessage(message, mailbox, onStatus);
       console.log("AI RESULT:", result);
 
+      await onStatus(CREATING_JOB_CATEGORY);
       const { jobNumber } = await createArofloJob(result, rawEmail);
 
-      // Success — remove "Processing", add job tag, keep everything else
+      // Success — strip all status tags, add job tag
       const jobTag = `Job created - ${jobNumber}`;
-      const doneCategories = [
-        ...lockedCategories.filter(c => c !== PROCESSING_CATEGORY),
-        jobTag,
-      ];
-      await graphFetch(`/users/${mailbox}/messages/${message.id}`, {
-        method: "PATCH",
-        body: JSON.stringify({ categories: doneCategories }),
-      });
+      currentCategories = await setJobStatus(mailbox, message.id, currentCategories, jobTag);
       console.log("Tagged as done:", message.subject);
     } catch (err) {
       console.error("Error processing message:", message.subject, err.message);
       if (err.message.startsWith("Client not found")) {
-        const clientNotFoundCategories = [
-          ...lockedCategories.filter(c => c !== PROCESSING_CATEGORY),
-          CLIENT_NOT_FOUND_CATEGORY,
-        ];
-        await graphFetch(`/users/${mailbox}/messages/${message.id}`, {
-          method: "PATCH",
-          body: JSON.stringify({ categories: clientNotFoundCategories }),
-        });
+        await setJobStatus(mailbox, message.id, currentCategories, CLIENT_NOT_FOUND_CATEGORY);
         console.log("Tagged as client not found:", message.subject);
+      } else {
+        // Leave "Processing" on — remove it in Outlook to retry
+        await setJobStatus(mailbox, message.id, currentCategories, PROCESSING_CATEGORY);
       }
-      // Any other error: leave "Processing" on — remove it in Outlook to retry
     }
   }
 }
