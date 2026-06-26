@@ -250,6 +250,28 @@ async function findOrUpdateLocation(clientId, address, tenantName, tenantContact
   return location;
 }
 
+function buildDescription(result) {
+  const parts = [];
+
+  if (result["task-description"] || result["task-type"]) {
+    parts.push(`<p>${result["task-description"] || result["task-type"]}</p>`);
+  }
+
+  if (result["expenditure-limit"]) {
+    parts.push(`<p><span style="background:#cce5ff;font-weight:bold">Expenditure Limit: ${result["expenditure-limit"]}</span></p>`);
+  }
+
+  if (result["access-details"]) {
+    parts.push(`<p><span style="background:#ccffcc;font-weight:bold">Access Details: ${result["access-details"]}</span></p>`);
+  }
+
+  if (result["package"] && PACKAGE_TEMPLATES[result["package"]]) {
+    parts.push(PACKAGE_TEMPLATES[result["package"]]);
+  }
+
+  return parts.join("\n");
+}
+
 async function createArofloJob(result, rawEmail) {
   console.log("CREATING AROFLO JOB...");
 
@@ -303,7 +325,7 @@ async function createArofloJob(result, rawEmail) {
     ${location ? `<location><locationid>${location.locationid}</locationid></location>` : ""}
     ${result.address && !location  ? `<sitename>${result.address}</sitename>`          : ""}
     <taskname>${taskName}</taskname>
-    <description>${[result["task-description"] || result["task-type"] || "", PACKAGE_TEMPLATES[result["package"]] || ""].filter(Boolean).join("\n")}</description>
+    <description><![CDATA[${buildDescription(result)}]]></description>
     <duedate>${dueDate}</duedate>
     ${result["order-number"] ? `<custon>${result["order-number"]}</custon>` : ""}
     ${(result["account-to"] || result["real-estate"]) ? `<customfields><customfield><name><![CDATA[ Account To: ]]></name><type><![CDATA[ text ]]></type><value><![CDATA[${result["account-to"] || result["real-estate"]}]]></value></customfield></customfields>` : ""}
