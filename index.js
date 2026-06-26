@@ -476,9 +476,10 @@ async function emailHtmlForNote(html) {
     .replace(/<img[^>]*>/gi, "")
     .trim();
 
-  // Remove Inky security banner — Inky wraps its banner between x_ipw-middle-* and x_ipw-end-*
-  // anchors. Strip everything from the start up to and including the end marker + closing div.
-  cleaned = cleaned.replace(/[\s\S]*?<a\s[^>]*name="x_ipw-end-[^"]*"[^>]*><\/a><\/div>\s*/i, "");
+  console.log("EMAIL HTML START:", cleaned.slice(0, 800));
+
+  // Remove Inky security banner
+  cleaned = cleaned.replace(/[\s\S]*?<a\b[^>]*name="x_ipw-end-\d+"[^>]*><\/a>(?:<\/\w+>\s*)*/i, "");
 
   cleaned = await decodeWrappedLinks(cleaned);
 
