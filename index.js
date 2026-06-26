@@ -201,23 +201,59 @@ async function findClient(realEstateName) {
   return null;
 }
 
+function parseAustralianAddress(address) {
+  const parts = address.split(",").map(p => p.trim());
+  const street = parts[0] || "";
+  const rest   = parts.slice(1).join(", ").trim();
+  const match  = rest.match(/^(.*?)\s+([A-Z]{2,3})\s+(\d{4})$/);
+  return match
+    ? { street, suburb: match[1].trim(), state: match[2], postcode: match[3] }
+    : { street, suburb: rest, state: "", postcode: "" };
+}
+
 async function createLocation(clientId, address, tenantName, tenantContact) {
+  const { street, suburb, state, postcode } = parseAustralianAddress(address);
   const xml =
-`<locations>
-  <location>
-    <linkedtoid>${clientId}</linkedtoid>
-    <locationname>${address}</locationname>
-    ${tenantName    ? `<SiteContact>${tenantName}</SiteContact>`  : ""}
-    ${tenantContact ? `<SitePhone>${tenantContact}</SitePhone>`   : ""}
-  </location>
-</locations>`;
-  const createZone = await arofloPost("zone=locations&postxml=" + encodeURIComponent(xml));
+`<clients><client>
+  <clientid>${clientId}</clientid>
+  <locations><location>
+    <locationname><![CDATA[${address}]]></locationname>
+    <address class='preserveHtml'><![CDATA[${street}]]></address>
+    <suburb><![CDATA[${suburb}]]></suburb>
+    <state><![CDATA[${state}]]></state>
+    <postcode><![CDATA[${postcode}]]></postcode>
+    <country><![CDATA[Australia]]></country>
+    ${tenantName    ? `<sitecontact><![CDATA[${tenantName}]]></sitecontact>`  : ""}
+    ${tenantContact ? `<sitephone><![CDATA[${tenantContact}]]></sitephone>`   : ""}
+  </location></locations>
+</client></clients>`;
+  const createZone = await arofloPost("zone=clients&postxml=" + encodeURIComponent(xml));
   console.log("Location create response:", JSON.stringify(createZone?.postresults));
+
+  // Aroflo may not return the new locationid on a client update — fetch it back
   const inserted = createZone?.postresults?.inserts?.locations;
   const newId = (Array.isArray(inserted) ? inserted[0] : inserted)?.locationid;
-  if (!newId) { console.warn("Location created but no locationid returned"); return null; }
-  console.log("Location created:", newId, address);
-  return { locationid: newId, locationname: address };
+  if (newId) {
+    console.log("Location created:", newId, address);
+    return { locationid: newId, locationname: address };
+  }
+
+  // Fall back: re-query to find the location we just created
+  console.log("locationid not in response — fetching newly created location");
+  const zone = await arofloGet(
+    "zone=locations&where=" + encodeURIComponent(`and|linkedtoid|=|${clientId}`) + "&page=1"
+  );
+  const raw = zone.locations;
+  const all = raw ? (Array.isArray(raw) ? raw : [raw]) : [];
+  const streetPart = address.replace(/^\d+\//, "").split(",")[0].trim().toLowerCase();
+  const found = all.find(l => l.locationname?.toLowerCase().includes(streetPart));
+  if (found) {
+    console.log("Location found after creation:", found.locationid, found.locationname);
+    return found;
+  }
+
+  console.warn("Location created but could not retrieve locationid");
+  return null;
 }
 
 // Find a location by street address under a client, then update SiteContact/SitePhone if stale.
