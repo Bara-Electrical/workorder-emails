@@ -201,16 +201,44 @@ async function findContact(clientId, pmName) {
   }
 }
 
-// Search Aroflo for a client by name.
-// 1. Exact match via API on progressively shorter variants.
-// 2. Fuzzy fallback: starts-with match against the local cache.
-//    Only accepted if exactly one client matches — avoids wrong picks
-//    when multiple clients share a common prefix (e.g. Realmark Urban vs Realmark North Coastal).
+// Search for a client by name.
+// 1. Exact match against local cache (no API call needed).
+// 2. Starts-with fuzzy match against local cache — only if exactly one result.
+// 3. Falls back to Aroflo API exact match if cache is empty (not yet loaded).
 async function findClient(realEstateName) {
   if (!realEstateName) return null;
 
   const baseName = realEstateName.split(/[|,]/)[0].trim();
 
+  // Cache lookup — check exact match on each candidate
+  if (clientCache.size > 0) {
+    const candidates = [
+      realEstateName,
+      baseName,
+      baseName.split(" ")[0],
+    ].filter((v, i, a) => a.indexOf(v) === i);
+
+    for (const name of candidates) {
+      const hit = clientCache.get(name.toLowerCase());
+      if (hit) return hit;
+    }
+
+    // Starts-with fuzzy match
+    const query   = baseName.toLowerCase();
+    const matches = [...clientCache.values()].filter(c =>
+      c.clientname.toLowerCase().startsWith(query)
+    );
+    if (matches.length === 1) {
+      console.log(`Fuzzy client match: "${realEstateName}" → "${matches[0].clientname}"`);
+      return matches[0];
+    }
+    if (matches.length > 1) {
+      console.warn(`Ambiguous client name "${realEstateName}" — ${matches.length} cache matches: ${matches.map(c => c.clientname).join(", ")}`);
+    }
+    return null;
+  }
+
+  // Cache not loaded yet — fall back to API
   const candidates = [
     realEstateName,
     baseName,
@@ -225,19 +253,6 @@ async function findClient(realEstateName) {
     if (!raw) continue;
     const arr = Array.isArray(raw) ? raw : [raw];
     if (arr.length > 0) return arr[0];
-  }
-
-  // Fuzzy fallback against local cache
-  const query   = baseName.toLowerCase();
-  const matches = [...clientCache.values()].filter(c =>
-    c.clientname.toLowerCase().startsWith(query)
-  );
-  if (matches.length === 1) {
-    console.log(`Fuzzy client match: "${realEstateName}" → "${matches[0].clientname}"`);
-    return matches[0];
-  }
-  if (matches.length > 1) {
-    console.warn(`Ambiguous client name "${realEstateName}" — ${matches.length} cache matches: ${matches.map(c => c.clientname).join(", ")}`);
   }
 
   return null;
@@ -1291,6 +1306,16 @@ app.get("/test-rica", async (req, res) => {
   } catch (err) {
     res.json({ error: err.message });
   }
+});
+
+// ================================================================
+// TEMP: Dump client cache as JSON — GET /clients
+// ================================================================
+app.get("/clients", (req, res) => {
+  res.json({
+    count: clientCache.size,
+    clients: [...clientCache.values()].map(c => ({ clientid: c.clientid, clientname: c.clientname })),
+  });
 });
 
 // ================================================================
