@@ -380,19 +380,12 @@ async function createArofloJob(result, rawEmail) {
   console.log("Notes debug — confirmedTaskId:", confirmedTaskId, "noteContents count:", noteContents.length, "notes length:", notes?.length ?? 0, "rawEmail length:", rawEmail?.length ?? 0);
 
   for (const content of noteContents) {
-    let posted = false;
-    for (const [zone, xml] of [
-      ["tasknotes", `<tasknotes><tasknote><taskid>${confirmedTaskId}</taskid><content><![CDATA[${content}]]></content></tasknote></tasknotes>`],
-      ["notes",     `<notes><note><taskid>${confirmedTaskId}</taskid><content><![CDATA[${content}]]></content></note></notes>`],
-    ]) {
-      if (posted) break;
-      try {
-        const r = await arofloPost(`zone=${zone}&postxml=` + encodeURIComponent(xml));
-        console.log(`Note posted via ${zone}:`, JSON.stringify(r ?? null));
-        if (r != null) posted = true;
-      } catch (err) {
-        console.warn(`Note post failed (${zone}):`, err.message);
-      }
+    const xml = `<tasks><task><taskid>${confirmedTaskId}</taskid><notes><note><content><![CDATA[${content}]]></content></note></notes></task></tasks>`;
+    try {
+      const r = await arofloPost("zone=tasks&postxml=" + encodeURIComponent(xml));
+      console.log("Note posted via task update:", JSON.stringify(r?.postresults ?? null));
+    } catch (err) {
+      console.warn("Note post failed:", err.message);
     }
   }
 
