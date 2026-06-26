@@ -1053,6 +1053,8 @@ app.listen(process.env.PORT || 3000, () => {
   console.log(`Server running — deployed ${new Date().toISOString()}`);
   pollEmails();
   forwardRicaEmails();
+  processAiTestingEmails();
   setInterval(pollEmails, POLL_INTERVAL_MS);
   setInterval(forwardRicaEmails, POLL_INTERVAL_MS);
+  setInterval(processAiTestingEmails, POLL_INTERVAL_MS);
 });
