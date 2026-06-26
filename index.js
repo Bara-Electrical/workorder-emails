@@ -1016,9 +1016,9 @@ app.get("/test-document", async (req, res) => {
   const taskId = req.query.taskId;
   if (!taskId) return res.status(400).json({ error: "Pass ?taskId=..." });
 
-  // Find first email with a PDF in workorders inbox
+  // Find first email with a PDF in Brandon's inbox
   const inboxRes = await graphFetch(
-    `/users/${process.env.GRAPH_RECIPIENT}/mailFolders/inbox/messages` +
+    `/users/${BRANDON_EMAIL}/mailFolders/inbox/messages` +
     `?$expand=attachments($select=id,name,contentType,size)&$top=20`
   );
   const inboxData = await inboxRes.json();
@@ -1029,9 +1029,9 @@ app.get("/test-document", async (req, res) => {
     const pdf = (msg.attachments || []).find(a => a.name?.toLowerCase().endsWith(".pdf"));
     if (pdf) { targetMsgId = msg.id; targetAttId = pdf.id; targetName = pdf.name; break; }
   }
-  if (!targetMsgId) return res.json({ error: "No email with PDF found in workorders inbox" });
+  if (!targetMsgId) return res.json({ error: "No email with PDF found in Brandon's inbox" });
 
-  const attRes  = await graphFetch(`/users/${process.env.GRAPH_RECIPIENT}/messages/${targetMsgId}/attachments/${targetAttId}`);
+  const attRes  = await graphFetch(`/users/${BRANDON_EMAIL}/messages/${targetMsgId}/attachments/${targetAttId}`);
   const attData = await attRes.json();
 
   try {
