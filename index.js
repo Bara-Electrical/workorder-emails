@@ -135,6 +135,11 @@ async function arofloPost(body) {
   return data.zoneresponse;
 }
 
+async function arofloUploadDocument(taskId, filename, base64Content) {
+  const xml = `<taskdocuments><taskdocument><taskid>${taskId}</taskid><filename>${filename}</filename><filedata>${base64Content}</filedata></taskdocument></taskdocuments>`;
+  return await arofloPost("zone=taskdocuments&postxml=" + encodeURIComponent(xml));
+}
+
 // Task type IDs sourced from live Aroflo system on 2026-06-24
 const TASK_TYPE_MAP = {
   "EC1":                            "JCYqLyBSQCAgCg==", // $120 Standard Electrical Compliance
@@ -290,7 +295,7 @@ function buildDescription(result) {
   return parts.join("\n");
 }
 
-async function createArofloJob(result, rawEmail) {
+async function createArofloJob(result, rawEmail, pdfAttachment = null) {
   console.log("CREATING AROFLO JOB...");
 
   const taskTypeId  = TASK_TYPE_MAP[result["task-type"]];
@@ -395,6 +400,16 @@ async function createArofloJob(result, rawEmail) {
     }
   }
 
+  // Upload PDF work order attachment as a task document
+  if (confirmedTaskId && pdfAttachment) {
+    try {
+      await arofloUploadDocument(confirmedTaskId, pdfAttachment.name, pdfAttachment.contentBytes);
+      console.log("Work order PDF uploaded to documents:", pdfAttachment.name);
+    } catch (err) {
+      console.warn("Document upload failed:", err.message);
+    }
+  }
+
   // Aroflo doesn't apply substatus on create — do a follow-up update
   if (confirmedTaskId && substatusId) {
     const updateXml =
@@ -482,7 +497,7 @@ async function emailHtmlForNote(html) {
 
   cleaned = await decodeWrappedLinks(cleaned);
 
-  return `<p style="background:#4a90d9;color:#ffffff;padding:14px 16px;margin:0 0 16px 0;border-radius:4px"><strong>Work Order Email</strong></p><div style="padding:0 12px">${cleaned}</div>`;
+  return `<p style="background:#4a90d9;color:#ffffff;padding:14px 16px;margin:0 0 16px 0;border-radius:4px"><strong>Workorder</strong></p><div style="padding:0 12px">${cleaned}</div>`;
 }
 
 // Known work order portal domains
@@ -588,12 +603,14 @@ async function processMessage(message, mailbox = process.env.GRAPH_RECIPIENT, on
     (a.name || "").toLowerCase().endsWith(".pdf")
   );
 
+  let pdfAttachment = null;
   if (workorderAttachment) {
     console.log("FOUND WORK ORDER PDF:", workorderAttachment.name);
     const attachRes  = await graphFetch(
       `/users/${mailbox}/messages/${message.id}/attachments/${workorderAttachment.id}`
     );
     const attachData = await attachRes.json();
+    pdfAttachment = { name: attachData.name, contentBytes: attachData.contentBytes };
     const data       = Uint8Array.from(atob(attachData.contentBytes), c => c.charCodeAt(0));
     const pdfText    = await extractPDF(data);
     textForAI = withEmailBody(pdfText.replace(/\s+/g, " ").trim());
@@ -697,7 +714,7 @@ Return ONLY valid JSON with these exact keys:
       .join(", ");
   }
 
-  return { result: parsed, rawEmail: rawBody };
+  return { result: parsed, rawEmail: rawBody, pdfAttachment };
 }
 
 // ================================================================
@@ -941,11 +958,11 @@ async function pollInbox(mailbox) {
         currentCategories = await setJobStatus(mailbox, message.id, currentCategories, status);
       };
 
-      const { result, rawEmail } = await processMessage(message, mailbox, onStatus);
+      const { result, rawEmail, pdfAttachment } = await processMessage(message, mailbox, onStatus);
       console.log("AI RESULT:", result);
 
       await onStatus(CREATING_JOB_CATEGORY);
-      const { jobNumber } = await createArofloJob(result, rawEmail);
+      const { jobNumber } = await createArofloJob(result, rawEmail, pdfAttachment);
 
       // Success — strip all status tags, add job tag
       const jobTag = `Job created - ${jobNumber}`;
@@ -989,6 +1006,39 @@ app.get("/task-types", async (req, res) => {
     res.json(data);
   } catch (err) {
     res.status(500).json({ error: err.message });
+  }
+});
+
+// ================================================================
+// TEMP: Test document upload — GET /test-document?taskId=JiQqXyxQLDMjCg==
+// ================================================================
+app.get("/test-document", async (req, res) => {
+  const taskId = req.query.taskId;
+  if (!taskId) return res.status(400).json({ error: "Pass ?taskId=..." });
+
+  // Find first email with a PDF in workorders inbox
+  const inboxRes = await graphFetch(
+    `/users/${process.env.GRAPH_RECIPIENT}/mailFolders/inbox/messages` +
+    `?$expand=attachments($select=id,name,contentType,size)&$top=20`
+  );
+  const inboxData = await inboxRes.json();
+  let targetMsgId = null;
+  let targetAttId = null;
+  let targetName  = null;
+  for (const msg of inboxData.value || []) {
+    const pdf = (msg.attachments || []).find(a => a.name?.toLowerCase().endsWith(".pdf"));
+    if (pdf) { targetMsgId = msg.id; targetAttId = pdf.id; targetName = pdf.name; break; }
+  }
+  if (!targetMsgId) return res.json({ error: "No email with PDF found in workorders inbox" });
+
+  const attRes  = await graphFetch(`/users/${process.env.GRAPH_RECIPIENT}/messages/${targetMsgId}/attachments/${targetAttId}`);
+  const attData = await attRes.json();
+
+  try {
+    const result = await arofloUploadDocument(taskId, attData.name, attData.contentBytes);
+    res.json({ success: true, filename: attData.name, result });
+  } catch (err) {
+    res.json({ error: err.message });
   }
 });
 
