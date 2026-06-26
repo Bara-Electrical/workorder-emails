@@ -1005,6 +1005,34 @@ async function pollEmails() {
 }
 
 // ================================================================
+// TEMP: Test full job creation — GET /test-job?client=...&pm=...&address=...&tenant=...&phone=...
+// ================================================================
+app.get("/test-job", async (req, res) => {
+  const { client, pm, address, tenant, phone } = req.query;
+  if (!client || !address) return res.status(400).json({ error: "Pass ?client=...&address=..." });
+  const result = {
+    "task-type":        "Real Estate General Maintenance",
+    "real-estate":      client,
+    "property-manager": pm || null,
+    "address":          address,
+    "tenant-name":      tenant || null,
+    "tenant-contact":   phone || null,
+    "task-description": "Test job",
+    "account-to":       null,
+    "order-number":     null,
+    "access-details":   null,
+    "expenditure-limit": null,
+    "package":          null,
+  };
+  try {
+    const { jobNumber } = await createArofloJob(result, null);
+    res.json({ success: true, jobNumber });
+  } catch (err) {
+    res.json({ error: err.message });
+  }
+});
+
+// ================================================================
 // TEMP: Test location creation — GET /test-location?client=Realmark%20Urban&address=123%20Example%20St%20Perth%20WA%206000
 // ================================================================
 app.get("/test-location", async (req, res) => {
