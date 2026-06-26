@@ -476,32 +476,9 @@ async function emailHtmlForNote(html) {
     .replace(/<img[^>]*>/gi, "")
     .trim();
 
-  console.log("EMAIL HTML START:", cleaned.slice(0, 500));
-
-  // Remove Inky security banner — find outermost element with 'inky' in its opening tag,
-  // then depth-count to find the correct closing tag (handles nested elements)
-  const inkyMatch = cleaned.match(/<([a-z]+)\b[^>]*inky[^>]*>/i);
-  if (inkyMatch) {
-    const tagName  = inkyMatch[1];
-    const start    = cleaned.indexOf(inkyMatch[0]);
-    const openRe   = new RegExp(`<${tagName}\\b`, "gi");
-    const closeRe  = new RegExp(`<\\/${tagName}>`, "gi");
-    let depth = 0, i = start, end = -1;
-    while (i < cleaned.length) {
-      openRe.lastIndex  = i;
-      closeRe.lastIndex = i;
-      const nextOpen  = openRe.exec(cleaned);
-      const nextClose = closeRe.exec(cleaned);
-      if (!nextClose) break;
-      if (nextOpen && nextOpen.index < nextClose.index) {
-        depth++; i = nextOpen.index + 1;
-      } else {
-        depth--; i = nextClose.index + 1;
-        if (depth === 0) { end = nextClose.index + `</${tagName}>`.length; break; }
-      }
-    }
-    if (end !== -1) cleaned = cleaned.slice(0, start) + cleaned.slice(end);
-  }
+  // Remove Inky security banner — Inky wraps its banner between x_ipw-middle-* and x_ipw-end-*
+  // anchors. Strip everything from the start up to and including the end marker + closing div.
+  cleaned = cleaned.replace(/[\s\S]*?<a\s[^>]*name="x_ipw-end-[^"]*"[^>]*><\/a><\/div>\s*/i, "");
 
   cleaned = await decodeWrappedLinks(cleaned);
 
