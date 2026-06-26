@@ -373,20 +373,25 @@ async function createArofloJob(result, rawEmail) {
   }
   console.log("AROFLO JOB CREATED — job number:", jobNumber, "taskId:", confirmedTaskId);
 
-  // Post notes one at a time — Aroflo only handles one <tasknote> per request
-  const notePayloads = [];
-  if (confirmedTaskId && notes) {
-    notePayloads.push(`<tasknotes><tasknote><taskid>${confirmedTaskId}</taskid><content><![CDATA[${notes}]]></content></tasknote></tasknotes>`);
-  }
-  if (confirmedTaskId && rawEmail) {
-    notePayloads.push(`<tasknotes><tasknote><taskid>${confirmedTaskId}</taskid><content><![CDATA[${await emailHtmlForNote(rawEmail)}]]></content></tasknote></tasknotes>`);
-  }
-  for (const xml of notePayloads) {
-    try {
-      const notesZone = await arofloPost("zone=tasknotes&postxml=" + encodeURIComponent(xml));
-      console.log("Note posted:", notesZone?.postresults?.inserttotal ?? "unknown", JSON.stringify(notesZone ?? null));
-    } catch (err) {
-      console.warn("Note post failed:", err.message);
+  // Try posting each note via zone=tasknotes then zone=notes as fallback
+  const noteContents = [];
+  if (confirmedTaskId && notes) noteContents.push(notes);
+  if (confirmedTaskId && rawEmail) noteContents.push(await emailHtmlForNote(rawEmail));
+
+  for (const content of noteContents) {
+    let posted = false;
+    for (const [zone, xml] of [
+      ["tasknotes", `<tasknotes><tasknote><taskid>${confirmedTaskId}</taskid><content><![CDATA[${content}]]></content></tasknote></tasknotes>`],
+      ["notes",     `<notes><note><taskid>${confirmedTaskId}</taskid><content><![CDATA[${content}]]></content></note></notes>`],
+    ]) {
+      if (posted) break;
+      try {
+        const r = await arofloPost(`zone=${zone}&postxml=` + encodeURIComponent(xml));
+        console.log(`Note posted via ${zone}:`, JSON.stringify(r ?? null));
+        if (r != null) posted = true;
+      } catch (err) {
+        console.warn(`Note post failed (${zone}):`, err.message);
+      }
     }
   }
 
