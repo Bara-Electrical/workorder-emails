@@ -622,7 +622,7 @@ async function emailHtmlForNote(html) {
 
   cleaned = await decodeWrappedLinks(cleaned);
 
-  return `<p style="background:#4a90d9;color:#ffffff;padding:14px 16px;margin:0 0 16px 0;border-radius:4px"><strong>Workorder</strong></p><div style="padding:0 12px">${cleaned}</div>`;
+  return `<p style="margin:0 0 8px 0"><strong style="color:#000000;font-size:15px">Work Order</strong></p><hr style="border:none;border-top:1px solid #000000;margin:0 0 16px 0"><div>${cleaned}</div>`;
 }
 
 // Known work order portal domains
