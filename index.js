@@ -476,6 +476,8 @@ async function emailHtmlForNote(html) {
     .replace(/<img[^>]*>/gi, "")
     .trim();
 
+  console.log("EMAIL HTML START:", cleaned.slice(0, 500));
+
   // Remove Inky security banner — find outermost element with 'inky' in its opening tag,
   // then depth-count to find the correct closing tag (handles nested elements)
   const inkyMatch = cleaned.match(/<([a-z]+)\b[^>]*inky[^>]*>/i);
