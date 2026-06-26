@@ -476,10 +476,9 @@ async function emailHtmlForNote(html) {
     .replace(/<img[^>]*>/gi, "")
     .trim();
 
-  console.log("EMAIL HTML START:", cleaned.slice(0, 800));
-
-  // Remove Inky security banner
-  cleaned = cleaned.replace(/[\s\S]*?<a\b[^>]*name="x_ipw-end-\d+"[^>]*><\/a>(?:<\/\w+>\s*)*/i, "");
+  // Remove Inky security banner — strip from start of HTML up to and including the
+  // ipw-end anchor (raw email uses "ipw-end-*", Outlook renderer prefixes it "x_ipw-end-*")
+  cleaned = cleaned.replace(/[\s\S]*?<a\b[^>]*name="(?:x_)?ipw-end-\d+"[^>]*><\/a>(?:\s*<\/\w+>)*/i, "");
 
   cleaned = await decodeWrappedLinks(cleaned);
 
