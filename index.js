@@ -154,6 +154,30 @@ const SUBSTATUS_MAP = {
   "Real Estate General Maintenance": "Iyc6LyYK", // Ready to schedule
 };
 
+// In-memory client cache: lowercase clientname → client object.
+// Populated at startup and updated via the /aroflo-webhook endpoint.
+const clientCache = new Map();
+
+async function loadClientCache() {
+  let page = 1, loaded = 0;
+  try {
+    while (true) {
+      const zone = await arofloGet(`zone=clients&page=${page}`);
+      const raw  = zone?.clients;
+      if (!raw) break;
+      const arr  = Array.isArray(raw) ? raw : [raw];
+      for (const c of arr) clientCache.set(c.clientname.toLowerCase(), c);
+      loaded += arr.length;
+      const totalPages = parseInt(zone.totalpages ?? 1);
+      if (page >= totalPages) break;
+      page++;
+    }
+    console.log(`Client cache loaded: ${loaded} clients across ${page} page(s)`);
+  } catch (err) {
+    console.error("Failed to load client cache — fuzzy matching unavailable:", err.message);
+  }
+}
+
 // Fetch contacts for a client using join=contacts, then match by PM name.
 async function findContact(clientId, pmName) {
   if (!clientId || !pmName) return null;
@@ -177,8 +201,11 @@ async function findContact(clientId, pmName) {
   }
 }
 
-// Search Aroflo for a client by name using exact match.
-// Tries progressively shorter variants: full name, before-pipe/comma, first word.
+// Search Aroflo for a client by name.
+// 1. Exact match via API on progressively shorter variants.
+// 2. Fuzzy fallback: starts-with match against the local cache.
+//    Only accepted if exactly one client matches — avoids wrong picks
+//    when multiple clients share a common prefix (e.g. Realmark Urban vs Realmark North Coastal).
 async function findClient(realEstateName) {
   if (!realEstateName) return null;
 
@@ -198,6 +225,19 @@ async function findClient(realEstateName) {
     if (!raw) continue;
     const arr = Array.isArray(raw) ? raw : [raw];
     if (arr.length > 0) return arr[0];
+  }
+
+  // Fuzzy fallback against local cache
+  const query   = baseName.toLowerCase();
+  const matches = [...clientCache.values()].filter(c =>
+    c.clientname.toLowerCase().startsWith(query)
+  );
+  if (matches.length === 1) {
+    console.log(`Fuzzy client match: "${realEstateName}" → "${matches[0].clientname}"`);
+    return matches[0];
+  }
+  if (matches.length > 1) {
+    console.warn(`Ambiguous client name "${realEstateName}" — ${matches.length} cache matches: ${matches.map(c => c.clientname).join(", ")}`);
   }
 
   return null;
@@ -1254,10 +1294,27 @@ app.get("/test-rica", async (req, res) => {
 });
 
 // ================================================================
+// AROFLO WEBHOOK — new client created
+// ================================================================
+app.post("/aroflo-webhook", express.json(), (req, res) => {
+  const body = req.body;
+  console.log("Aroflo webhook received:", JSON.stringify(body));
+  // Aroflo sends client details — update the cache so fuzzy matching picks it up immediately.
+  // Adjust the field path below once the actual payload format is confirmed.
+  const client = body?.client ?? body;
+  if (client?.clientname && client?.clientid) {
+    clientCache.set(client.clientname.toLowerCase(), client);
+    console.log("Client cache updated:", client.clientname);
+  }
+  res.sendStatus(200);
+});
+
+// ================================================================
 // START
 // ================================================================
 app.listen(process.env.PORT || 3000, () => {
   console.log(`Server running — deployed ${new Date().toISOString()}`);
+  loadClientCache();
   pollEmails();
   forwardRicaEmails();
   processAiTestingEmails();
