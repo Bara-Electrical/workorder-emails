@@ -159,20 +159,24 @@ const SUBSTATUS_MAP = {
 const clientCache = new Map();
 
 async function loadClientCache() {
+  // where=clientid!=0 forces Aroflo to return the full client list.
+  // Without a WHERE clause the API silently limits to recently active clients only.
+  const WHERE = encodeURIComponent("and|clientid|!=|0");
   let page = 1, loaded = 0;
   try {
     while (true) {
-      const zone = await arofloGet(`zone=clients&page=${page}`);
+      const zone = await arofloGet(`zone=clients&where=${WHERE}&page=${page}`);
       const raw  = zone?.clients;
       if (!raw) break;
       const arr  = Array.isArray(raw) ? raw : [raw];
       for (const c of arr) clientCache.set(c.clientname.toLowerCase(), c);
       loaded += arr.length;
-      const totalPages = parseInt(zone.totalpages ?? 1);
-      if (page >= totalPages) break;
+      const current = parseInt(zone.currentpageresults ?? 0);
+      const max     = parseInt(zone.maxpageresults ?? 500);
+      if (current < max) break;
       page++;
     }
-    console.log(`Client cache loaded: ${loaded} clients across ${page} page(s)`);
+    console.log(`Client cache loaded: ${clientCache.size} unique clients across ${page} page(s)`);
   } catch (err) {
     console.error("Failed to load client cache — fuzzy matching unavailable:", err.message);
   }
