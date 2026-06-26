@@ -266,9 +266,9 @@ function parseAustralianAddress(address) {
   const parts = address.split(",").map(p => p.trim());
   const street = parts[0] || "";
   const rest   = parts.slice(1).join(", ").trim();
-  const match  = rest.match(/^(.*?)\s+([A-Z]{2,3})\s+(\d{4})$/);
+  const match  = rest.match(/^(.*?)\s+([A-Z]{2,3})(?:\s+(\d{4}))?$/);
   return match
-    ? { street, suburb: match[1].trim(), state: match[2], postcode: match[3] }
+    ? { street, suburb: match[1].trim(), state: match[2], postcode: match[3] || "" }
     : { street, suburb: rest, state: "", postcode: "" };
 }
 
