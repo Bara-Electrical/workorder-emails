@@ -379,7 +379,7 @@ async function createArofloJob(result, rawEmail) {
     const notesXml = `<tasknotes>${noteItems}</tasknotes>`;
     try {
       const notesZone = await arofloPost("zone=tasknotes&postxml=" + encodeURIComponent(notesXml));
-      console.log("Notes posted:", notesZone.postresults?.inserttotal ?? "unknown");
+      console.log("Notes posted:", notesZone?.postresults?.inserttotal ?? "unknown", JSON.stringify(notesZone ?? null));
     } catch (err) {
       console.warn("Notes post failed:", err.message);
     }
