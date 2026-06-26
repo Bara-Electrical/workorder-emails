@@ -135,9 +135,26 @@ async function arofloPost(body) {
   return data.zoneresponse;
 }
 
-async function arofloUploadDocument(taskId, filename, base64Content) {
-  const xml = `<taskdocuments><taskdocument><taskid>${taskId}</taskid><filename>${filename}</filename><filedata>${base64Content}</filedata></taskdocument></taskdocuments>`;
-  return await arofloPost("zone=taskdocuments&postxml=" + encodeURIComponent(xml));
+async function uploadWorkOrderToOneDrive(filename, base64Content, jobNumber) {
+  const safeFilename = `${jobNumber} - ${filename}`.replace(/[<>:"/\\|?*]/g, "_");
+  const buffer = Buffer.from(base64Content, "base64");
+
+  const uploadRes = await graphFetch(
+    `/users/${BRANDON_EMAIL}/drive/root:/Work Orders/${safeFilename}:/content`,
+    { method: "PUT", headers: { "Content-Type": "application/pdf" }, body: buffer }
+  );
+  if (!uploadRes.ok) {
+    const err = await uploadRes.json();
+    throw new Error(`OneDrive upload failed: ${JSON.stringify(err?.error)}`);
+  }
+  const uploadData = await uploadRes.json();
+
+  const linkRes = await graphFetch(
+    `/users/${BRANDON_EMAIL}/drive/items/${uploadData.id}/createLink`,
+    { method: "POST", body: JSON.stringify({ type: "view", scope: "organization" }) }
+  );
+  const linkData = await linkRes.json();
+  return linkData.link?.webUrl || null;
 }
 
 // Task type IDs sourced from live Aroflo system on 2026-06-24
@@ -388,25 +405,26 @@ async function createArofloJob(result, rawEmail, pdfAttachment = null) {
   }
   console.log("AROFLO JOB CREATED — job number:", jobNumber, "taskId:", confirmedTaskId);
 
+  // Upload PDF to OneDrive and get a link to include in the note
+  let oneDriveLink = null;
+  if (pdfAttachment) {
+    try {
+      oneDriveLink = await uploadWorkOrderToOneDrive(pdfAttachment.name, pdfAttachment.contentBytes, jobNumber);
+      console.log("Work order PDF uploaded to OneDrive:", oneDriveLink);
+    } catch (err) {
+      console.warn("OneDrive upload failed:", err.message);
+    }
+  }
+
   // Post the original email as a note on the task
   if (confirmedTaskId && rawEmail) {
     try {
-      const noteHtml = await emailHtmlForNote(rawEmail);
+      const noteHtml = await emailHtmlForNote(rawEmail, oneDriveLink);
       const xml = `<tasks><task><taskid>${confirmedTaskId}</taskid><notes><note><content><![CDATA[${noteHtml}]]></content></note></notes></task></tasks>`;
       await arofloPost("zone=tasks&postxml=" + encodeURIComponent(xml));
       console.log("Email note posted");
     } catch (err) {
       console.warn("Email note post failed:", err.message);
-    }
-  }
-
-  // Upload PDF work order attachment as a task document
-  if (confirmedTaskId && pdfAttachment) {
-    try {
-      await arofloUploadDocument(confirmedTaskId, pdfAttachment.name, pdfAttachment.contentBytes);
-      console.log("Work order PDF uploaded to documents:", pdfAttachment.name);
-    } catch (err) {
-      console.warn("Document upload failed:", err.message);
     }
   }
 
@@ -484,7 +502,7 @@ async function decodeWrappedLinks(html) {
 }
 
 // Strip scripts/styles/tracking pixels but keep HTML structure for display in Aroflo notes
-async function emailHtmlForNote(html) {
+async function emailHtmlForNote(html, pdfLink = null) {
   let cleaned = html
     .replace(/<script[\s\S]*?<\/script>/gi, "")
     .replace(/<style[\s\S]*?<\/style>/gi, "")
@@ -497,7 +515,10 @@ async function emailHtmlForNote(html) {
 
   cleaned = await decodeWrappedLinks(cleaned);
 
-  return `<p style="background:#4a90d9;color:#ffffff;padding:14px 16px;margin:0 0 16px 0;border-radius:4px"><strong>Workorder</strong></p><div style="padding:0 12px">${cleaned}</div>`;
+  const linkHtml = pdfLink
+    ? `<p style="margin:12px 0"><a href="${pdfLink}">View Work Order PDF</a></p>`
+    : "";
+  return `<p style="background:#4a90d9;color:#ffffff;padding:14px 16px;margin:0 0 16px 0;border-radius:4px"><strong>Workorder</strong></p>${linkHtml}<div style="padding:0 12px">${cleaned}</div>`;
 }
 
 // Known work order portal domains
@@ -1007,59 +1028,6 @@ app.get("/task-types", async (req, res) => {
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
-});
-
-// ================================================================
-// TEMP: Test document upload — GET /test-document?job=103245
-// ================================================================
-app.get("/test-document", async (req, res) => {
-  const jobNumber = req.query.job;
-  if (!jobNumber) return res.status(400).json({ error: "Pass ?job=..." });
-
-  const taskZone = await arofloGet(
-    "zone=tasks&where=" + encodeURIComponent(`and|jobnumber|=|${jobNumber}`) + "&page=1"
-  );
-  const taskArr = taskZone.tasks ? (Array.isArray(taskZone.tasks) ? taskZone.tasks : [taskZone.tasks]) : [];
-  if (taskArr.length === 0) return res.json({ error: `Job ${jobNumber} not found in Aroflo` });
-  const taskId = taskArr[0].taskid;
-
-  // Find first email with a PDF in Brandon's inbox
-  const inboxRes = await graphFetch(
-    `/users/${BRANDON_EMAIL}/mailFolders/inbox/messages` +
-    `?$expand=attachments($select=id,name,contentType,size)&$top=20`
-  );
-  const inboxData = await inboxRes.json();
-  let targetMsgId = null;
-  let targetAttId = null;
-  let targetName  = null;
-  for (const msg of inboxData.value || []) {
-    const pdf = (msg.attachments || []).find(a => a.name?.toLowerCase().endsWith(".pdf"));
-    if (pdf) { targetMsgId = msg.id; targetAttId = pdf.id; targetName = pdf.name; break; }
-  }
-  if (!targetMsgId) return res.json({ error: "No email with PDF found in Brandon's inbox" });
-
-  const attRes  = await graphFetch(`/users/${BRANDON_EMAIL}/messages/${targetMsgId}/attachments/${targetAttId}`);
-  const attData = await attRes.json();
-
-  // Try both field name variants and return raw responses for debugging
-  const results = {};
-  for (const fieldName of ["filedata", "content", "data"]) {
-    const xml  = `<taskdocuments><taskdocument><taskid>${taskId}</taskid><filename>${attData.name}</filename><${fieldName}>${attData.contentBytes}</${fieldName}></taskdocument></taskdocuments>`;
-    const body = "zone=taskdocuments&postxml=" + encodeURIComponent(xml);
-    const ts   = new Date().toISOString();
-    const auth = arofloAuth();
-    const raw  = await fetch(AROFLO_BASE + "?", {
-      method: "POST",
-      headers: {
-        Accept: AROFLO_ACCEPT, Authorization: auth,
-        Authentication: "HMAC " + arofloSign("POST", body, ts),
-        afdatetimeutc: ts, "Content-Type": "application/x-www-form-urlencoded",
-      },
-      body,
-    });
-    results[fieldName] = await raw.json();
-  }
-  res.json({ taskId, filename: attData.name, results });
 });
 
 // ================================================================
