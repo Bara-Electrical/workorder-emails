@@ -269,7 +269,9 @@ function buildDescription(result) {
     parts.push(`<p><span style="background:#ccffcc;font-weight:bold">Access Details: ${result["access-details"]}</span></p>`);
   }
 
-  const pkg = result["package"] && result["package"] !== "null" ? result["package"] : null;
+  // Fall back to task-type if AI forgot to set package (e.g. task-type is EC1 but package is null)
+  const pkg = (result["package"] && result["package"] !== "null" ? result["package"] : null)
+    ?? (PACKAGE_TEMPLATES[result["task-type"]] ? result["task-type"] : null);
   if (pkg && PACKAGE_TEMPLATES[pkg]) {
     parts.push(spacer);
     parts.push(PACKAGE_TEMPLATES[pkg]);
