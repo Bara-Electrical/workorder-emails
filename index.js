@@ -1010,11 +1010,18 @@ app.get("/task-types", async (req, res) => {
 });
 
 // ================================================================
-// TEMP: Test document upload — GET /test-document?taskId=JiQqXyxQLDMjCg==
+// TEMP: Test document upload — GET /test-document?job=103245
 // ================================================================
 app.get("/test-document", async (req, res) => {
-  const taskId = req.query.taskId;
-  if (!taskId) return res.status(400).json({ error: "Pass ?taskId=..." });
+  const jobNumber = req.query.job;
+  if (!jobNumber) return res.status(400).json({ error: "Pass ?job=..." });
+
+  const taskZone = await arofloGet(
+    "zone=tasks&where=" + encodeURIComponent(`and|jobnumber|=|${jobNumber}`) + "&page=1"
+  );
+  const taskArr = taskZone.tasks ? (Array.isArray(taskZone.tasks) ? taskZone.tasks : [taskZone.tasks]) : [];
+  if (taskArr.length === 0) return res.json({ error: `Job ${jobNumber} not found in Aroflo` });
+  const taskId = taskArr[0].taskid;
 
   // Find first email with a PDF in Brandon's inbox
   const inboxRes = await graphFetch(
