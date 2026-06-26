@@ -1031,6 +1031,38 @@ app.get("/task-types", async (req, res) => {
 });
 
 // ================================================================
+// TEMP: Test OneDrive upload — GET /test-document?job=103245
+// ================================================================
+app.get("/test-document", async (req, res) => {
+  const jobNumber = req.query.job;
+  if (!jobNumber) return res.status(400).json({ error: "Pass ?job=..." });
+
+  // Find first email with a PDF in Brandon's inbox
+  const inboxRes = await graphFetch(
+    `/users/${BRANDON_EMAIL}/mailFolders/inbox/messages` +
+    `?$expand=attachments($select=id,name,contentType,size)&$top=20`
+  );
+  const inboxData = await inboxRes.json();
+  let targetMsgId = null;
+  let targetAttId = null;
+  for (const msg of inboxData.value || []) {
+    const pdf = (msg.attachments || []).find(a => a.name?.toLowerCase().endsWith(".pdf"));
+    if (pdf) { targetMsgId = msg.id; targetAttId = pdf.id; break; }
+  }
+  if (!targetMsgId) return res.json({ error: "No email with PDF found in Brandon's inbox" });
+
+  const attRes  = await graphFetch(`/users/${BRANDON_EMAIL}/messages/${targetMsgId}/attachments/${targetAttId}`);
+  const attData = await attRes.json();
+
+  try {
+    const link = await uploadWorkOrderToOneDrive(attData.name, attData.contentBytes, jobNumber);
+    res.json({ success: true, filename: attData.name, link });
+  } catch (err) {
+    res.json({ error: err.message });
+  }
+});
+
+// ================================================================
 // TEMP: Test note posting — GET /test-note?job=103245
 // ================================================================
 app.get("/test-note", async (req, res) => {
