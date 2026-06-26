@@ -177,9 +177,8 @@ async function findContact(clientId, pmName) {
   }
 }
 
-// Search Aroflo for a client by name.
-// 1. Exact match on progressively shorter variants.
-// 2. Fuzzy fallback: LIKE search on the base name, pick closest result.
+// Search Aroflo for a client by name using exact match.
+// Tries progressively shorter variants: full name, before-pipe/comma, first word.
 async function findClient(realEstateName) {
   if (!realEstateName) return null;
 
@@ -199,23 +198,6 @@ async function findClient(realEstateName) {
     if (!raw) continue;
     const arr = Array.isArray(raw) ? raw : [raw];
     if (arr.length > 0) return arr[0];
-  }
-
-  // Fuzzy fallback: starts-with LIKE search. Only accept if exactly one result —
-  // multiple results means the name is ambiguous (e.g. "Realmark Urban" vs "Realmark North Coastal").
-  const likeZone = await arofloGet(
-    "zone=clients&where=" + encodeURIComponent(`and|clientname|like|${baseName}%`) + "&page=1"
-  );
-  const likeRaw = likeZone.clients;
-  if (likeRaw) {
-    const arr = Array.isArray(likeRaw) ? likeRaw : [likeRaw];
-    if (arr.length === 1) {
-      console.log(`Fuzzy client match: "${realEstateName}" → "${arr[0].clientname}"`);
-      return arr[0];
-    }
-    if (arr.length > 1) {
-      console.warn(`Ambiguous client name "${realEstateName}" — ${arr.length} matches: ${arr.map(c => c.clientname).join(", ")}`);
-    }
   }
 
   return null;
