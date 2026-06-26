@@ -866,6 +866,75 @@ async function processAiTestingEmails() {
 
 // POLL LOOP
 // ================================================================
+async function pollInbox(mailbox) {
+  const filter = encodeURIComponent(
+    `categories/any(c:c eq '${TRIGGER_CATEGORY}') and not categories/any(c:c eq '${CLIENT_NOT_FOUND_CATEGORY}') and not categories/any(c:c eq '${PROCESSING_CATEGORY}')`
+  );
+
+  const res  = await graphFetch(
+    `/users/${mailbox}/mailFolders/inbox/messages` +
+    `?$filter=${filter}` +
+    `&$select=id,subject,body,categories` +
+    `&$expand=attachments($select=id,name,contentType,size)` +
+    `&$top=10`
+  );
+  const data = await res.json();
+  if (!res.ok) throw new Error(`Graph API error ${res.status}: ${JSON.stringify(data?.error || data)}`);
+
+  const messages = (data.value || []).filter(m =>
+    !m.categories.some(c => c.startsWith("Job created"))
+  );
+  console.log(`Poll (${mailbox}): ${messages.length} email(s) found`);
+
+  // Temp debug — show categories on recent inbox emails
+  const dbg = await (await graphFetch(`/users/${mailbox}/mailFolders/inbox/messages?$select=subject,categories&$top=10&$orderby=receivedDateTime desc`)).json();
+  for (const m of dbg.value || []) console.log("  >>", JSON.stringify(m.categories), m.subject?.slice(0, 60));
+
+  for (const message of messages) {
+    // Lock the email — keep "Bara AI", add "Processing" so it won't re-trigger.
+    // If something fails, just remove "Processing" in Outlook to retry.
+    const lockedCategories = [...message.categories, PROCESSING_CATEGORY];
+    await graphFetch(`/users/${mailbox}/messages/${message.id}`, {
+      method: "PATCH",
+      body: JSON.stringify({ categories: lockedCategories }),
+    });
+    console.log("Locked for processing:", message.subject);
+
+    try {
+      const { result, rawEmail } = await processMessage(message, mailbox);
+      console.log("AI RESULT:", result);
+
+      const { jobNumber } = await createArofloJob(result, rawEmail);
+
+      // Success — remove "Processing", add job tag, keep everything else
+      const jobTag = `Job created - ${jobNumber}`;
+      const doneCategories = [
+        ...lockedCategories.filter(c => c !== PROCESSING_CATEGORY),
+        jobTag,
+      ];
+      await graphFetch(`/users/${mailbox}/messages/${message.id}`, {
+        method: "PATCH",
+        body: JSON.stringify({ categories: doneCategories }),
+      });
+      console.log("Tagged as done:", message.subject);
+    } catch (err) {
+      console.error("Error processing message:", message.subject, err.message);
+      if (err.message.startsWith("Client not found")) {
+        const clientNotFoundCategories = [
+          ...lockedCategories.filter(c => c !== PROCESSING_CATEGORY),
+          CLIENT_NOT_FOUND_CATEGORY,
+        ];
+        await graphFetch(`/users/${mailbox}/messages/${message.id}`, {
+          method: "PATCH",
+          body: JSON.stringify({ categories: clientNotFoundCategories }),
+        });
+        console.log("Tagged as client not found:", message.subject);
+      }
+      // Any other error: leave "Processing" on — remove it in Outlook to retry
+    }
+  }
+}
+
 async function pollEmails() {
   if (pollRunning) {
     console.log("Poll skipped — previous run still in progress");
@@ -873,71 +942,8 @@ async function pollEmails() {
   }
   pollRunning = true;
   try {
-    const filter = encodeURIComponent(
-      `categories/any(c:c eq '${TRIGGER_CATEGORY}') and not categories/any(c:c eq '${CLIENT_NOT_FOUND_CATEGORY}') and not categories/any(c:c eq '${PROCESSING_CATEGORY}')`
-    );
-
-    const res  = await graphFetch(
-      `/users/${process.env.GRAPH_RECIPIENT}/mailFolders/inbox/messages` +
-      `?$filter=${filter}` +
-      `&$select=id,subject,body,categories` +
-      `&$expand=attachments($select=id,name,contentType,size)` +
-      `&$top=10`
-    );
-    const data = await res.json();
-    if (!res.ok) throw new Error(`Graph API error ${res.status}: ${JSON.stringify(data?.error || data)}`);
-    const messages = (data.value || []).filter(m =>
-      !m.categories.some(c => c.startsWith("Job created"))
-    );
-    console.log(`Poll: ${messages.length} email(s) found`);
-
-    // Temp debug — show categories on recent inbox emails
-    const dbg = await (await graphFetch(`/users/${process.env.GRAPH_RECIPIENT}/mailFolders/inbox/messages?$select=subject,categories&$top=10&$orderby=receivedDateTime desc`)).json();
-    for (const m of dbg.value || []) console.log("  >>", JSON.stringify(m.categories), m.subject?.slice(0, 60));
-
-    for (const message of messages) {
-      // Lock the email — keep "Bara AI", add "Processing" so it won't re-trigger.
-      // If something fails, just remove "Processing" in Outlook to retry.
-      const lockedCategories = [...message.categories, PROCESSING_CATEGORY];
-      await graphFetch(`/users/${process.env.GRAPH_RECIPIENT}/messages/${message.id}`, {
-        method: "PATCH",
-        body: JSON.stringify({ categories: lockedCategories }),
-      });
-      console.log("Locked for processing:", message.subject);
-
-      try {
-        const { result, rawEmail } = await processMessage(message);
-        console.log("AI RESULT:", result);
-
-        const { jobNumber } = await createArofloJob(result, rawEmail);
-
-        // Success — remove "Processing", add job tag, keep everything else
-        const jobTag = `Job created - ${jobNumber}`;
-        const doneCategories = [
-          ...lockedCategories.filter(c => c !== PROCESSING_CATEGORY),
-          jobTag,
-        ];
-        await graphFetch(`/users/${process.env.GRAPH_RECIPIENT}/messages/${message.id}`, {
-          method: "PATCH",
-          body: JSON.stringify({ categories: doneCategories }),
-        });
-        console.log("Tagged as done:", message.subject);
-      } catch (err) {
-        console.error("Error processing message:", message.subject, err.message);
-        if (err.message.startsWith("Client not found")) {
-          const clientNotFoundCategories = [
-            ...lockedCategories.filter(c => c !== PROCESSING_CATEGORY),
-            CLIENT_NOT_FOUND_CATEGORY,
-          ];
-          await graphFetch(`/users/${process.env.GRAPH_RECIPIENT}/messages/${message.id}`, {
-            method: "PATCH",
-            body: JSON.stringify({ categories: clientNotFoundCategories }),
-          });
-          console.log("Tagged as client not found:", message.subject);
-        }
-        // Any other error: leave "Processing" on — remove it in Outlook to retry
-      }
-    }
+    await pollInbox(process.env.GRAPH_RECIPIENT);
+    await pollInbox(BRANDON_EMAIL);
   } catch (err) {
     console.error("Poll error:", err);
   } finally {
@@ -1025,6 +1031,25 @@ app.get("/test-note", async (req, res) => {
 app.get("/run-ai-test", async (req, res) => {
   res.json({ status: "triggered" });
   await processAiTestingEmails();
+});
+
+// ================================================================
+// Manual trigger to process Brandon's inbox immediately
+// ================================================================
+app.get("/run-from-inbox", async (req, res) => {
+  if (pollRunning) {
+    res.json({ status: "skipped", reason: "poll already running" });
+    return;
+  }
+  res.json({ status: "triggered" });
+  pollRunning = true;
+  try {
+    await pollInbox(BRANDON_EMAIL);
+  } catch (err) {
+    console.error("run-from-inbox error:", err.message);
+  } finally {
+    pollRunning = false;
+  }
 });
 
 // TEMP: Test Rica forwarding — GET /test-rica
