@@ -229,8 +229,26 @@ async function findOrUpdateLocation(clientId, address, tenantName, tenantContact
   const location = all.find(l => l.locationname?.toLowerCase().includes(streetPart));
 
   if (!location) {
-    console.log("No location matching:", streetPart, "— available:", all.map(l => l.locationname));
-    return null;
+    console.log("No location matching:", streetPart, "— creating new location:", address);
+    const createXml =
+`<locations>
+  <location>
+    <linkedtoid>${clientId}</linkedtoid>
+    <locationname>${address}</locationname>
+    ${tenantName    ? `<SiteContact>${tenantName}</SiteContact>`  : ""}
+    ${tenantContact ? `<SitePhone>${tenantContact}</SitePhone>`   : ""}
+  </location>
+</locations>`;
+    try {
+      const createZone = await arofloPost("zone=locations&postxml=" + encodeURIComponent(createXml));
+      const inserted = createZone?.postresults?.inserts?.locations;
+      const newId = (Array.isArray(inserted) ? inserted[0] : inserted)?.locationid;
+      console.log("Location created:", newId);
+      return newId ? { locationid: newId, locationname: address } : null;
+    } catch (err) {
+      console.warn("Location creation failed:", err.message);
+      return null;
+    }
   }
 
   console.log("FOUND LOCATION:", location.locationid, location.locationname);
