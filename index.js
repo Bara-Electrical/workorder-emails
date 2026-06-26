@@ -135,29 +135,6 @@ async function arofloPost(body) {
   return data.zoneresponse;
 }
 
-async function uploadWorkOrderToOneDrive(filename, base64Content, jobNumber) {
-  const safeFilename = `${jobNumber} - ${filename}`.replace(/[<>:"/\\|?*#]/g, "_");
-  const buffer = Buffer.from(base64Content, "base64");
-  const drivePath = ["Work Orders", safeFilename].map(encodeURIComponent).join("/");
-
-  const uploadRes = await graphFetch(
-    `/users/${process.env.GRAPH_RECIPIENT}/drive/root:/${drivePath}:/content`,
-    { method: "PUT", headers: { "Content-Type": "application/pdf" }, body: buffer }
-  );
-  if (!uploadRes.ok) {
-    const err = await uploadRes.json();
-    throw new Error(`OneDrive upload failed: ${JSON.stringify(err?.error)}`);
-  }
-  const uploadData = await uploadRes.json();
-
-  const linkRes = await graphFetch(
-    `/users/${process.env.GRAPH_RECIPIENT}/drive/items/${uploadData.id}/createLink`,
-    { method: "POST", body: JSON.stringify({ type: "view", scope: "organization" }) }
-  );
-  const linkData = await linkRes.json();
-  return linkData.link?.webUrl || null;
-}
-
 // Task type IDs sourced from live Aroflo system on 2026-06-24
 const TASK_TYPE_MAP = {
   "EC1":                            "JCYqLyBSQCAgCg==", // $120 Standard Electrical Compliance
@@ -313,7 +290,7 @@ function buildDescription(result) {
   return parts.join("\n");
 }
 
-async function createArofloJob(result, rawEmail, pdfAttachment = null) {
+async function createArofloJob(result, rawEmail) {
   console.log("CREATING AROFLO JOB...");
 
   const taskTypeId  = TASK_TYPE_MAP[result["task-type"]];
@@ -406,21 +383,10 @@ async function createArofloJob(result, rawEmail, pdfAttachment = null) {
   }
   console.log("AROFLO JOB CREATED — job number:", jobNumber, "taskId:", confirmedTaskId);
 
-  // Upload PDF to OneDrive and get a link to include in the note
-  let oneDriveLink = null;
-  if (pdfAttachment) {
-    try {
-      oneDriveLink = await uploadWorkOrderToOneDrive(pdfAttachment.name, pdfAttachment.contentBytes, jobNumber);
-      console.log("Work order PDF uploaded to OneDrive:", oneDriveLink);
-    } catch (err) {
-      console.warn("OneDrive upload failed:", err.message);
-    }
-  }
-
   // Post the original email as a note on the task
   if (confirmedTaskId && rawEmail) {
     try {
-      const noteHtml = await emailHtmlForNote(rawEmail, oneDriveLink);
+      const noteHtml = await emailHtmlForNote(rawEmail);
       const xml = `<tasks><task><taskid>${confirmedTaskId}</taskid><notes><note><content><![CDATA[${noteHtml}]]></content></note></notes></task></tasks>`;
       await arofloPost("zone=tasks&postxml=" + encodeURIComponent(xml));
       console.log("Email note posted");
@@ -503,7 +469,7 @@ async function decodeWrappedLinks(html) {
 }
 
 // Strip scripts/styles/tracking pixels but keep HTML structure for display in Aroflo notes
-async function emailHtmlForNote(html, pdfLink = null) {
+async function emailHtmlForNote(html) {
   let cleaned = html
     .replace(/<script[\s\S]*?<\/script>/gi, "")
     .replace(/<style[\s\S]*?<\/style>/gi, "")
@@ -516,10 +482,7 @@ async function emailHtmlForNote(html, pdfLink = null) {
 
   cleaned = await decodeWrappedLinks(cleaned);
 
-  const linkHtml = pdfLink
-    ? `<p style="margin:12px 0"><a href="${pdfLink}">View Work Order PDF</a></p>`
-    : "";
-  return `<p style="background:#4a90d9;color:#ffffff;padding:14px 16px;margin:0 0 16px 0;border-radius:4px"><strong>Workorder</strong></p>${linkHtml}<div style="padding:0 12px">${cleaned}</div>`;
+  return `<p style="background:#4a90d9;color:#ffffff;padding:14px 16px;margin:0 0 16px 0;border-radius:4px"><strong>Workorder</strong></p><div style="padding:0 12px">${cleaned}</div>`;
 }
 
 // Known work order portal domains
@@ -535,10 +498,7 @@ function findWorkOrderLink(rawHtml) {
   for (const [, href, rawText] of anchors) {
     if (!href.startsWith("https://")) continue;
     const text = rawText.replace(/<[^>]*>/g, "").trim();
-    if (/work\s*order/i.test(text)) {
-      console.log("SELECTED WORKORDER LINK by text:", text.slice(0, 60), "->", href.slice(0, 80));
-      return href;
-    }
+    if (/work\s*order/i.test(text)) return href;
   }
 
   // Fallback: known portal domains or "workorder" in the URL itself
@@ -547,10 +507,7 @@ function findWorkOrderLink(rawHtml) {
     const dest = /safelinks\.protection\.outlook\.com/i.test(href)
       ? (() => { try { return decodeURIComponent(new URL(href).searchParams.get("url") || href); } catch { return href; } })()
       : href;
-    if (/workorder/i.test(dest) || WORKORDER_DOMAINS.test(dest)) {
-      console.log("SELECTED WORKORDER LINK by domain/url:", dest.slice(0, 80));
-      return href;
-    }
+    if (/workorder/i.test(dest) || WORKORDER_DOMAINS.test(dest)) return href;
   }
 
   // Last resort: plain-text TAPI URL
@@ -565,7 +522,6 @@ function findWorkOrderLink(rawHtml) {
 // EMAIL PROCESSING
 // ================================================================
 async function processMessage(message, mailbox = process.env.GRAPH_RECIPIENT, onStatus = null) {
-  console.log("WORK ORDER EMAIL RECEIVED:", message.subject);
 
   const attachments = message.attachments || [];
   const rawBody     = message.body?.content || "";
@@ -580,7 +536,6 @@ async function processMessage(message, mailbox = process.env.GRAPH_RECIPIENT, on
   const workOrderLink = findWorkOrderLink(rawBody);
 
   if (workOrderLink) {
-    console.log("WORK ORDER LINK FOUND:", workOrderLink.slice(0, 120));
     try {
       let response = await fetch(workOrderLink, {
         redirect: "follow",
@@ -589,34 +544,24 @@ async function processMessage(message, mailbox = process.env.GRAPH_RECIPIENT, on
 
       // Inky link protection stops the redirect — bypass with confirm=True
       if (response.url.includes("shared.outlook.inky.com") && !response.url.includes("confirm=True")) {
-        console.log("INKY BYPASS:", response.url.slice(0, 120));
         response = await fetch(response.url + "&confirm=True", {
           redirect: "follow",
           headers: { "User-Agent": "Mozilla/5.0" },
         });
       }
 
-      console.log("FINAL URL:", response.url);
       const contentType = response.headers.get("content-type") || "";
       if (contentType.includes("pdf")) {
         const buffer  = await response.arrayBuffer();
         const pdfText = await extractPDF(new Uint8Array(buffer));
         textForAI = withEmailBody(pdfText.replace(/\s+/g, " ").trim());
-        console.log("USING LINKED PDF + EMAIL BODY FOR AI");
       } else {
         const html     = await response.text();
         const linkText = cleanHtml(html).slice(0, 50000);
-        console.log("LINK CLEAN TEXT LENGTH:", linkText.length);
-        if (linkText.length > 200) {
-          textForAI = withEmailBody(linkText);
-          console.log("USING LINK CONTENT + EMAIL BODY FOR AI");
-        } else {
-          console.log("LINK CONTENT TOO SHORT — FALLING BACK TO EMAIL BODY");
-        }
+        if (linkText.length > 200) textForAI = withEmailBody(linkText);
       }
     } catch (err) {
-      console.error("LINK FETCH ERROR:", err.message);
-      console.log("FALLING BACK TO EMAIL BODY");
+      console.error("Link fetch error:", err.message);
     }
   }
 
@@ -625,23 +570,15 @@ async function processMessage(message, mailbox = process.env.GRAPH_RECIPIENT, on
     (a.name || "").toLowerCase().endsWith(".pdf")
   );
 
-  let pdfAttachment = null;
   if (workorderAttachment) {
-    console.log("FOUND WORK ORDER PDF:", workorderAttachment.name);
     const attachRes  = await graphFetch(
       `/users/${mailbox}/messages/${message.id}/attachments/${workorderAttachment.id}`
     );
     const attachData = await attachRes.json();
-    pdfAttachment = { name: attachData.name, contentBytes: attachData.contentBytes };
     const data       = Uint8Array.from(atob(attachData.contentBytes), c => c.charCodeAt(0));
     const pdfText    = await extractPDF(data);
     textForAI = withEmailBody(pdfText.replace(/\s+/g, " ").trim());
-    console.log("USING PDF ATTACHMENT + EMAIL BODY FOR AI");
-  } else if (!workOrderLink) {
-    console.log("NO PDF OR LINK - USING EMAIL BODY ONLY");
   }
-
-  console.log("TEXT LENGTH:", textForAI.length);
   if (onStatus) await onStatus(SENDING_TO_AI_CATEGORY);
 
   const responseAI = await openai.responses.create({
@@ -664,7 +601,7 @@ CRITICAL RULES:
 - Do NOT guess missing fields — if missing return null.
 - The text may be a structured form (with clear sections) OR plain prose in an email. Extract the same fields either way — don't return null just because sections aren't labelled.
 - If the input contains both a PDF CONTENT section and an EMAIL BODY section, prefer the PDF for all fields but check the email body for anything not found in the PDF.
-- For task-type: if the text explicitly mentions EC1, AC1, AC2, or ACEC1 anywhere, use that — it takes priority over everything else, even if other work is also mentioned. If a compliance check or aircon service is recommended or suggested (e.g. "recommend compliance check", "suggest an EC1"), treat it as that task type — recommendations from a PM or owner should be acted on. EXCEPTION: if the work order includes a package (EC1/AC1/AC2/ACEC1) AND additional work beyond the package, set task-type to "Real Estate General Maintenance" (or "Real Estate Aircon Maintenance" if the extra work is aircon-related) — but still set the package field to the package code.
+- For task-type: if the text explicitly mentions EC1, AC1, AC2, or ACEC1 anywhere, use that — it takes priority over everything else, even if other work is also mentioned. If a compliance check or aircon service is recommended or suggested (e.g. "recommend compliance check", "suggest an EC1"), treat it as that task type — recommendations from a PM or owner should be acted on. EXCEPTION: if the work order includes a package (EC1/AC1/AC2/ACEC1) AND additional work beyond the package, set task-type to "Real Estate General Maintenance" (or "Real Estate Aircon Maintenance" if the extra work is aircon-related) — but still set the package field to the package code. NOTE: smoke alarm testing, replacement, or supply is already included within EC1 — do not treat it as additional work beyond the package.
 - package: set to "EC1", "AC1", "AC2", or "ACEC1" if the job involves one of these standard packages — even if task-type has been set to general/aircon maintenance due to extra work being present. Only return null if there is genuinely no package involved at all (e.g. a pure repair or general maintenance job with no compliance check or aircon service).
 
 TASK TYPES:
@@ -736,7 +673,7 @@ Return ONLY valid JSON with these exact keys:
       .join(", ");
   }
 
-  return { result: parsed, rawEmail: rawBody, pdfAttachment };
+  return { result: parsed, rawEmail: rawBody };
 }
 
 // ================================================================
@@ -967,10 +904,6 @@ async function pollInbox(mailbox) {
   );
   console.log(`Poll (${mailbox}): ${messages.length} email(s) found`);
 
-  // Temp debug — show categories on recent inbox emails
-  const dbg = await (await graphFetch(`/users/${mailbox}/mailFolders/inbox/messages?$select=subject,categories&$top=10&$orderby=receivedDateTime desc`)).json();
-  for (const m of dbg.value || []) console.log("  >>", JSON.stringify(m.categories), m.subject?.slice(0, 60));
-
   for (const message of messages) {
     let currentCategories = await setJobStatus(mailbox, message.id, message.categories, READING_EMAIL_CATEGORY);
     console.log("Reading:", message.subject);
@@ -980,11 +913,10 @@ async function pollInbox(mailbox) {
         currentCategories = await setJobStatus(mailbox, message.id, currentCategories, status);
       };
 
-      const { result, rawEmail, pdfAttachment } = await processMessage(message, mailbox, onStatus);
-      console.log("AI RESULT:", result);
+      const { result, rawEmail } = await processMessage(message, mailbox, onStatus);
 
       await onStatus(CREATING_JOB_CATEGORY);
-      const { jobNumber } = await createArofloJob(result, rawEmail, pdfAttachment);
+      const { jobNumber } = await createArofloJob(result, rawEmail);
 
       // Success — strip all status tags, add job tag
       const jobTag = `Job created - ${jobNumber}`;
@@ -1018,50 +950,6 @@ async function pollEmails() {
     pollRunning = false;
   }
 }
-
-// ================================================================
-// TEMP: List Aroflo task types — GET /task-types
-// ================================================================
-app.get("/task-types", async (req, res) => {
-  try {
-    const data = await arofloGet("zone=tasktypes&page=1");
-    res.json(data);
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
-});
-
-// ================================================================
-// TEMP: Test OneDrive upload — GET /test-document?job=103245
-// ================================================================
-app.get("/test-document", async (req, res) => {
-  const jobNumber = req.query.job;
-  if (!jobNumber) return res.status(400).json({ error: "Pass ?job=..." });
-
-  // Find first email with a PDF in Brandon's inbox
-  const inboxRes = await graphFetch(
-    `/users/${BRANDON_EMAIL}/mailFolders/inbox/messages` +
-    `?$expand=attachments($select=id,name,contentType,size)&$top=20`
-  );
-  const inboxData = await inboxRes.json();
-  let targetMsgId = null;
-  let targetAttId = null;
-  for (const msg of inboxData.value || []) {
-    const pdf = (msg.attachments || []).find(a => a.name?.toLowerCase().endsWith(".pdf"));
-    if (pdf) { targetMsgId = msg.id; targetAttId = pdf.id; break; }
-  }
-  if (!targetMsgId) return res.json({ error: "No email with PDF found in Brandon's inbox" });
-
-  const attRes  = await graphFetch(`/users/${BRANDON_EMAIL}/messages/${targetMsgId}/attachments/${targetAttId}`);
-  const attData = await attRes.json();
-
-  try {
-    const link = await uploadWorkOrderToOneDrive(attData.name, attData.contentBytes, jobNumber);
-    res.json({ success: true, filename: attData.name, link });
-  } catch (err) {
-    res.json({ error: err.message });
-  }
-});
 
 // ================================================================
 // TEMP: Test note posting — GET /test-note?job=103245
