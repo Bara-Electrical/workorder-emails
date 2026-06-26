@@ -141,7 +141,7 @@ async function uploadWorkOrderToOneDrive(filename, base64Content, jobNumber) {
   const drivePath = ["Work Orders", safeFilename].map(encodeURIComponent).join("/");
 
   const uploadRes = await graphFetch(
-    `/users/${BRANDON_EMAIL}/drive/root:/${drivePath}:/content`,
+    `/users/${process.env.GRAPH_RECIPIENT}/drive/root:/${drivePath}:/content`,
     { method: "PUT", headers: { "Content-Type": "application/pdf" }, body: buffer }
   );
   if (!uploadRes.ok) {
@@ -151,7 +151,7 @@ async function uploadWorkOrderToOneDrive(filename, base64Content, jobNumber) {
   const uploadData = await uploadRes.json();
 
   const linkRes = await graphFetch(
-    `/users/${BRANDON_EMAIL}/drive/items/${uploadData.id}/createLink`,
+    `/users/${process.env.GRAPH_RECIPIENT}/drive/items/${uploadData.id}/createLink`,
     { method: "POST", body: JSON.stringify({ type: "view", scope: "organization" }) }
   );
   const linkData = await linkRes.json();
