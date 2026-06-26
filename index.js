@@ -356,27 +356,30 @@ async function createArofloJob(result, rawEmail) {
   const task     = Array.isArray(inserted) ? inserted[0] : inserted;
   const taskId   = task?.taskid;
 
-  // jobnumber isn't in the insert response — fetch it
+  // jobnumber isn't in the insert response — fetch it. Also use the fetched taskId
+  // for note posting since it's the same format /test-note uses and is confirmed working.
   let jobNumber = "(see Aroflo)";
+  let confirmedTaskId = taskId;
   if (taskId) {
     try {
       const fetched = await arofloGet("zone=tasks&where=" + encodeURIComponent(`and|taskid|=|${taskId}`) + "&page=1");
       const arr = Array.isArray(fetched.tasks) ? fetched.tasks : [fetched.tasks];
       jobNumber = arr[0]?.jobnumber || taskId;
+      confirmedTaskId = arr[0]?.taskid || taskId;
     } catch (err) {
       console.warn("Could not fetch job number:", err.message);
       jobNumber = taskId;
     }
   }
-  console.log("AROFLO JOB CREATED — job number:", jobNumber);
+  console.log("AROFLO JOB CREATED — job number:", jobNumber, "taskId:", confirmedTaskId);
 
   // Post notes one at a time — Aroflo only handles one <tasknote> per request
   const notePayloads = [];
-  if (taskId && notes) {
-    notePayloads.push(`<tasknotes><tasknote><taskid>${taskId}</taskid><content><![CDATA[${notes}]]></content></tasknote></tasknotes>`);
+  if (confirmedTaskId && notes) {
+    notePayloads.push(`<tasknotes><tasknote><taskid>${confirmedTaskId}</taskid><content><![CDATA[${notes}]]></content></tasknote></tasknotes>`);
   }
-  if (taskId && rawEmail) {
-    notePayloads.push(`<tasknotes><tasknote><taskid>${taskId}</taskid><content><![CDATA[${await emailHtmlForNote(rawEmail)}]]></content></tasknote></tasknotes>`);
+  if (confirmedTaskId && rawEmail) {
+    notePayloads.push(`<tasknotes><tasknote><taskid>${confirmedTaskId}</taskid><content><![CDATA[${await emailHtmlForNote(rawEmail)}]]></content></tasknote></tasknotes>`);
   }
   for (const xml of notePayloads) {
     try {
@@ -388,11 +391,11 @@ async function createArofloJob(result, rawEmail) {
   }
 
   // Aroflo doesn't apply substatus on create — do a follow-up update
-  if (taskId && substatusId) {
+  if (confirmedTaskId && substatusId) {
     const updateXml =
 `<tasks>
   <task>
-    <taskid>${taskId}</taskid>
+    <taskid>${confirmedTaskId}</taskid>
     <status>not started</status>
     <substatus><substatusid>${substatusId}</substatusid></substatus>
   </task>
