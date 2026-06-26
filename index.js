@@ -229,9 +229,12 @@ async function createLocation(clientId, address, tenantName, tenantContact) {
   const createZone = await arofloPost("zone=clients&postxml=" + encodeURIComponent(xml));
   console.log("Location create response:", JSON.stringify(createZone?.postresults));
 
-  // Aroflo may not return the new locationid on a client update — fetch it back
-  const inserted = createZone?.postresults?.inserts?.locations;
-  const newId = (Array.isArray(inserted) ? inserted[0] : inserted)?.locationid;
+  // Aroflo returns the new locationid under updates.clients[0].locations[0]
+  const pr          = createZone?.postresults;
+  const updClients  = pr?.updates?.clients;
+  const updClient   = Array.isArray(updClients) ? updClients[0] : updClients;
+  const updLocs     = updClient?.locations;
+  const newId       = (Array.isArray(updLocs) ? updLocs[0] : updLocs)?.locationid;
   if (newId) {
     console.log("Location created:", newId, address);
     return { locationid: newId, locationname: address };
