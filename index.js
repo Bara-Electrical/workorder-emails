@@ -217,7 +217,7 @@ async function createLocation(clientId, address, tenantName, tenantContact) {
 `<clients><client>
   <clientid>${clientId}</clientid>
   <locations><location>
-    <locationname><![CDATA[${address}]]></locationname>
+    <locationname><![CDATA[${street}]]></locationname>
     <suburb><![CDATA[${suburb}]]></suburb>
     <state><![CDATA[${state}]]></state>
     <postcode><![CDATA[${postcode}]]></postcode>
