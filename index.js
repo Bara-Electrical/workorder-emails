@@ -659,20 +659,26 @@ async function forwardRicaEmails() {
     if (emails.length) console.log(`Rica: ${emails.length} tagged email(s) in workorders inbox`);
 
     const aiTestingFolder = await getAiTestingFolderId();
+    const aiDoneFolder    = await getAiDoneFolderId();
 
     for (const email of emails) {
-      const fwdSubject = `AI testing - FW: ${email.subject}`;
-
-      // Dedup: check the "AI testing" folder (where Outlook rule moves them),
-      // falling back to inbox if the folder isn't found.
+      const fwdSubject  = `AI testing - FW: ${email.subject}`;
       const safeSubj    = fwdSubject.replace(/'/g, "''");
       const dedupFilter = encodeURIComponent(`subject eq '${safeSubj}'`);
-      const dedupFolder = aiTestingFolder
+
+      // Dedup: check "AI testing" folder (unprocessed) and "AI done" folder (already processed)
+      const testingFolder = aiTestingFolder
         ? `/users/${BRANDON_EMAIL}/mailFolders/${aiTestingFolder}/messages`
         : `/users/${BRANDON_EMAIL}/mailFolders/inbox/messages`;
-      const dedupRes    = await graphFetch(`${dedupFolder}?$filter=${dedupFilter}&$select=id&$top=1`);
-      const dedupData   = await dedupRes.json();
+      const dedupRes  = await graphFetch(`${testingFolder}?$filter=${dedupFilter}&$select=id&$top=1`);
+      const dedupData = await dedupRes.json();
       if (dedupData.value?.length > 0) continue;
+
+      if (aiDoneFolder) {
+        const doneRes  = await graphFetch(`/users/${BRANDON_EMAIL}/mailFolders/${aiDoneFolder}/messages?$filter=${dedupFilter}&$select=id&$top=1`);
+        const doneData = await doneRes.json();
+        if (doneData.value?.length > 0) continue;
+      }
 
       // Fetch attachments if present
       let attachments = [];
@@ -687,15 +693,16 @@ async function forwardRicaEmails() {
         }));
       }
 
-      // Send from workorders to Brandon with saveToSentItems: false — leaves zero
-      // trace in the workorders mailbox (not even Sent Items)
+      // Strip Graph metadata from body before sending — passing email.body directly
+      // can cause Exchange to ignore the custom subject
       const message = {
         subject:      fwdSubject,
-        body:         email.body,
+        body:         { contentType: email.body?.contentType || "html", content: email.body?.content || "" },
         toRecipients: [{ emailAddress: { address: BRANDON_EMAIL } }],
       };
       if (attachments.length) message.attachments = attachments;
 
+      console.log("Rica: sending with subject:", fwdSubject);
       const sendRes = await graphFetch(`/users/${WORKORDERS_EMAIL}/sendMail`, {
         method: "POST",
         body: JSON.stringify({ message, saveToSentItems: false }),
