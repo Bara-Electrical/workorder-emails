@@ -136,11 +136,12 @@ async function arofloPost(body) {
 }
 
 async function uploadWorkOrderToOneDrive(filename, base64Content, jobNumber) {
-  const safeFilename = `${jobNumber} - ${filename}`.replace(/[<>:"/\\|?*]/g, "_");
+  const safeFilename = `${jobNumber} - ${filename}`.replace(/[<>:"/\\|?*#]/g, "_");
   const buffer = Buffer.from(base64Content, "base64");
+  const drivePath = ["Work Orders", safeFilename].map(encodeURIComponent).join("/");
 
   const uploadRes = await graphFetch(
-    `/users/${BRANDON_EMAIL}/drive/root:/Work Orders/${safeFilename}:/content`,
+    `/users/${BRANDON_EMAIL}/drive/root:/${drivePath}:/content`,
     { method: "PUT", headers: { "Content-Type": "application/pdf" }, body: buffer }
   );
   if (!uploadRes.ok) {
