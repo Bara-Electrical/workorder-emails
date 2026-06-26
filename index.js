@@ -201,6 +201,25 @@ async function findClient(realEstateName) {
   return null;
 }
 
+async function createLocation(clientId, address, tenantName, tenantContact) {
+  const xml =
+`<locations>
+  <location>
+    <linkedtoid>${clientId}</linkedtoid>
+    <locationname>${address}</locationname>
+    ${tenantName    ? `<SiteContact>${tenantName}</SiteContact>`  : ""}
+    ${tenantContact ? `<SitePhone>${tenantContact}</SitePhone>`   : ""}
+  </location>
+</locations>`;
+  const createZone = await arofloPost("zone=locations&postxml=" + encodeURIComponent(xml));
+  console.log("Location create response:", JSON.stringify(createZone?.postresults));
+  const inserted = createZone?.postresults?.inserts?.locations;
+  const newId = (Array.isArray(inserted) ? inserted[0] : inserted)?.locationid;
+  if (!newId) { console.warn("Location created but no locationid returned"); return null; }
+  console.log("Location created:", newId, address);
+  return { locationid: newId, locationname: address };
+}
+
 // Find a location by street address under a client, then update SiteContact/SitePhone if stale.
 // Fetches all locations linked to the client and matches by street address locally —
 // the locationname|like WHERE clause is not supported by Aroflo.
@@ -223,32 +242,12 @@ async function findOrUpdateLocation(clientId, address, tenantName, tenantContact
   }
 
   const raw = zone.locations;
-  if (!raw) { console.log("No locations found for client"); return null; }
-
-  const all      = Array.isArray(raw) ? raw : [raw];
+  const all = raw ? (Array.isArray(raw) ? raw : [raw]) : [];
   const location = all.find(l => l.locationname?.toLowerCase().includes(streetPart));
 
   if (!location) {
     console.log("No location matching:", streetPart, "— creating new location:", address);
-    const createXml =
-`<locations>
-  <location>
-    <linkedtoid>${clientId}</linkedtoid>
-    <locationname>${address}</locationname>
-    ${tenantName    ? `<SiteContact>${tenantName}</SiteContact>`  : ""}
-    ${tenantContact ? `<SitePhone>${tenantContact}</SitePhone>`   : ""}
-  </location>
-</locations>`;
-    try {
-      const createZone = await arofloPost("zone=locations&postxml=" + encodeURIComponent(createXml));
-      const inserted = createZone?.postresults?.inserts?.locations;
-      const newId = (Array.isArray(inserted) ? inserted[0] : inserted)?.locationid;
-      console.log("Location created:", newId);
-      return newId ? { locationid: newId, locationname: address } : null;
-    } catch (err) {
-      console.warn("Location creation failed:", err.message);
-      return null;
-    }
+    return await createLocation(clientId, address, tenantName, tenantContact);
   }
 
   console.log("FOUND LOCATION:", location.locationid, location.locationname);
@@ -968,6 +967,22 @@ async function pollEmails() {
     pollRunning = false;
   }
 }
+
+// ================================================================
+// TEMP: Test location creation — GET /test-location?client=Realmark%20Urban&address=123%20Example%20St%20Perth%20WA%206000
+// ================================================================
+app.get("/test-location", async (req, res) => {
+  const { client: clientName, address } = req.query;
+  if (!clientName || !address) return res.status(400).json({ error: "Pass ?client=...&address=..." });
+  try {
+    const client = await findClient(clientName);
+    if (!client) return res.json({ error: `Client not found: ${clientName}` });
+    const location = await createLocation(client.clientid, address, null, null);
+    res.json({ clientId: client.clientid, clientName: client.clientname, location });
+  } catch (err) {
+    res.json({ error: err.message });
+  }
+});
 
 // ================================================================
 // TEMP: Test note posting — GET /test-note?job=103245
