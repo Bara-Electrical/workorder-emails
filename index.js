@@ -370,18 +370,20 @@ async function createArofloJob(result, rawEmail) {
   }
   console.log("AROFLO JOB CREATED — job number:", jobNumber);
 
-  // Post notes separately — inline notes on task creation are not supported
-  if (taskId && (notes || rawEmail)) {
-    const noteItems = [
-      notes    ? `<tasknote><taskid>${taskId}</taskid><content><![CDATA[${notes}]]></content></tasknote>` : "",
-      rawEmail ? `<tasknote><taskid>${taskId}</taskid><content><![CDATA[${await emailHtmlForNote(rawEmail)}]]></content></tasknote>` : "",
-    ].join("");
-    const notesXml = `<tasknotes>${noteItems}</tasknotes>`;
+  // Post notes one at a time — Aroflo only handles one <tasknote> per request
+  const notePayloads = [];
+  if (taskId && notes) {
+    notePayloads.push(`<tasknotes><tasknote><taskid>${taskId}</taskid><content><![CDATA[${notes}]]></content></tasknote></tasknotes>`);
+  }
+  if (taskId && rawEmail) {
+    notePayloads.push(`<tasknotes><tasknote><taskid>${taskId}</taskid><content><![CDATA[${await emailHtmlForNote(rawEmail)}]]></content></tasknote></tasknotes>`);
+  }
+  for (const xml of notePayloads) {
     try {
-      const notesZone = await arofloPost("zone=tasknotes&postxml=" + encodeURIComponent(notesXml));
-      console.log("Notes posted:", notesZone?.postresults?.inserttotal ?? "unknown", JSON.stringify(notesZone ?? null));
+      const notesZone = await arofloPost("zone=tasknotes&postxml=" + encodeURIComponent(xml));
+      console.log("Note posted:", notesZone?.postresults?.inserttotal ?? "unknown", JSON.stringify(notesZone ?? null));
     } catch (err) {
-      console.warn("Notes post failed:", err.message);
+      console.warn("Note post failed:", err.message);
     }
   }
 
