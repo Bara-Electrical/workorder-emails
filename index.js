@@ -1041,12 +1041,25 @@ app.get("/test-document", async (req, res) => {
   const attRes  = await graphFetch(`/users/${BRANDON_EMAIL}/messages/${targetMsgId}/attachments/${targetAttId}`);
   const attData = await attRes.json();
 
-  try {
-    const result = await arofloUploadDocument(taskId, attData.name, attData.contentBytes);
-    res.json({ success: true, filename: attData.name, result });
-  } catch (err) {
-    res.json({ error: err.message });
+  // Try both field name variants and return raw responses for debugging
+  const results = {};
+  for (const fieldName of ["filedata", "content", "data"]) {
+    const xml  = `<taskdocuments><taskdocument><taskid>${taskId}</taskid><filename>${attData.name}</filename><${fieldName}>${attData.contentBytes}</${fieldName}></taskdocument></taskdocuments>`;
+    const body = "zone=taskdocuments&postxml=" + encodeURIComponent(xml);
+    const ts   = new Date().toISOString();
+    const auth = arofloAuth();
+    const raw  = await fetch(AROFLO_BASE + "?", {
+      method: "POST",
+      headers: {
+        Accept: AROFLO_ACCEPT, Authorization: auth,
+        Authentication: "HMAC " + arofloSign("POST", body, ts),
+        afdatetimeutc: ts, "Content-Type": "application/x-www-form-urlencoded",
+      },
+      body,
+    });
+    results[fieldName] = await raw.json();
   }
+  res.json({ taskId, filename: attData.name, results });
 });
 
 // ================================================================
