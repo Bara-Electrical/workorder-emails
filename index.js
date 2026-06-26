@@ -177,25 +177,45 @@ async function findContact(clientId, pmName) {
   }
 }
 
-// Search Aroflo for a client by name using the API where clause.
-// Tries progressively shorter variants: full name, before-pipe, first word.
+// Search Aroflo for a client by name.
+// 1. Exact match on progressively shorter variants.
+// 2. Fuzzy fallback: LIKE search on the base name, pick closest result.
 async function findClient(realEstateName) {
   if (!realEstateName) return null;
 
+  const baseName = realEstateName.split(/[|,]/)[0].trim();
+
   const candidates = [
-    realEstateName,                              // "Realmark Urban"
-    realEstateName.split(/[|,]/)[0].trim(),      // before " | " separator
-    realEstateName.split(" ")[0],                // first word only
-  ].filter((v, i, a) => a.indexOf(v) === i);    // dedupe
+    realEstateName,
+    baseName,
+    baseName.split(" ")[0],
+  ].filter((v, i, a) => a.indexOf(v) === i);
 
   for (const name of candidates) {
-    const zone    = await arofloGet(
+    const zone = await arofloGet(
       "zone=clients&where=" + encodeURIComponent(`and|clientname|=|${name}`) + "&page=1"
     );
-    const raw     = zone.clients;
+    const raw = zone.clients;
     if (!raw) continue;
-    const arr     = Array.isArray(raw) ? raw : [raw];
+    const arr = Array.isArray(raw) ? raw : [raw];
     if (arr.length > 0) return arr[0];
+  }
+
+  // Fuzzy fallback: starts-with LIKE search. Only accept if exactly one result —
+  // multiple results means the name is ambiguous (e.g. "Realmark Urban" vs "Realmark North Coastal").
+  const likeZone = await arofloGet(
+    "zone=clients&where=" + encodeURIComponent(`and|clientname|like|${baseName}%`) + "&page=1"
+  );
+  const likeRaw = likeZone.clients;
+  if (likeRaw) {
+    const arr = Array.isArray(likeRaw) ? likeRaw : [likeRaw];
+    if (arr.length === 1) {
+      console.log(`Fuzzy client match: "${realEstateName}" → "${arr[0].clientname}"`);
+      return arr[0];
+    }
+    if (arr.length > 1) {
+      console.warn(`Ambiguous client name "${realEstateName}" — ${arr.length} matches: ${arr.map(c => c.clientname).join(", ")}`);
+    }
   }
 
   return null;
@@ -352,10 +372,15 @@ function buildDescription(result) {
 
 async function createArofloJob(result, rawEmail) {
   console.log("CREATING AROFLO JOB...");
+  const warnings = [];
 
   const taskTypeId  = TASK_TYPE_MAP[result["task-type"]];
   const substatusId = SUBSTATUS_MAP[result["task-type"]] || "Iyc6LyYK"; // default: Ready to schedule
-  if (!taskTypeId) console.warn("Unknown task type:", result["task-type"]);
+  if (!taskTypeId) {
+    const detail = `Unknown task type: "${result["task-type"]}" — task created without a task type`;
+    console.warn(detail);
+    warnings.push({ tag: "Unknown task type", detail });
+  }
 
   const client = await findClient(result["real-estate"]);
   if (!client) throw new Error(`Client not found in Aroflo: "${result["real-estate"]}"`);
@@ -367,10 +392,20 @@ async function createArofloJob(result, rawEmail) {
     result["tenant-name"],
     result["tenant-contact"]
   );
+  if (!location && result.address) {
+    const detail = `Location not linked for "${result.address}" — address used as site name fallback`;
+    console.warn(detail);
+    warnings.push({ tag: "Location not linked", detail });
+  }
 
   const pmContact = await findContact(client.clientid, result["property-manager"]);
-  if (pmContact) console.log("PM CONTACT:", pmContact.contactid, pmContact.contactname);
-  else console.warn("PM contact not found in Aroflo:", result["property-manager"]);
+  if (pmContact) {
+    console.log("PM CONTACT:", pmContact.contactid, pmContact.contactname);
+  } else if (result["property-manager"]) {
+    const detail = `PM contact not found in Aroflo: "${result["property-manager"]}"`;
+    console.warn(detail);
+    warnings.push({ tag: "PM not in Aroflo", detail });
+  }
 
   const notes = [
     result["order-number"]     ? `Work Order: ${result["order-number"]}`          : null,
@@ -387,10 +422,8 @@ async function createArofloJob(result, rawEmail) {
     return `${d.getFullYear()}/${String(d.getMonth() + 1).padStart(2, "0")}/${String(d.getDate()).padStart(2, "0")}`;
   })();
 
-  // "36 Dollis Way, Kingsley, WA 6026" → "36 Dollis Way Kingsley"
-  const taskName = result.address
-    ? result.address.split(",").slice(0, 2).map(p => p.trim()).join(" ")
-    : "";
+  const { street: taskStreet, suburb: taskSuburb } = parseAustralianAddress(result.address || "");
+  const taskName = [taskStreet, taskSuburb].filter(Boolean).join(" ");
 
   const xml =
 `<tasks>
@@ -447,12 +480,16 @@ async function createArofloJob(result, rawEmail) {
   if (confirmedTaskId && rawEmail) {
     try {
       const noteHtml = await emailHtmlForNote(rawEmail);
-      const xml = `<tasks><task><taskid>${confirmedTaskId}</taskid><notes><note><content><![CDATA[${noteHtml}]]></content></note></notes></task></tasks>`;
-      await arofloPost("zone=tasks&postxml=" + encodeURIComponent(xml));
+      const noteXml = `<tasks><task><taskid>${confirmedTaskId}</taskid><notes><note><content><![CDATA[${noteHtml}]]></content></note></notes></task></tasks>`;
+      await arofloPost("zone=tasks&postxml=" + encodeURIComponent(noteXml));
       console.log("Email note posted");
     } catch (err) {
-      console.warn("Email note post failed:", err.message);
+      const detail = `Email note not posted to job: ${err.message}`;
+      console.warn(detail);
+      warnings.push({ tag: "Note not posted", detail });
     }
+  } else if (confirmedTaskId && !rawEmail) {
+    warnings.push({ tag: "Note not posted", detail: "No email content available — note not posted to job" });
   }
 
   // Aroflo doesn't apply substatus on create — do a follow-up update
@@ -470,11 +507,13 @@ async function createArofloJob(result, rawEmail) {
     if (Number(upPr?.updatetotal ?? 0) > 0) {
       console.log("Substatus set:", substatusId);
     } else {
-      console.warn("Substatus update returned 0 updates — may not have applied");
+      const detail = "Substatus not applied — job may need manual scheduling status update";
+      console.warn(detail);
+      warnings.push({ tag: "Substatus failed", detail });
     }
   }
 
-  return { zone, jobNumber };
+  return { jobNumber, warnings };
 }
 
 // ================================================================
@@ -975,13 +1014,57 @@ async function pollInbox(mailbox) {
 
       const { result, rawEmail } = await processMessage(message, mailbox, onStatus);
 
-      await onStatus(CREATING_JOB_CATEGORY);
-      const { jobNumber } = await createArofloJob(result, rawEmail);
+      // Pre-job validation warnings — checked before Aroflo job creation
+      const preWarnings = [];
+      if (!result["property-manager"]) {
+        preWarnings.push({ tag: "No PM in email", detail: "Property manager not listed in the work order" });
+      }
+      if (!result["tenant-name"] && !result["tenant-contact"]) {
+        preWarnings.push({ tag: "No tenant info", detail: "No tenant name or contact in the work order, and property not stated as vacant" });
+      }
 
-      // Success — strip all status tags, add job tag
+      await onStatus(CREATING_JOB_CATEGORY);
+      const { jobNumber, warnings: jobWarnings } = await createArofloJob(result, rawEmail);
+      const allWarnings = [...preWarnings, ...jobWarnings];
+
+      // Always apply job tag to prevent re-processing; add a specific tag for each failure
       const jobTag = `Job created - ${jobNumber}`;
-      currentCategories = await setJobStatus(mailbox, message.id, currentCategories, jobTag);
-      console.log("Tagged as done:", message.subject);
+      const finalCategories = [
+        ...currentCategories.filter(c => !STATUS_CATEGORIES.includes(c)),
+        jobTag,
+        ...allWarnings.map(w => w.tag),
+      ];
+      await graphFetch(`/users/${mailbox}/messages/${message.id}`, {
+        method: "PATCH",
+        body: JSON.stringify({ categories: finalCategories }),
+      });
+      currentCategories = finalCategories;
+
+      if (allWarnings.length > 0) {
+        console.warn("Job created with issues:", allWarnings.map(w => w.tag));
+        try {
+          const warningLines = allWarnings.map(w => `<li style="margin:4px 0;font-family:sans-serif;font-size:14px"><strong>${w.tag}:</strong> ${w.detail}</li>`).join("");
+          await graphFetch(`/users/${WORKORDERS_EMAIL}/sendMail`, {
+            method: "POST",
+            body: JSON.stringify({
+              message: {
+                subject: `Action required — Job ${jobNumber} created with issues`,
+                toRecipients: [{ emailAddress: { address: BRANDON_EMAIL } }],
+                body: {
+                  contentType: "HTML",
+                  content: `<p style="font-family:sans-serif;font-size:14px">Job <strong>${jobNumber}</strong> was created in Aroflo but the following need attention:</p><ul>${warningLines}</ul><p style="font-family:sans-serif;font-size:12px;color:#888">Original email: ${message.subject}</p>`,
+                },
+              },
+              saveToSentItems: false,
+            }),
+          });
+          console.log("Alert email sent for job:", jobNumber);
+        } catch (alertErr) {
+          console.error("Failed to send alert email for job", jobNumber, alertErr.message);
+        }
+      } else {
+        console.log("Tagged as done:", message.subject);
+      }
     } catch (err) {
       console.error("Error processing message:", message.subject, err.message);
       if (err.message.startsWith("Client not found")) {
@@ -1034,22 +1117,6 @@ app.get("/test-job", async (req, res) => {
   try {
     const { jobNumber } = await createArofloJob(result, null);
     res.json({ success: true, jobNumber });
-  } catch (err) {
-    res.json({ error: err.message });
-  }
-});
-
-// ================================================================
-// TEMP: Test location creation — GET /test-location?client=Realmark%20Urban&address=123%20Example%20St%20Perth%20WA%206000
-// ================================================================
-app.get("/test-location", async (req, res) => {
-  const { client: clientName, address } = req.query;
-  if (!clientName || !address) return res.status(400).json({ error: "Pass ?client=...&address=..." });
-  try {
-    const client = await findClient(clientName);
-    if (!client) return res.json({ error: `Client not found: ${clientName}` });
-    const location = await createLocation(client.clientid, address, null, null);
-    res.json({ clientId: client.clientid, clientName: client.clientname, location });
   } catch (err) {
     res.json({ error: err.message });
   }
