@@ -252,10 +252,14 @@ async function findOrUpdateLocation(clientId, address, tenantName, tenantContact
 
 function buildDescription(result) {
   const parts = [];
+  const spacer = `<p>&nbsp;</p>`;
 
   if (result["task-description"] || result["task-type"]) {
     parts.push(`<p>${result["task-description"] || result["task-type"]}</p>`);
   }
+
+  const hasHighlights = result["expenditure-limit"] || result["access-details"];
+  if (hasHighlights) parts.push(spacer);
 
   if (result["expenditure-limit"]) {
     parts.push(`<p><span style="background:#cce5ff;font-weight:bold">Expenditure Limit: ${result["expenditure-limit"]}</span></p>`);
@@ -266,6 +270,7 @@ function buildDescription(result) {
   }
 
   if (result["package"] && PACKAGE_TEMPLATES[result["package"]]) {
+    parts.push(spacer);
     parts.push(PACKAGE_TEMPLATES[result["package"]]);
   }
 
