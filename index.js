@@ -912,7 +912,7 @@ CRITICAL RULES:
 - tenant-contact must contain phone numbers ONLY — no names, no labels, just the numbers. Only use a number if it is explicitly and unambiguously labelled as the tenant's contact (e.g. appears in a Tenant section, or is labelled "Tenant Phone", "Tenant Mobile", "Contact Number" etc.). If you are unsure whether a number belongs to the tenant, leave tenant-contact null. If there are multiple confirmed tenant numbers, separate with commas. Prefer mobile over home numbers. Australian numbers always start with 0 (e.g. 0412 345 678) — always include the leading 0.
 - property-manager comes from the Property Manager section, OR from an Agency Details section where the manager is listed (e.g. "Manager: Jane Smith"). Use the person's name only, not the agency name.
 - account-to must include ALL owners exactly as written, always in the format: owners c/o real estate.
-- real-estate must always be a company or agency name — never a URL or domain. If the source contains something like "aussieproperty.com.au", convert it to a readable name (e.g. "Aussie Property") by stripping the domain extension and formatting as a proper name. If you cannot find it directly, look for it in account-to after the c/o.
+- real-estate must always be a company or agency name — never a URL or domain. If the source contains something like "aussieproperty.com.au", convert it to a readable name (e.g. "Aussie Property") by stripping the domain extension and formatting as a proper name. If you cannot find it directly, look for it in account-to after the c/o. The sender's email address is provided at the top of the input — use the domain as an additional hint to identify real-estate if the company name is not clearly stated in the content (e.g. "noreply@raywhite.com.au" → "Ray White").
 - order-number is the job/work order number.
 - task-description must be a concise electrician job summary. If anything is listed as conditional or requires approval (e.g. "deluxe clean if approved", "AC2 if required"), include that in the description too.
 - Do NOT include instructions to contact the tenant or PM for access in task-description. Contacting the tenant for access is the default assumption for every job and must not be stated.
@@ -948,7 +948,7 @@ Return ONLY valid JSON with these exact keys:
   "confidence": 0.0,
   "notes": ""
 }`,
-    input: `Extract the following work order and return JSON:\n\n${textForAI}`,
+    input: `From: ${message.from?.emailAddress?.address || ""}\n\nExtract the following work order and return JSON:\n\n${textForAI}`,
   });
 
   const parsed = JSON.parse(responseAI.output_text);
