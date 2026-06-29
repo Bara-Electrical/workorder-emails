@@ -1484,13 +1484,16 @@ app.get("/debug-locations", async (req, res) => {
   if (!clientId) return res.status(400).json({ error: "clientId required" });
   try {
     const zone = await arofloGet(
-      "zone=locations" +
-      "&where=" + encodeURIComponent(`and|linkedtoid|=|${clientId}`) +
+      "zone=clients" +
+      "&where=" + encodeURIComponent(`and|clientid|=|${clientId}`) +
+      "&join=locations" +
       "&page=1"
     );
-    const raw = zone.locations;
-    const arr = raw ? (Array.isArray(raw) ? raw : [raw]) : [];
-    res.json({ total: arr.length, locations: arr });
+    const raw = zone.clients;
+    const client = raw ? (Array.isArray(raw) ? raw[0] : raw) : null;
+    const locs = client?.locations?.location;
+    const arr = locs ? (Array.isArray(locs) ? locs : [locs]) : [];
+    res.json({ clientId, total: arr.length, locations: arr });
   } catch (err) {
     res.json({ error: err.message });
   }
