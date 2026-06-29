@@ -1007,6 +1007,7 @@ Return ONLY valid JSON with these exact keys:
   // Download image attachments in parallel
   const imageAttachments = (await Promise.all(
     attachments
+      .filter(a => !/inky/i.test(a.name || ""))
       .filter(a => /\.(jpe?g|png|gif|bmp|webp)$/i.test(a.name || "") || (a.contentType || "").startsWith("image/"))
       .map(async a => {
         try {
