@@ -491,7 +491,7 @@ function buildDescription(result) {
   return parts.join("\n");
 }
 
-async function createArofloJob(result, rawEmail, pdfAttachment = null, emailMeta = null) {
+async function createArofloJob(result, rawEmail, pdfAttachment = null, emailMeta = null, imageAttachments = []) {
   console.log("CREATING AROFLO JOB...");
   const warnings = [];
 
@@ -602,22 +602,35 @@ async function createArofloJob(result, rawEmail, pdfAttachment = null, emailMeta
   }
   console.log("AROFLO JOB CREATED — job number:", jobNumber, "taskId:", confirmedTaskId);
 
-  // Upload PDF attachment to OneDrive and get a view link for the note
+  // Upload PDF and any photo attachments to SharePoint
   let oneDriveUrl = null;
-  if (pdfAttachment && jobNumber !== "(see Aroflo)") {
-    try {
-      oneDriveUrl = await uploadWorkOrderToOneDrive(jobNumber, pdfAttachment.name, pdfAttachment.data);
-      console.log("PDF uploaded to OneDrive:", oneDriveUrl);
-    } catch (err) {
-      console.warn("OneDrive upload failed:", err.message);
-      warnings.push({ tag: "PDF upload failed", detail: err.message });
+  const photoUrls = [];
+  if (jobNumber !== "(see Aroflo)") {
+    if (pdfAttachment) {
+      try {
+        oneDriveUrl = await uploadWorkOrderToOneDrive(jobNumber, pdfAttachment.name, pdfAttachment.data);
+        console.log("PDF uploaded to OneDrive:", oneDriveUrl);
+      } catch (err) {
+        console.warn("OneDrive upload failed:", err.message);
+        warnings.push({ tag: "PDF upload failed", detail: err.message });
+      }
+    }
+    for (const img of imageAttachments) {
+      try {
+        const url = await uploadWorkOrderToOneDrive(jobNumber, img.name, img.data, img.contentType);
+        if (url) photoUrls.push({ name: img.name, url });
+        console.log("Photo uploaded:", img.name, url);
+      } catch (err) {
+        console.warn("Photo upload failed:", img.name, err.message);
+        warnings.push({ tag: "Photo upload failed", detail: `${img.name}: ${err.message}` });
+      }
     }
   }
 
   // Post the original email as a note on the task
   if (confirmedTaskId && rawEmail) {
     try {
-      const noteHtml = await emailHtmlForNote(rawEmail, oneDriveUrl, emailMeta);
+      const noteHtml = await emailHtmlForNote(rawEmail, oneDriveUrl, emailMeta, photoUrls);
       const noteXml = `<tasks><task><taskid>${confirmedTaskId}</taskid><notes><note><content><![CDATA[${noteHtml}]]></content></note></notes></task></tasks>`;
       await arofloPost("zone=tasks&postxml=" + encodeURIComponent(noteXml));
       console.log("Email note posted");
@@ -706,7 +719,7 @@ async function decodeWrappedLinks(html) {
 }
 
 // Strip scripts/styles/tracking pixels but keep HTML structure for display in Aroflo notes
-async function emailHtmlForNote(html, oneDriveUrl = null, emailMeta = null) {
+async function emailHtmlForNote(html, oneDriveUrl = null, emailMeta = null, photoUrls = []) {
   let cleaned = html
     .replace(/<script[\s\S]*?<\/script>/gi, "")
     .replace(/<style[\s\S]*?<\/style>/gi, "")
@@ -722,11 +735,16 @@ async function emailHtmlForNote(html, oneDriveUrl = null, emailMeta = null) {
   const cell = (label, value) =>
     `<tr><td style="color:#888888;font-size:12px;font-weight:bold;padding:1px 12px 1px 0;white-space:nowrap;vertical-align:top">${label}</td><td style="color:#444444;font-size:12px;padding:1px 0">${value}</td></tr>`;
 
+  const photoRows = photoUrls.map((p, i) =>
+    cell(`Photo ${i + 1}:`, `<a href="${p.url}" style="color:#1a6bbf" target="_blank">${p.name}</a>`)
+  ).join("");
+
   const metaRows = [
     emailMeta?.from    ? cell("From:",       emailMeta.from)    : "",
     emailMeta?.to      ? cell("To:",         emailMeta.to)      : "",
     emailMeta?.subject ? cell("Subject:",    emailMeta.subject) : "",
     oneDriveUrl        ? cell("Attachment:", `<a href="${oneDriveUrl}" style="color:#1a6bbf" target="_blank">View Work Order PDF</a>`) : "",
+    photoRows,
   ].filter(Boolean).join("");
 
   const titleRow = `<tr><td colspan="2" style="font-size:16px;font-weight:bold;color:#444444;padding:0 0 5px 0">Work Order</td></tr>`;
@@ -750,7 +768,7 @@ async function getSharepointDriveId() {
   return sharepointDriveId;
 }
 
-async function uploadWorkOrderToOneDrive(jobNumber, filename, contentBytes) {
+async function uploadWorkOrderToOneDrive(jobNumber, filename, contentBytes, contentType = "application/pdf") {
   const safeName = filename.replace(/#/g, "").trim();
   const itemPath = ["General", "Other", "AI Workorders [dont touch]", `${jobNumber} - ${safeName}`]
     .map(s => encodeURIComponent(s)).join("/");
@@ -764,7 +782,7 @@ async function uploadWorkOrderToOneDrive(jobNumber, filename, contentBytes) {
     const token = await getAccessToken();
     const uploadRes = await fetch(
       `https://graph.microsoft.com/v1.0/drives/${driveId}/root:/${itemPath}:/content`,
-      { method: "PUT", headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/pdf" }, body: contentBytes, signal: ac.signal }
+      { method: "PUT", headers: { Authorization: `Bearer ${token}`, "Content-Type": contentType }, body: contentBytes, signal: ac.signal }
     );
     if (!uploadRes.ok) {
       const err = await uploadRes.json().catch(() => ({}));
@@ -976,7 +994,23 @@ Return ONLY valid JSON with these exact keys:
     subject: message.subject || null,
   };
 
-  return { result: parsed, rawEmail: rawBody, pdfAttachment, emailMeta };
+  // Download image attachments
+  const imageAttachments = [];
+  for (const a of attachments) {
+    if (/\.(jpe?g|png|gif|bmp|webp)$/i.test(a.name || "") || (a.contentType || "").startsWith("image/")) {
+      try {
+        const attRes  = await graphFetch(`/users/${mailbox}/messages/${message.id}/attachments/${a.id}`);
+        const attData = await attRes.json();
+        const imgData = Uint8Array.from(atob(attData.contentBytes), c => c.charCodeAt(0));
+        imageAttachments.push({ name: a.name, data: imgData, contentType: a.contentType || "image/jpeg" });
+        console.log("Image attachment found:", a.name);
+      } catch (err) {
+        console.warn("Failed to download image attachment:", a.name, err.message);
+      }
+    }
+  }
+
+  return { result: parsed, rawEmail: rawBody, pdfAttachment, imageAttachments, emailMeta };
 }
 
 // ================================================================
@@ -1217,7 +1251,7 @@ async function pollInbox(mailbox) {
         currentCategories = await setJobStatus(mailbox, message.id, currentCategories, status);
       };
 
-      const { result, rawEmail, pdfAttachment, emailMeta } = await processMessage(message, mailbox, onStatus);
+      const { result, rawEmail, pdfAttachment, imageAttachments, emailMeta } = await processMessage(message, mailbox, onStatus);
 
       // Pre-job validation warnings — checked before Aroflo job creation
       const preWarnings = [];
@@ -1229,7 +1263,7 @@ async function pollInbox(mailbox) {
       }
 
       await onStatus(CREATING_JOB_CATEGORY);
-      const { jobNumber, warnings: jobWarnings } = await createArofloJob(result, rawEmail, pdfAttachment, emailMeta);
+      const { jobNumber, warnings: jobWarnings } = await createArofloJob(result, rawEmail, pdfAttachment, emailMeta, imageAttachments);
       logActivity("Job created", jobNumber).catch(err => console.warn("logActivity:", err.message));
       logAiOutput(result, message.subject).catch(err => console.warn("logAiOutput:", err.message));
       const allWarnings = [...preWarnings, ...jobWarnings];
