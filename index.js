@@ -291,8 +291,22 @@ function parseAustralianAddress(address) {
     : { street, suburb: rest, state: "", postcode: "" };
 }
 
+async function geocodeAddress(address) {
+  try {
+    const url = "https://nominatim.openstreetmap.org/search?format=json&limit=1&countrycodes=au&q=" +
+                encodeURIComponent(address);
+    const res = await fetch(url, { headers: { "User-Agent": "bara-electrical-workorder/1.0" } });
+    const data = await res.json();
+    if (data?.[0]?.lat) return { lat: data[0].lat, lon: data[0].lon };
+  } catch (err) {
+    console.warn("Geocode failed:", err.message);
+  }
+  return null;
+}
+
 async function createLocation(clientId, address, tenantName, tenantContact) {
   const { street, suburb, state, postcode } = parseAustralianAddress(address);
+  const coords = await geocodeAddress(address);
   const xml =
 `<clients><client>
   <clientid>${clientId}</clientid>
@@ -302,6 +316,7 @@ async function createLocation(clientId, address, tenantName, tenantContact) {
     <state><![CDATA[${state}]]></state>
     <postcode><![CDATA[${postcode}]]></postcode>
     <country><![CDATA[Australia]]></country>
+    ${coords ? `<gpslat>${coords.lat}</gpslat><gpslong>${coords.lon}</gpslong>` : ""}
     ${tenantName    ? `<sitecontact><![CDATA[${tenantName}]]></sitecontact>`  : ""}
     ${tenantContact ? `<sitephone><![CDATA[${tenantContact}]]></sitephone>`   : ""}
   </location></locations>
@@ -323,10 +338,12 @@ async function createLocation(clientId, address, tenantName, tenantContact) {
   // Fall back: re-query to find the location we just created
   console.log("locationid not in response — fetching newly created location");
   const zone = await arofloGet(
-    "zone=locations&where=" + encodeURIComponent(`and|linkedtoid|=|${clientId}`) + "&page=1"
+    "zone=clients" +
+    "&where=" + encodeURIComponent(`and|clientid|=|${clientId}`) +
+    "&join=locations"
   );
-  const raw = zone.locations;
-  const all = raw ? (Array.isArray(raw) ? raw : [raw]) : [];
+  const client = Array.isArray(zone.clients) ? zone.clients[0] : zone.clients;
+  const all = client?.locations ? (Array.isArray(client.locations) ? client.locations : [client.locations]) : [];
   const streetPart = address.replace(/^\d+\//, "").split(",")[0].trim().toLowerCase();
   const found = all.find(l => l.locationname?.toLowerCase().includes(streetPart));
   if (found) {
