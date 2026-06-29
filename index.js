@@ -347,20 +347,30 @@ async function findOrUpdateLocation(clientId, address, tenantName, tenantContact
   // Strip unit prefix: "1412/380 Murray Street, Perth WA" → "380 Murray Street"
   const streetPart = address.replace(/^\d+\//, "").split(",")[0].trim().toLowerCase();
 
-  let zone;
+  const all = [];
   try {
-    zone = await arofloGet(
-      "zone=locations" +
-      "&where=" + encodeURIComponent(`and|linkedtoid|=|${clientId}`) +
-      "&page=1"
-    );
+    let page = 1;
+    while (true) {
+      const zone = await arofloGet(
+        "zone=locations" +
+        "&where=" + encodeURIComponent(`and|linkedtoid|=|${clientId}`) +
+        `&page=${page}`
+      );
+      const raw = zone.locations;
+      if (!raw) break;
+      const arr = Array.isArray(raw) ? raw : [raw];
+      all.push(...arr);
+      const current = parseInt(zone.currentpageresults ?? 0);
+      const max     = parseInt(zone.maxpageresults ?? 500);
+      if (current < max) break;
+      page++;
+    }
   } catch (err) {
     console.warn("Location search failed:", err.message);
     return null;
   }
 
-  const raw = zone.locations;
-  const all = raw ? (Array.isArray(raw) ? raw : [raw]) : [];
+  console.log(`Location search — client ${clientId}: ${all.length} location(s) fetched, searching for "${streetPart}"`);
   const location = all.find(l => l.locationname?.toLowerCase().includes(streetPart));
 
   if (!location) {
