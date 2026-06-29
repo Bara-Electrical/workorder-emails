@@ -466,7 +466,7 @@ function buildDescription(result) {
   return parts.join("\n");
 }
 
-async function createArofloJob(result, rawEmail, pdfAttachment = null) {
+async function createArofloJob(result, rawEmail, pdfAttachment = null, emailMeta = null) {
   console.log("CREATING AROFLO JOB...");
   const warnings = [];
 
@@ -520,7 +520,11 @@ async function createArofloJob(result, rawEmail, pdfAttachment = null) {
   })();
 
   const { street: taskStreet, suburb: taskSuburb } = parseAustralianAddress(result.address || "");
-  const taskName = [taskStreet, taskSuburb].filter(Boolean).join(" ");
+  const taskName = [taskStreet, taskSuburb]
+    .filter(Boolean)
+    .join(" ")
+    .replace(/,?\s*(?:NSW|VIC|QLD|SA|WA|TAS|ACT|NT)\b\s*\d{0,4}\s*$/i, "")
+    .trim();
 
   const xml =
 `<tasks>
@@ -588,7 +592,7 @@ async function createArofloJob(result, rawEmail, pdfAttachment = null) {
   // Post the original email as a note on the task
   if (confirmedTaskId && rawEmail) {
     try {
-      const noteHtml = await emailHtmlForNote(rawEmail, oneDriveUrl);
+      const noteHtml = await emailHtmlForNote(rawEmail, oneDriveUrl, emailMeta);
       const noteXml = `<tasks><task><taskid>${confirmedTaskId}</taskid><notes><note><content><![CDATA[${noteHtml}]]></content></note></notes></task></tasks>`;
       await arofloPost("zone=tasks&postxml=" + encodeURIComponent(noteXml));
       console.log("Email note posted");
@@ -677,7 +681,7 @@ async function decodeWrappedLinks(html) {
 }
 
 // Strip scripts/styles/tracking pixels but keep HTML structure for display in Aroflo notes
-async function emailHtmlForNote(html, oneDriveUrl = null) {
+async function emailHtmlForNote(html, oneDriveUrl = null, emailMeta = null) {
   let cleaned = html
     .replace(/<script[\s\S]*?<\/script>/gi, "")
     .replace(/<style[\s\S]*?<\/style>/gi, "")
@@ -690,10 +694,21 @@ async function emailHtmlForNote(html, oneDriveUrl = null) {
 
   cleaned = await decodeWrappedLinks(cleaned);
 
-  const linkHtml = oneDriveUrl
-    ? `<p style="margin:0 0 12px 0;padding:7px 16px;background:#e8f0fe;border-left:3px solid #2c5282"><a href="${oneDriveUrl}" style="color:#2c5282;font-weight:bold;font-size:13px">View Work Order PDF</a></p>`
+  const cell = (label, value) =>
+    `<tr><td style="color:#888888;font-size:12px;font-weight:bold;padding:1px 12px 1px 0;white-space:nowrap;vertical-align:top">${label}</td><td style="color:#444444;font-size:12px;padding:1px 0">${value}</td></tr>`;
+
+  const metaRows = [
+    emailMeta?.from    ? cell("From:",    emailMeta.from)    : "",
+    emailMeta?.to      ? cell("To:",      emailMeta.to)      : "",
+    emailMeta?.subject ? cell("Subject:", emailMeta.subject) : "",
+    oneDriveUrl        ? cell("Attachment:", `<a href="${oneDriveUrl}" style="color:#1a6bbf">View Work Order PDF</a>`) : "",
+  ].filter(Boolean).join("");
+
+  const metaHtml = metaRows
+    ? `<table style="border-collapse:collapse;margin:6px 0 12px 0">${metaRows}</table>`
     : "";
-  return `<div style="background:#2c5282;padding:10px 16px;margin:0 0 14px 0"><strong style="color:#ffffff;font-size:15px;letter-spacing:0.5px">Work Order</strong></div>${linkHtml}<div>${cleaned}</div>`;
+
+  return `<p style="margin:0 0 2px 0;font-size:16px;font-weight:bold;color:#444444">Work Order</p>${metaHtml}<hr style="border:none;border-top:1px solid #dddddd;margin:0 0 14px 0"><div>${cleaned}</div>`;
 }
 
 async function uploadWorkOrderToOneDrive(jobNumber, filename, contentBytes) {
@@ -811,9 +826,9 @@ async function processMessage(message, mailbox = process.env.GRAPH_RECIPIENT, on
     );
     const attachData = await attachRes.json();
     const data       = Uint8Array.from(atob(attachData.contentBytes), c => c.charCodeAt(0));
+    pdfAttachment = { name: workorderAttachment.name, data: new Uint8Array(data) }; // copy before pdfjs detaches the buffer
     const pdfText    = await extractPDF(data);
     textForAI = withEmailBody(pdfText.replace(/\s+/g, " ").trim());
-    pdfAttachment = { name: workorderAttachment.name, data };
   }
   if (onStatus) await onStatus(SENDING_TO_AI_CATEGORY);
 
@@ -874,6 +889,7 @@ Return ONLY valid JSON with these exact keys:
 
   // Normalise address to title case in case the source had ALL CAPS suburb
   if (parsed.address) {
+    parsed.address = parsed.address.replace(/,?\s*Australia\s*$/i, "").trim();
     parsed.address = parsed.address.replace(/\b\w+/g, w =>
       w.length <= 2 ? w.toUpperCase() : w.charAt(0).toUpperCase() + w.slice(1).toLowerCase()
     );
@@ -911,7 +927,13 @@ Return ONLY valid JSON with these exact keys:
       .join(", ");
   }
 
-  return { result: parsed, rawEmail: rawBody, pdfAttachment };
+  const emailMeta = {
+    from:    message.from?.emailAddress?.address || null,
+    to:      (message.toRecipients || []).map(r => r.emailAddress?.address).filter(Boolean).join(", ") || null,
+    subject: message.subject || null,
+  };
+
+  return { result: parsed, rawEmail: rawBody, pdfAttachment, emailMeta };
 }
 
 // ================================================================
@@ -1131,7 +1153,7 @@ async function pollInbox(mailbox) {
   const res  = await graphFetch(
     `/users/${mailbox}/mailFolders/inbox/messages` +
     `?$filter=${filter}` +
-    `&$select=id,subject,body,categories` +
+    `&$select=id,subject,body,categories,from,toRecipients` +
     `&$expand=attachments($select=id,name,contentType,size)` +
     `&$top=10`
   );
@@ -1152,7 +1174,7 @@ async function pollInbox(mailbox) {
         currentCategories = await setJobStatus(mailbox, message.id, currentCategories, status);
       };
 
-      const { result, rawEmail, pdfAttachment } = await processMessage(message, mailbox, onStatus);
+      const { result, rawEmail, pdfAttachment, emailMeta } = await processMessage(message, mailbox, onStatus);
 
       // Pre-job validation warnings — checked before Aroflo job creation
       const preWarnings = [];
@@ -1164,7 +1186,7 @@ async function pollInbox(mailbox) {
       }
 
       await onStatus(CREATING_JOB_CATEGORY);
-      const { jobNumber, warnings: jobWarnings } = await createArofloJob(result, rawEmail, pdfAttachment);
+      const { jobNumber, warnings: jobWarnings } = await createArofloJob(result, rawEmail, pdfAttachment, emailMeta);
       await logActivity("Job created", jobNumber);
       await logAiOutput(result, message.subject);
       const allWarnings = [...preWarnings, ...jobWarnings];
