@@ -370,8 +370,9 @@ async function findOrUpdateLocation(clientId, address, tenantName, tenantContact
     return null;
   }
 
-  console.log(`Location search — client ${clientId}: ${all.length} location(s) fetched, searching for "${streetPart}"`);
-  const location = all.find(l => l.locationname?.toLowerCase().includes(streetPart));
+  const active = all.filter(l => l.active == null || l.active === "true" || l.active === true);
+  console.log(`Location search — client ${clientId}: ${all.length} location(s) fetched (${active.length} active), searching for "${streetPart}"`);
+  const location = active.find(l => l.locationname?.toLowerCase().includes(streetPart));
 
   if (!location) {
     console.log("No location matching:", streetPart, "— creating new location:", address);
