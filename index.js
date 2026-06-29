@@ -1491,16 +1491,6 @@ app.get("/clients", (req, res) => {
 // ================================================================
 // AROFLO WEBHOOK — new client created
 // ================================================================
-// TEMP: Test geocoding — GET /test-geocode?address=X
-// ================================================================
-app.get("/test-geocode", async (req, res) => {
-  const { address } = req.query;
-  if (!address) return res.status(400).json({ error: "address required" });
-  const coords = await geocodeAddress(address);
-  res.json({ address, coords });
-});
-
-// ================================================================
 app.post("/aroflo-webhook", express.json(), async (req, res) => {
   console.log("Aroflo webhook received:", JSON.stringify(req.body));
   res.sendStatus(200);
