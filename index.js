@@ -1480,20 +1480,11 @@ app.get("/clients", (req, res) => {
 // TEMP: Dump raw locations for a client — GET /debug-locations?clientId=xxx
 // ================================================================
 app.get("/debug-locations", async (req, res) => {
-  const { clientId } = req.query;
-  if (!clientId) return res.status(400).json({ error: "clientId required" });
   try {
-    const zone = await arofloGet(
-      "zone=clients" +
-      "&where=" + encodeURIComponent(`and|clientid|=|${clientId}`) +
-      "&join=locations" +
-      "&page=1"
-    );
-    const raw = zone.clients;
-    const client = raw ? (Array.isArray(raw) ? raw[0] : raw) : null;
-    const locs = client?.locations?.location;
-    const arr = locs ? (Array.isArray(locs) ? locs : [locs]) : [];
-    res.json({ clientId, total: arr.length, locations: arr });
+    const zone = await arofloGet("zone=locations&page=1");
+    const raw = zone.locations;
+    const arr = raw ? (Array.isArray(raw) ? raw : [raw]) : [];
+    res.json({ total: arr.length, sample: arr.slice(0, 3), keys: arr[0] ? Object.keys(arr[0]) : [] });
   } catch (err) {
     res.json({ error: err.message });
   }
