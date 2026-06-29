@@ -701,7 +701,7 @@ async function emailHtmlForNote(html, oneDriveUrl = null, emailMeta = null) {
     emailMeta?.from    ? cell("From:",       emailMeta.from)    : "",
     emailMeta?.to      ? cell("To:",         emailMeta.to)      : "",
     emailMeta?.subject ? cell("Subject:",    emailMeta.subject) : "",
-    oneDriveUrl        ? cell("Attachment:", `<a href="${oneDriveUrl}" style="color:#1a6bbf">View Work Order PDF</a>`) : "",
+    oneDriveUrl        ? cell("Attachment:", `<a href="${oneDriveUrl}" style="color:#1a6bbf" target="_blank">View Work Order PDF</a>`) : "",
   ].filter(Boolean).join("");
 
   const titleRow = `<tr><td colspan="2" style="font-size:16px;font-weight:bold;color:#444444;padding:0 0 5px 0">Work Order</td></tr>`;
