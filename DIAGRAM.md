@@ -3,7 +3,7 @@
 ```mermaid
 flowchart TD
     A([Work order email arrives]) --> B
-    B[Poll runs every 2 mins\ndetects emails tagged Process] --> C
+    B[Poll runs every 5 mins\ndetects emails tagged Process] --> C
     C[Read email and download\nPDF and photo attachments] --> D
     D{PDF attached?}
     D -- Yes --> E[Extract text from PDF]

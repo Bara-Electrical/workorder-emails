@@ -8,7 +8,7 @@ import Airtable from "airtable";
 
 const REQUIRED_ENV = [
   "OPENAI_API_KEY",
-  "GRAPH_TENANT_ID", "GRAPH_CLIENT_ID", "GRAPH_CLIENT_SECRET", "GRAPH_RECIPIENT",
+  "GRAPH_TENANT_ID", "GRAPH_CLIENT_ID", "GRAPH_CLIENT_SECRET",
   "UENCODED", "PENCODED", "ORGENCODED", "SECRET_KEY",
 ];
 for (const key of REQUIRED_ENV) {
@@ -835,7 +835,7 @@ function findWorkOrderLink(rawHtml) {
 // ================================================================
 // EMAIL PROCESSING
 // ================================================================
-async function processMessage(message, mailbox = process.env.GRAPH_RECIPIENT, onStatus = null) {
+async function processMessage(message, mailbox = WORKORDERS_EMAIL, onStatus = null) {
 
   const attachments = message.attachments || [];
   const rawBody     = message.body?.content || "";
@@ -1338,7 +1338,7 @@ async function pollEmails() {
   }
   pollRunning = true;
   try {
-    await pollInbox(process.env.GRAPH_RECIPIENT);
+    await pollInbox(WORKORDERS_EMAIL);
     await pollInbox(BRANDON_EMAIL);
   } catch (err) {
     console.error("Poll error:", err);
