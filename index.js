@@ -716,22 +716,30 @@ async function uploadWorkOrderToOneDrive(jobNumber, filename, contentBytes) {
   const itemPath = ["Work Orders", `${jobNumber} - ${safeName}`]
     .map(s => encodeURIComponent(s)).join("/");
 
-  const uploadRes = await graphFetch(
-    `/users/${WORKORDERS_EMAIL}/drive/root:/${itemPath}:/content`,
-    { method: "PUT", headers: { "Content-Type": "application/pdf" }, body: contentBytes }
-  );
-  if (!uploadRes.ok) {
-    const err = await uploadRes.json().catch(() => ({}));
-    throw new Error(`OneDrive upload failed ${uploadRes.status}: ${err?.error?.message || JSON.stringify(err)}`);
-  }
-  const { id: itemId } = await uploadRes.json();
+  const ac = new AbortController();
+  const timer = setTimeout(() => ac.abort(), 20000);
 
-  const linkRes = await graphFetch(
-    `/users/${WORKORDERS_EMAIL}/drive/items/${itemId}/createLink`,
-    { method: "POST", body: JSON.stringify({ type: "view", scope: "organization" }) }
-  );
-  const linkData = await linkRes.json();
-  return linkData?.link?.webUrl || null;
+  try {
+    const token = await getAccessToken();
+    const uploadRes = await fetch(
+      `https://graph.microsoft.com/v1.0/users/${WORKORDERS_EMAIL}/drive/root:/${itemPath}:/content`,
+      { method: "PUT", headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/pdf" }, body: contentBytes, signal: ac.signal }
+    );
+    if (!uploadRes.ok) {
+      const err = await uploadRes.json().catch(() => ({}));
+      throw new Error(`OneDrive upload failed ${uploadRes.status}: ${err?.error?.message || JSON.stringify(err)}`);
+    }
+    const { id: itemId } = await uploadRes.json();
+
+    const linkRes = await fetch(
+      `https://graph.microsoft.com/v1.0/users/${WORKORDERS_EMAIL}/drive/items/${itemId}/createLink`,
+      { method: "POST", headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" }, body: JSON.stringify({ type: "view", scope: "organization" }), signal: ac.signal }
+    );
+    const linkData = await linkRes.json();
+    return linkData?.link?.webUrl || null;
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
 // Known work order portal domains
@@ -1187,8 +1195,8 @@ async function pollInbox(mailbox) {
 
       await onStatus(CREATING_JOB_CATEGORY);
       const { jobNumber, warnings: jobWarnings } = await createArofloJob(result, rawEmail, pdfAttachment, emailMeta);
-      await logActivity("Job created", jobNumber);
-      await logAiOutput(result, message.subject);
+      logActivity("Job created", jobNumber).catch(err => console.warn("logActivity:", err.message));
+      logAiOutput(result, message.subject).catch(err => console.warn("logAiOutput:", err.message));
       const allWarnings = [...preWarnings, ...jobWarnings];
 
       // Always apply job tag to prevent re-processing; add a specific tag for each failure
