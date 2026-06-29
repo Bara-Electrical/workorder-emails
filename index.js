@@ -1477,6 +1477,24 @@ app.get("/clients", (req, res) => {
 // ================================================================
 // AROFLO WEBHOOK — new client created
 // ================================================================
+// TEMP: Test location filter approaches — GET /debug-locations?clientId=xxx
+// ================================================================
+app.get("/debug-locations", async (req, res) => {
+  const { clientId } = req.query;
+  if (!clientId) return res.status(400).json({ error: "clientId required" });
+  try {
+    const zone = await arofloGet(
+      "zone=clients" +
+      "&where=" + encodeURIComponent(`and|clientid|=|${clientId}`) +
+      "&join=locations"
+    );
+    res.json({ raw: zone });
+  } catch (err) {
+    res.json({ error: err.message });
+  }
+});
+
+// ================================================================
 app.post("/aroflo-webhook", express.json(), async (req, res) => {
   console.log("Aroflo webhook received:", JSON.stringify(req.body));
   res.sendStatus(200);
