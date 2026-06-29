@@ -347,19 +347,17 @@ async function findOrUpdateLocation(clientId, address, tenantName, tenantContact
   // Strip unit prefix: "1412/380 Murray Street, Perth WA" → "380 Murray Street"
   const streetPart = address.replace(/^\d+\//, "").split(",")[0].trim().toLowerCase();
 
-  const all = [];
+  // Aroflo's zone=locations WHERE clause ignores nested fields — must filter client-side.
+  // linkedtoid is nested inside linkedto{}, and archived is an uppercase string "FALSE"/"TRUE".
+  const forClient = [];
   try {
     let page = 1;
     while (true) {
-      const zone = await arofloGet(
-        "zone=locations" +
-        "&where=" + encodeURIComponent(`and|linkedtoid|=|${clientId}`) +
-        `&page=${page}`
-      );
+      const zone = await arofloGet(`zone=locations&page=${page}`);
       const raw = zone.locations;
       if (!raw) break;
       const arr = Array.isArray(raw) ? raw : [raw];
-      all.push(...arr);
+      forClient.push(...arr.filter(l => l.linkedto?.linkedtoid === clientId));
       const current = parseInt(zone.currentpageresults ?? 0);
       const max     = parseInt(zone.maxpageresults ?? 500);
       if (current < max) break;
@@ -370,8 +368,8 @@ async function findOrUpdateLocation(clientId, address, tenantName, tenantContact
     return null;
   }
 
-  const active = all.filter(l => l.active == null || l.active === "true" || l.active === true);
-  console.log(`Location search — client ${clientId}: ${all.length} location(s) fetched (${active.length} active), searching for "${streetPart}"`);
+  const active = forClient.filter(l => l.archived?.toUpperCase() !== "TRUE");
+  console.log(`Location search — client ${clientId}: ${forClient.length} location(s) (${active.length} active), searching for "${streetPart}"`);
   const location = active.find(l => l.locationname?.toLowerCase().includes(streetPart));
 
   if (!location) {
@@ -1474,20 +1472,6 @@ app.get("/clients", (req, res) => {
     count: clientCache.size,
     clients: [...clientCache.values()].map(c => ({ clientid: c.clientid, clientname: c.clientname })),
   });
-});
-
-// ================================================================
-// TEMP: Dump raw locations for a client — GET /debug-locations?clientId=xxx
-// ================================================================
-app.get("/debug-locations", async (req, res) => {
-  try {
-    const zone = await arofloGet("zone=locations&page=1");
-    const raw = zone.locations;
-    const arr = raw ? (Array.isArray(raw) ? raw : [raw]) : [];
-    res.json({ total: arr.length, sample: arr.slice(0, 3), keys: arr[0] ? Object.keys(arr[0]) : [] });
-  } catch (err) {
-    res.json({ error: err.message });
-  }
 });
 
 // ================================================================
