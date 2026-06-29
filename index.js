@@ -710,10 +710,27 @@ async function emailHtmlForNote(html, oneDriveUrl = null, emailMeta = null) {
   return `${metaHtml}<hr style="border:none;border-top:1px solid #dddddd;margin:0 0 14px 0"><div>${cleaned}</div>`;
 }
 
+// Cached drive ID for the Bara Electrical Services SharePoint document library
+let sharepointDriveId = null;
+
+async function getSharepointDriveId() {
+  if (sharepointDriveId) return sharepointDriveId;
+  const siteRes  = await graphFetch(`/sites/baraelectrical.sharepoint.com:/sites/BaraElectricalServices`);
+  const site     = await siteRes.json();
+  const drivesRes = await graphFetch(`/sites/${site.id}/drives`);
+  const drives   = await drivesRes.json();
+  const drive    = (drives.value || []).find(d => d.name === "Documents" || d.name === "Shared Documents");
+  if (!drive) throw new Error("SharePoint Documents drive not found");
+  sharepointDriveId = drive.id;
+  return sharepointDriveId;
+}
+
 async function uploadWorkOrderToOneDrive(jobNumber, filename, contentBytes) {
   const safeName = filename.replace(/#/g, "").trim();
-  const itemPath = ["Work Orders", `${jobNumber} - ${safeName}`]
+  const itemPath = ["General", "Other", "AI Workorders [dont touch]", `${jobNumber} - ${safeName}`]
     .map(s => encodeURIComponent(s)).join("/");
+
+  const driveId = await getSharepointDriveId();
 
   const ac = new AbortController();
   const timer = setTimeout(() => ac.abort(), 20000);
@@ -721,17 +738,17 @@ async function uploadWorkOrderToOneDrive(jobNumber, filename, contentBytes) {
   try {
     const token = await getAccessToken();
     const uploadRes = await fetch(
-      `https://graph.microsoft.com/v1.0/users/${WORKORDERS_EMAIL}/drive/root:/${itemPath}:/content`,
+      `https://graph.microsoft.com/v1.0/drives/${driveId}/root:/${itemPath}:/content`,
       { method: "PUT", headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/pdf" }, body: contentBytes, signal: ac.signal }
     );
     if (!uploadRes.ok) {
       const err = await uploadRes.json().catch(() => ({}));
-      throw new Error(`OneDrive upload failed ${uploadRes.status}: ${err?.error?.message || JSON.stringify(err)}`);
+      throw new Error(`SharePoint upload failed ${uploadRes.status}: ${err?.error?.message || JSON.stringify(err)}`);
     }
     const { id: itemId } = await uploadRes.json();
 
     const linkRes = await fetch(
-      `https://graph.microsoft.com/v1.0/users/${WORKORDERS_EMAIL}/drive/items/${itemId}/createLink`,
+      `https://graph.microsoft.com/v1.0/drives/${driveId}/items/${itemId}/createLink`,
       { method: "POST", headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" }, body: JSON.stringify({ type: "view", scope: "anonymous" }), signal: ac.signal }
     );
     const linkData = await linkRes.json();
