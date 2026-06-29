@@ -225,26 +225,29 @@ async function findContact(clientId, pmName) {
 async function findClient(realEstateName) {
   if (!realEstateName) return null;
 
-  const baseName = realEstateName.split(/[|,]/)[0].trim();
+  const baseName    = realEstateName.split(/[|,]/)[0].trim();
+  const strippedName = baseName.replace(/\s+(?:Pty\.?\s*)?(?:Ltd\.?|Limited|Inc\.?|LLC)\.?$/i, "").trim();
 
   // Cache lookup — check exact match on each candidate
   if (clientCache.size > 0) {
     const candidates = [
       realEstateName,
       baseName,
+      strippedName,
       baseName.split(" ")[0],
-    ].filter((v, i, a) => a.indexOf(v) === i);
+    ].filter((v, i, a) => v && a.indexOf(v) === i);
 
     for (const name of candidates) {
       const hit = clientCache.get(name.toLowerCase());
       if (hit) return hit;
     }
 
-    // Starts-with fuzzy match
+    // Bidirectional starts-with fuzzy match — handles "Driven Property Group Pty Ltd" → "Driven Property Group"
     const query   = baseName.toLowerCase();
-    const matches = [...clientCache.values()].filter(c =>
-      c.clientname.toLowerCase().startsWith(query)
-    );
+    const matches = [...clientCache.values()].filter(c => {
+      const name = c.clientname.toLowerCase();
+      return name.startsWith(query) || query.startsWith(name);
+    });
     if (matches.length === 1) {
       console.log(`Fuzzy client match: "${realEstateName}" → "${matches[0].clientname}"`);
       return matches[0];
@@ -259,8 +262,9 @@ async function findClient(realEstateName) {
   const candidates = [
     realEstateName,
     baseName,
+    strippedName,
     baseName.split(" ")[0],
-  ].filter((v, i, a) => a.indexOf(v) === i);
+  ].filter((v, i, a) => v && a.indexOf(v) === i);
 
   for (const name of candidates) {
     const zone = await arofloGet(
