@@ -1463,6 +1463,18 @@ app.get("/clients", (req, res) => {
   });
 });
 
+app.get("/find-client", async (req, res) => {
+  const name = req.query.name;
+  if (!name) return res.status(400).json({ error: "Pass ?name=..." });
+  const result = await findClient(name);
+  const key = name.toLowerCase();
+  const exactCacheHit = clientCache.get(key);
+  const partialMatches = [...clientCache.values()]
+    .filter(c => c.clientname.toLowerCase().includes(key) || key.includes(c.clientname.toLowerCase()))
+    .map(c => c.clientname);
+  res.json({ result, exactCacheHit: exactCacheHit?.clientname || null, partialMatches });
+});
+
 // ================================================================
 // AROFLO WEBHOOK — new client created
 // ================================================================
