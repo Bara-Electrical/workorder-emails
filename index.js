@@ -347,22 +347,16 @@ async function findOrUpdateLocation(clientId, address, tenantName, tenantContact
   // Strip unit prefix: "1412/380 Murray Street, Perth WA" → "380 Murray Street"
   const streetPart = address.replace(/^\d+\//, "").split(",")[0].trim().toLowerCase();
 
-  // Aroflo's zone=locations WHERE clause ignores nested fields — must filter client-side.
-  // linkedtoid is nested inside linkedto{}, and archived is an uppercase string "FALSE"/"TRUE".
-  const forClient = [];
+  let forClient = [];
   try {
-    let page = 1;
-    while (true) {
-      const zone = await arofloGet(`zone=locations&page=${page}`);
-      const raw = zone.locations;
-      if (!raw) break;
-      const arr = Array.isArray(raw) ? raw : [raw];
-      forClient.push(...arr.filter(l => l.linkedto?.linkedtoid === clientId));
-      const current = parseInt(zone.currentpageresults ?? 0);
-      const max     = parseInt(zone.maxpageresults ?? 500);
-      if (current < max) break;
-      page++;
-    }
+    const zone = await arofloGet(
+      "zone=clients" +
+      "&where=" + encodeURIComponent(`and|clientid|=|${clientId}`) +
+      "&join=locations"
+    );
+    const client = Array.isArray(zone.clients) ? zone.clients[0] : zone.clients;
+    const locs = client?.locations;
+    forClient = locs ? (Array.isArray(locs) ? locs : [locs]) : [];
   } catch (err) {
     console.warn("Location search failed:", err.message);
     return null;
@@ -1476,24 +1470,6 @@ app.get("/clients", (req, res) => {
 
 // ================================================================
 // AROFLO WEBHOOK — new client created
-// ================================================================
-// TEMP: Test location filter approaches — GET /debug-locations?clientId=xxx
-// ================================================================
-app.get("/debug-locations", async (req, res) => {
-  const { clientId } = req.query;
-  if (!clientId) return res.status(400).json({ error: "clientId required" });
-  try {
-    const zone = await arofloGet(
-      "zone=clients" +
-      "&where=" + encodeURIComponent(`and|clientid|=|${clientId}`) +
-      "&join=locations"
-    );
-    res.json({ raw: zone });
-  } catch (err) {
-    res.json({ error: err.message });
-  }
-});
-
 // ================================================================
 app.post("/aroflo-webhook", express.json(), async (req, res) => {
   console.log("Aroflo webhook received:", JSON.stringify(req.body));
