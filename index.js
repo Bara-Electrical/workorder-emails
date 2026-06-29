@@ -615,16 +615,20 @@ async function createArofloJob(result, rawEmail, pdfAttachment = null, emailMeta
         warnings.push({ tag: "PDF upload failed", detail: err.message });
       }
     }
-    for (const img of imageAttachments) {
-      try {
-        const url = await uploadWorkOrderToOneDrive(jobNumber, img.name, img.data, img.contentType);
-        if (url) photoUrls.push({ name: img.name, url });
-        console.log("Photo uploaded:", img.name, url);
-      } catch (err) {
-        console.warn("Photo upload failed:", img.name, err.message);
-        warnings.push({ tag: "Photo upload failed", detail: `${img.name}: ${err.message}` });
-      }
-    }
+    const photoResults = await Promise.all(
+      imageAttachments.map(async img => {
+        try {
+          const url = await uploadWorkOrderToOneDrive(jobNumber, img.name, img.data, img.contentType);
+          console.log("Photo uploaded:", img.name, url);
+          return url ? { name: img.name, url } : null;
+        } catch (err) {
+          console.warn("Photo upload failed:", img.name, err.message);
+          warnings.push({ tag: "Photo upload failed", detail: `${img.name}: ${err.message}` });
+          return null;
+        }
+      })
+    );
+    photoUrls.push(...photoResults.filter(Boolean));
   }
 
   // Post the original email as a note on the task
@@ -1000,21 +1004,23 @@ Return ONLY valid JSON with these exact keys:
     subject: message.subject || null,
   };
 
-  // Download image attachments
-  const imageAttachments = [];
-  for (const a of attachments) {
-    if (/\.(jpe?g|png|gif|bmp|webp)$/i.test(a.name || "") || (a.contentType || "").startsWith("image/")) {
-      try {
-        const attRes  = await graphFetch(`/users/${mailbox}/messages/${message.id}/attachments/${a.id}`);
-        const attData = await attRes.json();
-        const imgData = Uint8Array.from(atob(attData.contentBytes), c => c.charCodeAt(0));
-        imageAttachments.push({ name: a.name, data: imgData, contentType: a.contentType || "image/jpeg" });
-        console.log("Image attachment found:", a.name);
-      } catch (err) {
-        console.warn("Failed to download image attachment:", a.name, err.message);
-      }
-    }
-  }
+  // Download image attachments in parallel
+  const imageAttachments = (await Promise.all(
+    attachments
+      .filter(a => /\.(jpe?g|png|gif|bmp|webp)$/i.test(a.name || "") || (a.contentType || "").startsWith("image/"))
+      .map(async a => {
+        try {
+          const attRes  = await graphFetch(`/users/${mailbox}/messages/${message.id}/attachments/${a.id}`);
+          const attData = await attRes.json();
+          const imgData = Uint8Array.from(atob(attData.contentBytes), c => c.charCodeAt(0));
+          console.log("Image attachment downloaded:", a.name);
+          return { name: a.name, data: imgData, contentType: a.contentType || "image/jpeg" };
+        } catch (err) {
+          console.warn("Failed to download image attachment:", a.name, err.message);
+          return null;
+        }
+      })
+  )).filter(Boolean);
 
   return { result: parsed, rawEmail: rawBody, pdfAttachment, imageAttachments, emailMeta };
 }
@@ -1341,95 +1347,6 @@ async function pollEmails() {
   }
 }
 
-// ================================================================
-// TEMP: Test full job creation — GET /test-job?client=...&pm=...&address=...&tenant=...&phone=...
-// ================================================================
-app.get("/test-job", async (req, res) => {
-  const { client, pm, address, tenant, phone } = req.query;
-  if (!client || !address) return res.status(400).json({ error: "Pass ?client=...&address=..." });
-  const result = {
-    "task-type":        "Real Estate General Maintenance",
-    "real-estate":      client,
-    "property-manager": pm || null,
-    "address":          address,
-    "tenant-name":      tenant || null,
-    "tenant-contact":   phone || null,
-    "task-description": "Test job",
-    "account-to":       null,
-    "order-number":     null,
-    "access-details":   null,
-    "expenditure-limit": null,
-    "package":          null,
-  };
-  try {
-    const { jobNumber } = await createArofloJob(result, null);
-    res.json({ success: true, jobNumber });
-  } catch (err) {
-    res.json({ error: err.message });
-  }
-});
-
-// ================================================================
-// TEMP: Test note posting — GET /test-note?job=103245
-// ================================================================
-app.get("/test-note", async (req, res) => {
-  const jobNumber = req.query.job;
-  if (!jobNumber) return res.status(400).json({ error: "Pass ?job=..." });
-
-  try {
-    // 1. Find the taskId for the job number
-    const taskZone = await arofloGet(
-      "zone=tasks&where=" + encodeURIComponent(`and|jobnumber|=|${jobNumber}`) + "&page=1"
-    );
-    const taskRaw  = taskZone.tasks;
-    const taskArr  = taskRaw ? (Array.isArray(taskRaw) ? taskRaw : [taskRaw]) : [];
-    if (taskArr.length === 0) return res.json({ error: `Job ${jobNumber} not found in Aroflo` });
-    const taskId   = taskArr[0].taskid;
-
-    // 2. Fetch the latest email from inbox (read-only, no locking)
-    const emailRes  = await graphFetch(
-      `/users/${process.env.GRAPH_RECIPIENT}/mailFolders/inbox/messages` +
-      `?$select=id,subject,body&$orderby=receivedDateTime desc&$top=1`
-    );
-    const emailData = await emailRes.json();
-    const message   = emailData.value?.[0];
-    if (!message) return res.json({ error: "No emails found in inbox" });
-
-    const rawEmail  = message.body?.content || "";
-
-    // Extract a sample href to debug SafeLinks decoding
-    const sampleHref = (rawEmail.match(/href="([^"]{30,})"/i) || [])[1] || "none found";
-
-    const noteHtml  = await emailHtmlForNote(rawEmail);
-
-    // 3. Try posting note via zone=tasknotes
-    const results = {};
-    for (const zone of ["tasknotes", "notes"]) {
-      try {
-        const xml = zone === "tasknotes"
-          ? `<tasknotes><tasknote><taskid>${taskId}</taskid><content><![CDATA[${noteHtml}]]></content></tasknote></tasknotes>`
-          : `<notes><note><taskid>${taskId}</taskid><content><![CDATA[${noteHtml}]]></content></note></notes>`;
-        const r = await arofloPost(`zone=${zone}&postxml=` + encodeURIComponent(xml));
-        results[zone] = r ?? "returned undefined";
-      } catch (err) {
-        results[zone] = { error: err.message };
-      }
-    }
-
-    // Also try adding note via task update
-    try {
-      const updateXml = `<tasks><task><taskid>${taskId}</taskid><notes><note><content><![CDATA[${noteHtml}]]></content></note></notes></task></tasks>`;
-      const r = await arofloPost("zone=tasks&postxml=" + encodeURIComponent(updateXml));
-      results["task_update"] = r ?? "returned undefined";
-    } catch (err) {
-      results["task_update"] = { error: err.message };
-    }
-
-    res.json({ taskId, jobNumber, emailSubject: message.subject, sampleHref, results });
-  } catch (err) {
-    res.json({ error: err.message });
-  }
-});
 
 // ================================================================
 // Manual trigger for AI testing check
