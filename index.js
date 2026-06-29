@@ -1491,6 +1491,20 @@ app.get("/clients", (req, res) => {
 // ================================================================
 // AROFLO WEBHOOK — new client created
 // ================================================================
+// TEMP: Test location creation — GET /test-create-location?clientId=X&address=Y
+// ================================================================
+app.get("/test-create-location", async (req, res) => {
+  const { clientId, address } = req.query;
+  if (!clientId || !address) return res.status(400).json({ error: "clientId and address required" });
+  try {
+    const result = await createLocation(clientId, address, null, null);
+    res.json({ result });
+  } catch (err) {
+    res.json({ error: err.message });
+  }
+});
+
+// ================================================================
 app.post("/aroflo-webhook", express.json(), async (req, res) => {
   console.log("Aroflo webhook received:", JSON.stringify(req.body));
   res.sendStatus(200);
