@@ -698,17 +698,16 @@ async function emailHtmlForNote(html, oneDriveUrl = null, emailMeta = null) {
     `<tr><td style="color:#888888;font-size:12px;font-weight:bold;padding:1px 12px 1px 0;white-space:nowrap;vertical-align:top">${label}</td><td style="color:#444444;font-size:12px;padding:1px 0">${value}</td></tr>`;
 
   const metaRows = [
-    emailMeta?.from    ? cell("From:",    emailMeta.from)    : "",
-    emailMeta?.to      ? cell("To:",      emailMeta.to)      : "",
-    emailMeta?.subject ? cell("Subject:", emailMeta.subject) : "",
+    emailMeta?.from    ? cell("From:",       emailMeta.from)    : "",
+    emailMeta?.to      ? cell("To:",         emailMeta.to)      : "",
+    emailMeta?.subject ? cell("Subject:",    emailMeta.subject) : "",
     oneDriveUrl        ? cell("Attachment:", `<a href="${oneDriveUrl}" style="color:#1a6bbf">View Work Order PDF</a>`) : "",
   ].filter(Boolean).join("");
 
-  const metaHtml = metaRows
-    ? `<table style="border-collapse:collapse;margin:6px 0 12px 0">${metaRows}</table>`
-    : "";
+  const titleRow = `<tr><td colspan="2" style="font-size:16px;font-weight:bold;color:#444444;padding:0 0 5px 0">Work Order</td></tr>`;
+  const metaHtml = `<table style="border-collapse:collapse;margin:0 0 12px 0">${titleRow}${metaRows}</table>`;
 
-  return `<p style="margin:0 0 2px 0;font-size:16px;font-weight:bold;color:#444444">Work Order</p>${metaHtml}<hr style="border:none;border-top:1px solid #dddddd;margin:0 0 14px 0"><div>${cleaned}</div>`;
+  return `${metaHtml}<hr style="border:none;border-top:1px solid #dddddd;margin:0 0 14px 0"><div>${cleaned}</div>`;
 }
 
 async function uploadWorkOrderToOneDrive(jobNumber, filename, contentBytes) {
@@ -733,7 +732,7 @@ async function uploadWorkOrderToOneDrive(jobNumber, filename, contentBytes) {
 
     const linkRes = await fetch(
       `https://graph.microsoft.com/v1.0/users/${WORKORDERS_EMAIL}/drive/items/${itemId}/createLink`,
-      { method: "POST", headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" }, body: JSON.stringify({ type: "view", scope: "organization" }), signal: ac.signal }
+      { method: "POST", headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" }, body: JSON.stringify({ type: "view", scope: "anonymous" }), signal: ac.signal }
     );
     const linkData = await linkRes.json();
     return linkData?.link?.webUrl || null;
