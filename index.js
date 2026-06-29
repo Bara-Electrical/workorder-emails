@@ -896,15 +896,16 @@ async function processMessage(message, mailbox = process.env.GRAPH_RECIPIENT, on
   const responseAI = await openai.responses.create({
     model: "gpt-5-mini",
     text: { format: { type: "json_object" } },
-    instructions: `You are a work order extraction system for an electrical company in Australia.
+    instructions: `You are a work order extraction system for an electrical company in Australia. Today's date is ${new Date().toLocaleDateString("en-AU", { day: "2-digit", month: "2-digit", year: "numeric" })}.
 
 CRITICAL RULES:
 - tenant-name and tenant-contact come from the Tenant Details section OR any section labelled "Contact for job access" or similar. If no tenant is listed and the property is explicitly stated as vacant, set tenant-name to "Vacant" and ensure access-details captures any lockbox or key collection info. If no tenant is listed and the property is NOT stated as vacant, leave tenant-name null. Never use access details, lockbox info, or key numbers as the tenant name. If multiple tenants are listed, include ALL of them separated by commas — do not drop any.
+- If the email states the tenant is vacating or moving out and the move-out date is within 7 days of today, treat the property as vacant: set tenant-name to "Vacant", set tenant-contact to null, and include in task-description that keys should be collected after the move-out date (e.g. "Collect keys after 3/7").
 - access-details is ONLY physical access codes/numbers — key numbers, lockbox codes, gate codes, swipe card numbers. e.g. "Key: 1234", "Lockbox code: 56", "Gate code: 789". Do NOT include contact instructions, tenant names, safety instructions, or anything that is not a physical code or number.
-- expenditure-limit is the dollar amount only — e.g. "$330". Strip any conditions, notes, or extra text after the amount.
+- expenditure-limit is the dollar amount only — e.g. "$330". Strip any conditions, notes, or extra text after the amount. If the expenditure limit is $0 or zero, return null.
 - confidence is a float 0.0–1.0 rating how confident you are in the overall extraction. 1.0 = all fields clearly present, 0.0 = guessing most fields.
 - notes is any concerns, ambiguities, or flags worth mentioning — e.g. missing fields, conflicting info, unusual job details. Leave null if nothing to flag.
-- tenant-contact must contain phone numbers ONLY — no names, no labels, just the numbers. If there are multiple, separate with commas. Prefer mobile over home numbers. Australian numbers always start with 0 (e.g. 0412 345 678) — always include the leading 0.
+- tenant-contact must contain phone numbers ONLY — no names, no labels, just the numbers. Only use a number if it is explicitly and unambiguously labelled as the tenant's contact (e.g. appears in a Tenant section, or is labelled "Tenant Phone", "Tenant Mobile", "Contact Number" etc.). If you are unsure whether a number belongs to the tenant, leave tenant-contact null. If there are multiple confirmed tenant numbers, separate with commas. Prefer mobile over home numbers. Australian numbers always start with 0 (e.g. 0412 345 678) — always include the leading 0.
 - property-manager comes from the Property Manager section, OR from an Agency Details section where the manager is listed (e.g. "Manager: Jane Smith"). Use the person's name only, not the agency name.
 - account-to must include ALL owners exactly as written, always in the format: owners c/o real estate.
 - real-estate must always be a company or agency name — never a URL or domain. If the source contains something like "aussieproperty.com.au", convert it to a readable name (e.g. "Aussie Property") by stripping the domain extension and formatting as a proper name. If you cannot find it directly, look for it in account-to after the c/o.
@@ -975,6 +976,11 @@ Return ONLY valid JSON with these exact keys:
       .replace(/[-_.]/g, " ")
       .replace(/\b\w/g, c => c.toUpperCase())
       .trim();
+  }
+
+  // Ignore $0 expenditure limits
+  if (parsed["expenditure-limit"] && /^\$?\s*0+(\.0+)?\s*$/.test(parsed["expenditure-limit"].trim())) {
+    parsed["expenditure-limit"] = null;
   }
 
   // Australian mobile numbers are 10 digits starting with 0 — if AI drops the leading 0, restore it
