@@ -398,7 +398,7 @@ async function logActivity(action, jobNumber) {
   if (!airtableBase) return;
   try {
     await airtableBase("Activity Log").create([{
-      fields: { "Action": action, "Job number": jobNumber || null, "Department": "Work Orders" },
+      fields: { "Action": action, "Job number": jobNumber || null, "Department": "Admin" },
     }]);
   } catch (err) {
     console.warn("Airtable activity log failed:", err.message);
