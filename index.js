@@ -745,18 +745,8 @@ async function uploadWorkOrderToOneDrive(jobNumber, filename, contentBytes) {
       const err = await uploadRes.json().catch(() => ({}));
       throw new Error(`SharePoint upload failed ${uploadRes.status}: ${err?.error?.message || JSON.stringify(err)}`);
     }
-    const { id: itemId } = await uploadRes.json();
-
-    for (const scope of ["anonymous", "organization"]) {
-      const linkRes = await fetch(
-        `https://graph.microsoft.com/v1.0/drives/${driveId}/items/${itemId}/createLink`,
-        { method: "POST", headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" }, body: JSON.stringify({ type: "view", scope }), signal: ac.signal }
-      );
-      const linkData = await linkRes.json();
-      if (linkData?.link?.webUrl) return linkData.link.webUrl;
-      console.warn(`SharePoint createLink (${scope}) failed:`, JSON.stringify(linkData?.error));
-    }
-    return null;
+    const uploadData = await uploadRes.json();
+    return uploadData.webUrl || null;
   } finally {
     clearTimeout(timer);
   }
