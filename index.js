@@ -292,15 +292,18 @@ function parseAustralianAddress(address) {
 }
 
 async function geocodeAddress(address) {
-  const key = process.env.GOOGLE_MAPS_API_KEY;
-  if (!key) { console.warn("GOOGLE_MAPS_API_KEY not set — skipping geocode"); return null; }
+  const key = process.env.BING_MAPS_API_KEY;
+  if (!key) { console.warn("BING_MAPS_API_KEY not set — skipping geocode"); return null; }
   try {
-    const url = "https://maps.googleapis.com/maps/api/geocode/json?address=" +
+    const url = "https://dev.virtualearth.net/REST/v1/Locations?q=" +
                 encodeURIComponent(address) + "&key=" + key;
-    const res  = await fetch(url);
-    const data = await res.json();
-    const loc  = data?.results?.[0]?.geometry?.location;
-    if (loc) return { lat: loc.lat, lon: loc.lng };
+    const res      = await fetch(url);
+    const data     = await res.json();
+    const resource = data?.resourceSets?.[0]?.resources?.[0];
+    // Prefer rooftop point if available
+    const rooftop  = resource?.geocodePoints?.find(p => p.calculationMethod === "Rooftop");
+    const coords   = rooftop?.coordinates ?? resource?.point?.coordinates;
+    if (coords) return { lat: coords[0], lon: coords[1] };
   } catch (err) {
     console.warn("Geocode failed:", err.message);
   }
