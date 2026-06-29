@@ -292,12 +292,15 @@ function parseAustralianAddress(address) {
 }
 
 async function geocodeAddress(address) {
+  const key = process.env.GOOGLE_MAPS_API_KEY;
+  if (!key) { console.warn("GOOGLE_MAPS_API_KEY not set — skipping geocode"); return null; }
   try {
-    const url = "https://nominatim.openstreetmap.org/search?format=json&limit=1&countrycodes=au&q=" +
-                encodeURIComponent(address);
-    const res = await fetch(url, { headers: { "User-Agent": "bara-electrical-workorder/1.0" } });
+    const url = "https://maps.googleapis.com/maps/api/geocode/json?address=" +
+                encodeURIComponent(address) + "&key=" + key;
+    const res  = await fetch(url);
     const data = await res.json();
-    if (data?.[0]?.lat) return { lat: data[0].lat, lon: data[0].lon };
+    const loc  = data?.results?.[0]?.geometry?.location;
+    if (loc) return { lat: loc.lat, lon: loc.lng };
   } catch (err) {
     console.warn("Geocode failed:", err.message);
   }
