@@ -4,6 +4,7 @@ import OpenAI from "openai";
 import * as pdfjsLib from "pdfjs-dist/legacy/build/pdf.mjs";
 import { createHmac } from "crypto";
 import { PACKAGE_TEMPLATES } from "./templates.js";
+import Airtable from "airtable";
 
 const REQUIRED_ENV = [
   "OPENAI_API_KEY",
@@ -16,6 +17,18 @@ for (const key of REQUIRED_ENV) {
     process.exit(1);
   }
 }
+
+let airtableBase = null;
+if (process.env.AIRTABLE_API_KEY && process.env.AIRTABLE_BASE_ID) {
+  airtableBase = new Airtable({ apiKey: process.env.AIRTABLE_API_KEY }).base(process.env.AIRTABLE_BASE_ID);
+} else {
+  console.warn("AIRTABLE_API_KEY or AIRTABLE_BASE_ID not set — activity and AI logging disabled");
+}
+
+// Known sender name → Aroflo client name mappings
+const CLIENT_NAME_MAP = {
+  "warilla pty ltd": "Peter Kuhne Real Estate",
+};
 
 const TRIGGER_CATEGORY          = "Bara AI";
 const PROCESSING_CATEGORY       = "Processing";
@@ -381,6 +394,44 @@ async function findOrUpdateLocation(clientId, address, tenantName, tenantContact
   return location;
 }
 
+async function logActivity(action, jobNumber) {
+  if (!airtableBase) return;
+  try {
+    await airtableBase("Activity Log").create([{
+      fields: { "Action": action, "Job number": jobNumber || null, "Department": "Work Orders" },
+    }]);
+  } catch (err) {
+    console.warn("Airtable activity log failed:", err.message);
+  }
+}
+
+async function logAiOutput(result, emailSubject) {
+  if (!airtableBase) return;
+  try {
+    await airtableBase("Work Order AI Log").create([{
+      fields: {
+        "Email Subject":     emailSubject || null,
+        "Task Type":         result["task-type"] || null,
+        "Package":           result["package"] || null,
+        "Address":           result["address"] || null,
+        "Real Estate":       result["real-estate"] || null,
+        "Property Manager":  result["property-manager"] || null,
+        "Tenant Name":       result["tenant-name"] || null,
+        "Tenant Contact":    result["tenant-contact"] || null,
+        "Order Number":      result["order-number"] || null,
+        "Account To":        result["account-to"] || null,
+        "Access Details":    result["access-details"] || null,
+        "Expenditure Limit": result["expenditure-limit"] || null,
+        "Task Description":  result["task-description"] || null,
+        "Confidence":        result["confidence"] != null ? Number(result["confidence"]) : null,
+        "AI Notes":          result["notes"] || null,
+      },
+    }]);
+  } catch (err) {
+    console.warn("Airtable AI log failed:", err.message);
+  }
+}
+
 function buildDescription(result) {
   const parts = [];
   const spacer = `<p>&nbsp;</p>`;
@@ -411,7 +462,7 @@ function buildDescription(result) {
   return parts.join("\n");
 }
 
-async function createArofloJob(result, rawEmail) {
+async function createArofloJob(result, rawEmail, pdfAttachment = null) {
   console.log("CREATING AROFLO JOB...");
   const warnings = [];
 
@@ -423,8 +474,9 @@ async function createArofloJob(result, rawEmail) {
     warnings.push({ tag: "Unknown task type", detail });
   }
 
-  const client = await findClient(result["real-estate"]);
-  if (!client) throw new Error(`Client not found in Aroflo: "${result["real-estate"]}"`);
+  const realEstate = CLIENT_NAME_MAP[result["real-estate"]?.toLowerCase()] || result["real-estate"];
+  const client = await findClient(realEstate);
+  if (!client) throw new Error(`Client not found in Aroflo: "${realEstate}"`);
   console.log("CLIENT:", client.clientid, client.clientname);
 
   const location = await findOrUpdateLocation(
@@ -480,7 +532,7 @@ async function createArofloJob(result, rawEmail) {
     <description><![CDATA[${buildDescription(result)}]]></description>
     <duedate>${dueDate}</duedate>
     ${result["order-number"] ? `<custon>${result["order-number"]}</custon>` : ""}
-    ${(result["account-to"] || result["real-estate"]) ? `<customfields><customfield><name><![CDATA[ Account To: ]]></name><type><![CDATA[ text ]]></type><value><![CDATA[${result["account-to"] || result["real-estate"]}]]></value></customfield></customfields>` : ""}
+    ${(result["account-to"] || realEstate) ? `<customfields><customfield><name><![CDATA[ Account To: ]]></name><type><![CDATA[ text ]]></type><value><![CDATA[${result["account-to"] || realEstate}]]></value></customfield></customfields>` : ""}
   </task>
 </tasks>`;
 
@@ -517,10 +569,22 @@ async function createArofloJob(result, rawEmail) {
   }
   console.log("AROFLO JOB CREATED — job number:", jobNumber, "taskId:", confirmedTaskId);
 
+  // Upload PDF attachment to OneDrive and get a view link for the note
+  let oneDriveUrl = null;
+  if (pdfAttachment && jobNumber !== "(see Aroflo)") {
+    try {
+      oneDriveUrl = await uploadWorkOrderToOneDrive(jobNumber, pdfAttachment.name, pdfAttachment.data);
+      console.log("PDF uploaded to OneDrive:", oneDriveUrl);
+    } catch (err) {
+      console.warn("OneDrive upload failed:", err.message);
+      warnings.push({ tag: "PDF upload failed", detail: err.message });
+    }
+  }
+
   // Post the original email as a note on the task
   if (confirmedTaskId && rawEmail) {
     try {
-      const noteHtml = await emailHtmlForNote(rawEmail);
+      const noteHtml = await emailHtmlForNote(rawEmail, oneDriveUrl);
       const noteXml = `<tasks><task><taskid>${confirmedTaskId}</taskid><notes><note><content><![CDATA[${noteHtml}]]></content></note></notes></task></tasks>`;
       await arofloPost("zone=tasks&postxml=" + encodeURIComponent(noteXml));
       console.log("Email note posted");
@@ -609,7 +673,7 @@ async function decodeWrappedLinks(html) {
 }
 
 // Strip scripts/styles/tracking pixels but keep HTML structure for display in Aroflo notes
-async function emailHtmlForNote(html) {
+async function emailHtmlForNote(html, oneDriveUrl = null) {
   let cleaned = html
     .replace(/<script[\s\S]*?<\/script>/gi, "")
     .replace(/<style[\s\S]*?<\/style>/gi, "")
@@ -622,7 +686,33 @@ async function emailHtmlForNote(html) {
 
   cleaned = await decodeWrappedLinks(cleaned);
 
-  return `<p style="margin:0 0 8px 0"><strong style="color:#000000;font-size:15px">Work Order</strong></p><hr style="border:none;border-top:1px solid #000000;margin:0 0 16px 0"><div>${cleaned}</div>`;
+  const linkHtml = oneDriveUrl
+    ? `<p style="margin:0 0 12px 0;padding:7px 16px;background:#e8f0fe;border-left:3px solid #2c5282"><a href="${oneDriveUrl}" style="color:#2c5282;font-weight:bold;font-size:13px">View Work Order PDF</a></p>`
+    : "";
+  return `<div style="background:#2c5282;padding:10px 16px;margin:0 0 14px 0"><strong style="color:#ffffff;font-size:15px;letter-spacing:0.5px">Work Order</strong></div>${linkHtml}<div>${cleaned}</div>`;
+}
+
+async function uploadWorkOrderToOneDrive(jobNumber, filename, contentBytes) {
+  const safeName = filename.replace(/#/g, "").trim();
+  const itemPath = ["Work Orders", `${jobNumber} - ${safeName}`]
+    .map(s => encodeURIComponent(s)).join("/");
+
+  const uploadRes = await graphFetch(
+    `/users/${WORKORDERS_EMAIL}/drive/root:/${itemPath}:/content`,
+    { method: "PUT", headers: { "Content-Type": "application/pdf" }, body: contentBytes }
+  );
+  if (!uploadRes.ok) {
+    const err = await uploadRes.json().catch(() => ({}));
+    throw new Error(`OneDrive upload failed ${uploadRes.status}: ${err?.error?.message || JSON.stringify(err)}`);
+  }
+  const { id: itemId } = await uploadRes.json();
+
+  const linkRes = await graphFetch(
+    `/users/${WORKORDERS_EMAIL}/drive/items/${itemId}/createLink`,
+    { method: "POST", body: JSON.stringify({ type: "view", scope: "organization" }) }
+  );
+  const linkData = await linkRes.json();
+  return linkData?.link?.webUrl || null;
 }
 
 // Known work order portal domains
@@ -667,6 +757,7 @@ async function processMessage(message, mailbox = process.env.GRAPH_RECIPIENT, on
   const rawBody     = message.body?.content || "";
   const emailBodyText = (message.body?.contentType === "html" ? cleanHtml(rawBody) : rawBody).replace(/\s+/g, " ").trim();
   let   textForAI     = emailBodyText;
+  let   pdfAttachment = null;
 
   function withEmailBody(primary) {
     return `--- WORK ORDER CONTENT (prefer this) ---\n${primary}\n\n--- EMAIL BODY (use for anything not found above) ---\n${emailBodyText}`;
@@ -718,6 +809,7 @@ async function processMessage(message, mailbox = process.env.GRAPH_RECIPIENT, on
     const data       = Uint8Array.from(atob(attachData.contentBytes), c => c.charCodeAt(0));
     const pdfText    = await extractPDF(data);
     textForAI = withEmailBody(pdfText.replace(/\s+/g, " ").trim());
+    pdfAttachment = { name: workorderAttachment.name, data };
   }
   if (onStatus) await onStatus(SENDING_TO_AI_CATEGORY);
 
@@ -738,6 +830,8 @@ CRITICAL RULES:
 - real-estate must always be a company or agency name — never a URL or domain. If the source contains something like "aussieproperty.com.au", convert it to a readable name (e.g. "Aussie Property") by stripping the domain extension and formatting as a proper name. If you cannot find it directly, look for it in account-to after the c/o.
 - order-number is the job/work order number.
 - task-description must be a concise electrician job summary. If anything is listed as conditional or requires approval (e.g. "deluxe clean if approved", "AC2 if required"), include that in the description too.
+- Do NOT include instructions to contact the tenant or PM for access in task-description. Contacting the tenant for access is the default assumption for every job and must not be stated.
+- Key numbers in access-details are reference numbers for our existing key management system — we already hold these keys. Do NOT include any instruction to collect, pick up, or obtain keys in task-description based solely on a key number being listed in access-details.
 - Do NOT guess missing fields — if missing return null.
 - The text may be a structured form (with clear sections) OR plain prose in an email. Extract the same fields either way — don't return null just because sections aren't labelled.
 - If the input contains both a PDF CONTENT section and an EMAIL BODY section, prefer the PDF for all fields but check the email body for anything not found in the PDF.
@@ -813,7 +907,7 @@ Return ONLY valid JSON with these exact keys:
       .join(", ");
   }
 
-  return { result: parsed, rawEmail: rawBody };
+  return { result: parsed, rawEmail: rawBody, pdfAttachment };
 }
 
 // ================================================================
@@ -950,6 +1044,7 @@ async function processAiTestingEmails() {
       try {
         const { result } = await processMessage(message, BRANDON_EMAIL);
         console.log("AI testing result:", result);
+        await logAiOutput(result, message.subject);
 
         const confidence = result["confidence"] ?? null;
         const aiNotes    = result["notes"] || null;
@@ -1053,7 +1148,7 @@ async function pollInbox(mailbox) {
         currentCategories = await setJobStatus(mailbox, message.id, currentCategories, status);
       };
 
-      const { result, rawEmail } = await processMessage(message, mailbox, onStatus);
+      const { result, rawEmail, pdfAttachment } = await processMessage(message, mailbox, onStatus);
 
       // Pre-job validation warnings — checked before Aroflo job creation
       const preWarnings = [];
@@ -1065,7 +1160,9 @@ async function pollInbox(mailbox) {
       }
 
       await onStatus(CREATING_JOB_CATEGORY);
-      const { jobNumber, warnings: jobWarnings } = await createArofloJob(result, rawEmail);
+      const { jobNumber, warnings: jobWarnings } = await createArofloJob(result, rawEmail, pdfAttachment);
+      await logActivity("Job created", jobNumber);
+      await logAiOutput(result, message.subject);
       const allWarnings = [...preWarnings, ...jobWarnings];
 
       // Always apply job tag to prevent re-processing; add a specific tag for each failure
@@ -1325,17 +1422,10 @@ app.get("/clients", (req, res) => {
 // ================================================================
 // AROFLO WEBHOOK — new client created
 // ================================================================
-app.post("/aroflo-webhook", express.json(), (req, res) => {
-  const body = req.body;
-  console.log("Aroflo webhook received:", JSON.stringify(body));
-  // Aroflo sends client details — update the cache so fuzzy matching picks it up immediately.
-  // Adjust the field path below once the actual payload format is confirmed.
-  const client = body?.client ?? body;
-  if (client?.clientname && client?.clientid) {
-    clientCache.set(client.clientname.toLowerCase(), client);
-    console.log("Client cache updated:", client.clientname);
-  }
+app.post("/aroflo-webhook", express.json(), async (req, res) => {
+  console.log("Aroflo webhook received:", JSON.stringify(req.body));
   res.sendStatus(200);
+  await loadClientCache();
 });
 
 // ================================================================
