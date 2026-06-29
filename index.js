@@ -30,6 +30,11 @@ const CLIENT_NAME_MAP = {
   "warilla pty ltd": "Peter Kuhne Real Estate",
 };
 
+// Sender email domain → Aroflo client name (fallback when AI can't extract name from compound domains)
+const EMAIL_DOMAIN_MAP = {
+  "platinumelectricians.com.au": "Platinum Electricians",
+};
+
 const TRIGGER_CATEGORY          = "Bara AI";
 const PROCESSING_CATEGORY       = "Processing";
 const CLIENT_NOT_FOUND_CATEGORY = "Client not found";
@@ -504,7 +509,15 @@ async function createArofloJob(result, rawEmail, pdfAttachment = null, emailMeta
   }
 
   const realEstate = CLIENT_NAME_MAP[result["real-estate"]?.toLowerCase()] || result["real-estate"];
-  const client = await findClient(realEstate);
+  let client = await findClient(realEstate);
+  if (!client && emailMeta?.from) {
+    const domain = emailMeta.from.split("@")[1];
+    const domainName = domain && EMAIL_DOMAIN_MAP[domain.toLowerCase()];
+    if (domainName) {
+      console.log(`Client not found by name — trying email domain "${domain}" → "${domainName}"`);
+      client = await findClient(domainName);
+    }
+  }
   if (!client) throw new Error(`Client not found in Aroflo: "${realEstate}"`);
   console.log("CLIENT:", client.clientid, client.clientname);
 
