@@ -1477,6 +1477,26 @@ app.get("/clients", (req, res) => {
 });
 
 // ================================================================
+// TEMP: Dump raw locations for a client — GET /debug-locations?clientId=xxx
+// ================================================================
+app.get("/debug-locations", async (req, res) => {
+  const { clientId } = req.query;
+  if (!clientId) return res.status(400).json({ error: "clientId required" });
+  try {
+    const zone = await arofloGet(
+      "zone=locations" +
+      "&where=" + encodeURIComponent(`and|linkedtoid|=|${clientId}`) +
+      "&page=1"
+    );
+    const raw = zone.locations;
+    const arr = raw ? (Array.isArray(raw) ? raw : [raw]) : [];
+    res.json({ total: arr.length, locations: arr });
+  } catch (err) {
+    res.json({ error: err.message });
+  }
+});
+
+// ================================================================
 // AROFLO WEBHOOK — new client created
 // ================================================================
 app.post("/aroflo-webhook", express.json(), async (req, res) => {
