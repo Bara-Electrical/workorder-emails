@@ -509,16 +509,20 @@ async function createArofloJob(result, rawEmail, pdfAttachment = null, emailMeta
   }
 
   const realEstate = CLIENT_NAME_MAP[result["real-estate"]?.toLowerCase()] || result["real-estate"];
+  console.log(`Client lookup — AI extracted real-estate: "${result["real-estate"]}", resolved to: "${realEstate}", from: "${emailMeta?.from}"`);
   let client = await findClient(realEstate);
+  let clientFoundVia = "name";
   if (!client && emailMeta?.from) {
     const domain = emailMeta.from.split("@")[1];
     const domainName = domain && EMAIL_DOMAIN_MAP[domain.toLowerCase()];
+    console.log(`Client not found by name — domain: "${domain}", domain map hit: "${domainName || "none"}"`);
     if (domainName) {
-      console.log(`Client not found by name — trying email domain "${domain}" → "${domainName}"`);
       client = await findClient(domainName);
+      clientFoundVia = `email domain (${domainName})`;
     }
   }
-  if (!client) throw new Error(`Client not found in Aroflo: "${realEstate}"`);
+  if (!client) throw new Error(`Client not found in Aroflo: name="${realEstate}", from="${emailMeta?.from}"`);
+  console.log(`CLIENT (via ${clientFoundVia}):`, client.clientid, client.clientname);
   console.log("CLIENT:", client.clientid, client.clientname);
 
   const location = await findOrUpdateLocation(
