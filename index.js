@@ -32,7 +32,7 @@ const CLIENT_NAME_MAP = {
 
 // Sender email domain → Aroflo client name (fallback when AI can't extract name from compound domains)
 const EMAIL_DOMAIN_MAP = {
-  "platinumelectricians.com.au": "Platinum Property",
+  "platinumelectricians.com.au": "Platinum Electricians",
 };
 
 const TRIGGER_CATEGORY          = "Bara AI";
