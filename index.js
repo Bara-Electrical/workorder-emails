@@ -403,29 +403,33 @@ async function findOrUpdateLocation(clientId, address, tenantName, tenantContact
   }
 
   console.log("FOUND LOCATION:", location.locationid, location.locationname);
+  console.log("LOCATION FIELDS:", JSON.stringify(location));
+  console.log("TENANT IN:", { tenantName, tenantContact, tenantEmail });
 
   const needsUpdate =
-    (tenantName    && location.SiteContact !== tenantName) ||
-    (tenantContact && location.SitePhone   !== tenantContact) ||
-    (tenantEmail   && location.SiteEmail   !== tenantEmail);
+    (tenantName    && location.sitecontact !== tenantName) ||
+    (tenantContact && location.sitephone   !== tenantContact) ||
+    (tenantEmail   && location.siteemail   !== tenantEmail);
 
   if (needsUpdate) {
-    console.log("UPDATING TENANT — was:", location.SiteContact, "/", location.SitePhone, "/", location.SiteEmail);
+    console.log("UPDATING TENANT — was:", location.sitecontact, "/", location.sitephone, "/", location.siteemail);
     const xml =
 `<locations>
   <location>
     <locationid>${location.locationid}</locationid>
-    ${tenantName    ? `<SiteContact>${tenantName}</SiteContact>`  : ""}
-    ${tenantContact ? `<SitePhone>${tenantContact}</SitePhone>`   : ""}
-    ${tenantEmail   ? `<SiteEmail>${tenantEmail}</SiteEmail>`     : ""}
+    ${tenantName    ? `<sitecontact><![CDATA[${tenantName}]]></sitecontact>`  : ""}
+    ${tenantContact ? `<sitephone><![CDATA[${tenantContact}]]></sitephone>`   : ""}
+    ${tenantEmail   ? `<siteemail><![CDATA[${tenantEmail}]]></siteemail>`     : ""}
   </location>
 </locations>`;
     try {
-      await arofloPost("zone=locations&postxml=" + encodeURIComponent(xml));
-      console.log("TENANT DETAILS UPDATED");
+      const updateRes = await arofloPost("zone=locations&postxml=" + encodeURIComponent(xml));
+      console.log("TENANT UPDATE RESPONSE:", JSON.stringify(updateRes?.postresults));
     } catch (err) {
       console.warn("Tenant update failed:", err.message);
     }
+  } else {
+    console.log("TENANT UP TO DATE — no update needed");
   }
 
   return location;
