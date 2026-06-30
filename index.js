@@ -32,7 +32,7 @@ const CLIENT_NAME_MAP = {
 
 // Sender email domain → Aroflo client name (fallback when AI can't extract name from compound domains)
 const EMAIL_DOMAIN_MAP = {
-  "platinumelectricians.com.au": "Platinum Electricians",
+  "platinumelectricians.com.au": "Platinum Property",
 };
 
 const TRIGGER_CATEGORY          = "Bara AI";
@@ -518,12 +518,18 @@ async function createArofloJob(result, rawEmail, pdfAttachment = null, emailMeta
     console.log(`Client not found by name — domain: "${domain}", domain map hit: "${domainName || "none"}"`);
     if (domainName) {
       client = await findClient(domainName);
+      if (!client) {
+        // Client not in cache (may be a supplier/subcontractor type) — try live Aroflo API
+        console.log(`Cache miss for "${domainName}" — trying live Aroflo API lookup`);
+        const zone = await arofloGet(`zone=clients&where=${encodeURIComponent(`and|clientname|=|${domainName}`)}&page=1`);
+        const raw = zone?.clients;
+        if (raw) client = Array.isArray(raw) ? raw[0] : raw;
+      }
       clientFoundVia = `email domain (${domainName})`;
     }
   }
   if (!client) throw new Error(`Client not found in Aroflo: name="${realEstate}", from="${emailMeta?.from}"`);
   console.log(`CLIENT (via ${clientFoundVia}):`, client.clientid, client.clientname);
-  console.log("CLIENT:", client.clientid, client.clientname);
 
   const location = await findOrUpdateLocation(
     client.clientid,
