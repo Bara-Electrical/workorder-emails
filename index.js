@@ -290,7 +290,7 @@ function parseAustralianAddress(address) {
   const rest   = parts.slice(1).join(", ").trim();
   // Optional comma before state handles "Perth, WA 6000" and "Perth WA 6000".
   // Explicit state list handles title-cased abbreviations like "Wa" or "Nsw".
-  const match  = rest.match(/^(.*?),?\s+(NSW|VIC|QLD|SA|WA|TAS|ACT|NT)(?:\s+(\d{4}))?$/i);
+  const match  = rest.match(/^(.*?),?\s+(NSW|VIC|QLD|SA|WA|TAS|ACT|NT)(?:[,\s]+(\d{4}))?$/i);
   return match
     ? { street, suburb: match[1].trim(), state: match[2].toUpperCase(), postcode: match[3] || "" }
     : { street, suburb: rest, state: "", postcode: "" };
@@ -312,7 +312,7 @@ async function geocodeAddress(address) {
   return null;
 }
 
-async function createLocation(clientId, address, tenantName, tenantContact) {
+async function createLocation(clientId, address, tenantName, tenantContact, tenantEmail) {
   const { street, suburb, state, postcode } = parseAustralianAddress(address);
   const coords = await geocodeAddress(address);
   const xml =
@@ -327,6 +327,7 @@ async function createLocation(clientId, address, tenantName, tenantContact) {
     ${coords ? `<gpslat>${coords.lat}</gpslat><gpslong>${coords.lon}</gpslong>` : ""}
     ${tenantName    ? `<sitecontact><![CDATA[${tenantName}]]></sitecontact>`  : ""}
     ${tenantContact ? `<sitephone><![CDATA[${tenantContact}]]></sitephone>`   : ""}
+    ${tenantEmail   ? `<siteemail><![CDATA[${tenantEmail}]]></siteemail>`     : ""}
   </location></locations>
 </client></clients>`;
   const createZone = await arofloPost("zone=clients&postxml=" + encodeURIComponent(xml));
@@ -366,7 +367,7 @@ async function createLocation(clientId, address, tenantName, tenantContact) {
 // Find a location by street address under a client, then update SiteContact/SitePhone if stale.
 // Fetches all locations linked to the client and matches by street address locally —
 // the locationname|like WHERE clause is not supported by Aroflo.
-async function findOrUpdateLocation(clientId, address, tenantName, tenantContact) {
+async function findOrUpdateLocation(clientId, address, tenantName, tenantContact, tenantEmail) {
   if (!address) return null;
 
   // Strip unit prefix: "1412/380 Murray Street, Perth WA" → "380 Murray Street"
@@ -394,7 +395,7 @@ async function findOrUpdateLocation(clientId, address, tenantName, tenantContact
   if (!location) {
     console.log("No location matching:", streetPart, "— creating new location:", address);
     try {
-      return await createLocation(clientId, address, tenantName, tenantContact);
+      return await createLocation(clientId, address, tenantName, tenantContact, tenantEmail);
     } catch (err) {
       console.warn("Location creation failed:", err.message);
       return null;
@@ -405,16 +406,18 @@ async function findOrUpdateLocation(clientId, address, tenantName, tenantContact
 
   const needsUpdate =
     (tenantName    && location.SiteContact !== tenantName) ||
-    (tenantContact && location.SitePhone   !== tenantContact);
+    (tenantContact && location.SitePhone   !== tenantContact) ||
+    (tenantEmail   && location.SiteEmail   !== tenantEmail);
 
   if (needsUpdate) {
-    console.log("UPDATING TENANT — was:", location.SiteContact, "/", location.SitePhone);
+    console.log("UPDATING TENANT — was:", location.SiteContact, "/", location.SitePhone, "/", location.SiteEmail);
     const xml =
 `<locations>
   <location>
     <locationid>${location.locationid}</locationid>
     ${tenantName    ? `<SiteContact>${tenantName}</SiteContact>`  : ""}
     ${tenantContact ? `<SitePhone>${tenantContact}</SitePhone>`   : ""}
+    ${tenantEmail   ? `<SiteEmail>${tenantEmail}</SiteEmail>`     : ""}
   </location>
 </locations>`;
     try {
@@ -535,7 +538,8 @@ async function createArofloJob(result, rawEmail, pdfAttachment = null, emailMeta
     client.clientid,
     result.address,
     result["tenant-name"],
-    result["tenant-contact"]
+    result["tenant-contact"],
+    result["tenant-email"]
   );
   if (!location && result.address) {
     const detail = `Location not linked for "${result.address}" — address used as site name fallback`;
@@ -933,6 +937,7 @@ CRITICAL RULES:
 - confidence is a float 0.0–1.0 rating how confident you are in the overall extraction. 1.0 = all fields clearly present, 0.0 = guessing most fields.
 - notes is any concerns, ambiguities, or flags worth mentioning — e.g. missing fields, conflicting info, unusual job details. Leave null if nothing to flag.
 - tenant-contact must contain phone numbers ONLY — no names, no labels, just the numbers. Only use a number if it is explicitly and unambiguously labelled as the tenant's contact (e.g. appears in a Tenant section, or is labelled "Tenant Phone", "Tenant Mobile", "Contact Number" etc.). If you are unsure whether a number belongs to the tenant, leave tenant-contact null. If there are multiple confirmed tenant numbers, separate with commas. Prefer mobile over home numbers. Australian numbers always start with 0 (e.g. 0412 345 678) — always include the leading 0.
+- tenant-email is the tenant's email address. Only include if explicitly labelled as the tenant's email. Leave null if not present or uncertain.
 - property-manager comes from the Property Manager section, OR from an Agency Details section where the manager is listed (e.g. "Manager: Jane Smith"). Use the person's name only, not the agency name.
 - account-to must include ALL owners exactly as written, always in the format: owners c/o real estate.
 - real-estate must always be a company or agency name — never a URL or domain. If the source contains something like "aussieproperty.com.au", convert it to a readable name (e.g. "Aussie Property") by stripping the domain extension and formatting as a proper name. If you cannot find it directly, look for it in account-to after the c/o. The sender's email address is provided at the top of the input — use the domain as an additional hint to identify real-estate if the company name is not clearly stated in the content (e.g. "noreply@raywhite.com.au" → "Ray White").
@@ -959,6 +964,7 @@ Return ONLY valid JSON with these exact keys:
   "task-type": "",
   "tenant-name": "",
   "tenant-contact": "",
+  "tenant-email": "",
   "address": "",
   "task-description": "",
   "real-estate": "",
