@@ -403,16 +403,8 @@ async function findOrUpdateLocation(clientId, address, tenantName, tenantContact
   }
 
   console.log("FOUND LOCATION:", location.locationid, location.locationname);
-  console.log("LOCATION FIELDS:", JSON.stringify(location));
-  console.log("TENANT IN:", { tenantName, tenantContact, tenantEmail });
 
-  const needsUpdate =
-    (tenantName    && location.sitecontact !== tenantName) ||
-    (tenantContact && location.sitephone   !== tenantContact) ||
-    (tenantEmail   && location.siteemail   !== tenantEmail);
-
-  if (needsUpdate) {
-    console.log("UPDATING TENANT — was:", location.sitecontact, "/", location.sitephone, "/", location.siteemail);
+  if (tenantName || tenantContact || tenantEmail) {
     const xml =
 `<locations>
   <location>
@@ -424,12 +416,10 @@ async function findOrUpdateLocation(clientId, address, tenantName, tenantContact
 </locations>`;
     try {
       const updateRes = await arofloPost("zone=locations&postxml=" + encodeURIComponent(xml));
-      console.log("TENANT UPDATE RESPONSE:", JSON.stringify(updateRes?.postresults));
+      console.log("Tenant details updated:", JSON.stringify(updateRes?.postresults));
     } catch (err) {
       console.warn("Tenant update failed:", err.message);
     }
-  } else {
-    console.log("TENANT UP TO DATE — no update needed");
   }
 
   return location;
