@@ -30,6 +30,7 @@ const CLIENT_NAME_MAP = {
   "warilla pty ltd": "Peter Kuhne Real Estate",
   "warrilla pty ltd": "Peter Kuhne Real Estate",
   "professionals cannington": "Professionals BW Backhouse & Associates",
+  "bw backhouse & associates": "Professionals BW Backhouse & Associates",
 };
 
 // Sender email domain → Aroflo client name (fallback when AI can't extract name from compound domains)
