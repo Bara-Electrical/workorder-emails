@@ -28,6 +28,7 @@ if (process.env.AIRTABLE_API_KEY && process.env.AIRTABLE_BASE_ID) {
 // Known sender name → Aroflo client name mappings
 const CLIENT_NAME_MAP = {
   "warilla pty ltd": "Peter Kuhne Real Estate",
+  "warrilla pty ltd": "Peter Kuhne Real Estate",
 };
 
 // Sender email domain → Aroflo client name (fallback when AI can't extract name from compound domains)
