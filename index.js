@@ -40,6 +40,7 @@ const EMAIL_DOMAIN_MAP = {
 
 const TRIGGER_CATEGORY          = "Bara AI";
 const PROCESSING_CATEGORY       = "Processing";
+const FAILED_CATEGORY           = "Failed";
 const CLIENT_NOT_FOUND_CATEGORY = "Client not found";
 const READING_EMAIL_CATEGORY    = "Reading Email";
 const SENDING_TO_AI_CATEGORY    = "Sending to AI";
@@ -51,7 +52,7 @@ const POLL_INTERVAL_MS          = 5 * 60 * 1000;
 
 // All transient status categories — stripped when transitioning to next stage
 const STATUS_CATEGORIES = [
-  PROCESSING_CATEGORY, READING_EMAIL_CATEGORY,
+  PROCESSING_CATEGORY, FAILED_CATEGORY, READING_EMAIL_CATEGORY,
   SENDING_TO_AI_CATEGORY, CREATING_JOB_CATEGORY,
   CLIENT_NOT_FOUND_CATEGORY,
 ];
@@ -203,27 +204,36 @@ async function loadClientCache() {
   }
 }
 
-// Fetch contacts for a client using join=contacts, then match by PM name.
-async function findContact(clientId, pmName) {
-  if (!clientId || !pmName) return null;
+// Fetch a client's locations and contacts in a single call (join=locations,contacts)
+// instead of two separate lookups.
+async function findLocationsAndContacts(clientId) {
   try {
     const zone = await arofloGet(
       "zone=clients" +
-      "&join=" + encodeURIComponent("contacts") +
+      "&join=" + encodeURIComponent("locations,contacts") +
       "&where=" + encodeURIComponent(`and|clientid|=|${clientId}`) +
       "&where=" + encodeURIComponent("and|archived|=|false") +
       "&page=1"
     );
-    const raw     = zone.clients;
-    const client  = Array.isArray(raw) ? raw[0] : raw;
-    const contacts = client?.contacts || [];
-    const arr      = Array.isArray(contacts) ? contacts : [contacts];
-    const nameLower = pmName.toLowerCase();
-    return arr.find(c => `${c.givennames} ${c.surname}`.toLowerCase().includes(nameLower)) || null;
+    const raw    = zone.clients;
+    const client = Array.isArray(raw) ? raw[0] : raw;
+    const locs     = client?.locations;
+    const contacts = client?.contacts;
+    return {
+      locations: locs ? (Array.isArray(locs) ? locs : [locs]) : [],
+      contacts:  contacts ? (Array.isArray(contacts) ? contacts : [contacts]) : [],
+    };
   } catch (err) {
-    console.warn("Contact search failed:", err.message);
-    return null;
+    console.warn("Location/contact search failed:", err.message);
+    return { locations: [], contacts: [] };
   }
+}
+
+// Match a PM contact by name from an already-fetched contacts array.
+function matchContact(contacts, pmName) {
+  if (!pmName) return null;
+  const nameLower = pmName.toLowerCase();
+  return contacts.find(c => `${c.givennames} ${c.surname}`.toLowerCase().includes(nameLower)) || null;
 }
 
 // Search for a client by name.
@@ -367,30 +377,17 @@ async function createLocation(clientId, address, tenantName, tenantContact, tena
   return null;
 }
 
-// Find a location by street address under a client, then update SiteContact/SitePhone if stale.
-// Fetches all locations linked to the client and matches by street address locally —
-// the locationname|like WHERE clause is not supported by Aroflo.
-async function findOrUpdateLocation(clientId, address, tenantName, tenantContact, tenantEmail) {
+// Find a location by street address from an already-fetched locations array, then
+// update SiteContact/SitePhone if stale, or create the location if it doesn't exist yet.
+// Matches by street address locally — the locationname|like WHERE clause is not
+// supported by Aroflo.
+async function findOrUpdateLocation(clientId, locations, address, tenantName, tenantContact, tenantEmail) {
   if (!address) return null;
 
   // Strip unit prefix: "1412/380 Murray Street, Perth WA" → "380 Murray Street"
   const streetPart = address.replace(/^\d+\//, "").split(",")[0].trim().toLowerCase();
 
-  let forClient = [];
-  try {
-    const zone = await arofloGet(
-      "zone=clients" +
-      "&where=" + encodeURIComponent(`and|clientid|=|${clientId}`) +
-      "&join=locations"
-    );
-    const client = Array.isArray(zone.clients) ? zone.clients[0] : zone.clients;
-    const locs = client?.locations;
-    forClient = locs ? (Array.isArray(locs) ? locs : [locs]) : [];
-  } catch (err) {
-    console.warn("Location search failed:", err.message);
-    return null;
-  }
-
+  const forClient = locations;
   const active = forClient.filter(l => l.archived?.toUpperCase() !== "TRUE");
   console.log(`Location search — client ${clientId}: ${forClient.length} location(s) (${active.length} active), searching for "${streetPart}"`);
   const location = active.find(l => l.locationname?.toLowerCase().includes(streetPart));
@@ -531,8 +528,11 @@ async function createArofloJob(result, rawEmail, pdfAttachment = null, emailMeta
   if (!client) throw new Error(`Client not found in Aroflo: name="${realEstate}", from="${emailMeta?.from}"`);
   console.log(`CLIENT (via ${clientFoundVia}):`, client.clientid, client.clientname);
 
+  const { locations, contacts } = await findLocationsAndContacts(client.clientid);
+
   const location = await findOrUpdateLocation(
     client.clientid,
+    locations,
     result.address,
     result["tenant-name"],
     result["tenant-contact"],
@@ -544,7 +544,7 @@ async function createArofloJob(result, rawEmail, pdfAttachment = null, emailMeta
     warnings.push({ tag: "Location not linked", detail });
   }
 
-  const pmContact = await findContact(client.clientid, result["property-manager"]);
+  const pmContact = matchContact(contacts, result["property-manager"]);
   if (pmContact) {
     console.log("PM CONTACT:", pmContact.contactid, pmContact.contactname);
   } else if (result["property-manager"]) {
@@ -655,40 +655,45 @@ async function createArofloJob(result, rawEmail, pdfAttachment = null, emailMeta
     photoUrls.push(...photoResults.filter(Boolean));
   }
 
-  // Post the original email as a note on the task
-  if (confirmedTaskId && rawEmail) {
-    try {
-      const noteHtml = await emailHtmlForNote(rawEmail, oneDriveUrl, emailMeta, photoUrls);
-      const noteXml = `<tasks><task><taskid>${confirmedTaskId}</taskid><notes><note><content><![CDATA[${noteHtml}]]></content></note></notes></task></tasks>`;
-      await arofloPost("zone=tasks&postxml=" + encodeURIComponent(noteXml));
-      console.log("Email note posted");
-    } catch (err) {
-      const detail = `Email note not posted to job: ${err.message}`;
-      console.warn(detail);
-      warnings.push({ tag: "Note not posted", detail });
+  // Post the original email as a note and set the substatus in one combined task
+  // update (Aroflo doesn't apply substatus on create, so a follow-up write is
+  // always needed — piggyback the note content on the same call).
+  if (confirmedTaskId) {
+    let noteHtml = null;
+    if (rawEmail) {
+      try {
+        noteHtml = await emailHtmlForNote(rawEmail, oneDriveUrl, emailMeta, photoUrls);
+      } catch (err) {
+        const detail = `Email note not posted to job: ${err.message}`;
+        console.warn(detail);
+        warnings.push({ tag: "Note not posted", detail });
+      }
+    } else {
+      warnings.push({ tag: "Note not posted", detail: "No email content available — note not posted to job" });
     }
-  } else if (confirmedTaskId && !rawEmail) {
-    warnings.push({ tag: "Note not posted", detail: "No email content available — note not posted to job" });
-  }
 
-  // Aroflo doesn't apply substatus on create — do a follow-up update
-  if (confirmedTaskId && substatusId) {
-    const updateXml =
+    if (noteHtml || substatusId) {
+      const updateXml =
 `<tasks>
   <task>
     <taskid>${confirmedTaskId}</taskid>
-    <status>not started</status>
-    <substatus><substatusid>${substatusId}</substatusid></substatus>
+    ${substatusId ? `<status>not started</status><substatus><substatusid>${substatusId}</substatusid></substatus>` : ""}
+    ${noteHtml ? `<notes><note><content><![CDATA[${noteHtml}]]></content></note></notes>` : ""}
   </task>
 </tasks>`;
-    const upZone = await arofloPost("zone=tasks&postxml=" + encodeURIComponent(updateXml));
-    const upPr   = upZone.postresults;
-    if (Number(upPr?.updatetotal ?? 0) > 0) {
-      console.log("Substatus set:", substatusId);
-    } else {
-      const detail = "Substatus not applied — job may need manual scheduling status update";
-      console.warn(detail);
-      warnings.push({ tag: "Substatus failed", detail });
+      try {
+        const upZone = await arofloPost("zone=tasks&postxml=" + encodeURIComponent(updateXml));
+        const upPr   = upZone.postresults;
+        if (Number(upPr?.updatetotal ?? 0) > 0) {
+          console.log("Task update applied — note:", !!noteHtml, "substatus:", substatusId || "n/a");
+        } else {
+          if (noteHtml) warnings.push({ tag: "Note not posted", detail: "Combined task update did not apply" });
+          if (substatusId) warnings.push({ tag: "Substatus failed", detail: "Combined task update did not apply — job may need manual scheduling status update" });
+        }
+      } catch (err) {
+        if (noteHtml) warnings.push({ tag: "Note not posted", detail: `Email note not posted to job: ${err.message}` });
+        if (substatusId) warnings.push({ tag: "Substatus failed", detail: `Substatus not applied: ${err.message}` });
+      }
     }
   }
 
@@ -1261,6 +1266,7 @@ async function pollInbox(mailbox) {
     `categories/any(c:c eq '${TRIGGER_CATEGORY}')` +
     ` and not categories/any(c:c eq '${CLIENT_NOT_FOUND_CATEGORY}')` +
     ` and not categories/any(c:c eq '${PROCESSING_CATEGORY}')` +
+    ` and not categories/any(c:c eq '${FAILED_CATEGORY}')` +
     ` and not categories/any(c:c eq '${READING_EMAIL_CATEGORY}')` +
     ` and not categories/any(c:c eq '${SENDING_TO_AI_CATEGORY}')` +
     ` and not categories/any(c:c eq '${CREATING_JOB_CATEGORY}')`
@@ -1351,8 +1357,9 @@ async function pollInbox(mailbox) {
         await setJobStatus(mailbox, message.id, currentCategories, CLIENT_NOT_FOUND_CATEGORY);
         console.log("Tagged as client not found:", message.subject);
       } else {
-        // Leave "Processing" on — remove it in Outlook to retry
-        await setJobStatus(mailbox, message.id, currentCategories, PROCESSING_CATEGORY);
+        // Tag as "Failed" — remove it in Outlook to retry
+        await setJobStatus(mailbox, message.id, currentCategories, FAILED_CATEGORY);
+        console.log("Tagged as failed:", message.subject);
       }
     }
   }
