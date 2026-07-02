@@ -45,6 +45,7 @@ const TRIGGER_CATEGORY          = "Bara AI";
 const PROCESSING_CATEGORY       = "Processing";
 const FAILED_CATEGORY           = "Failed";
 const CLIENT_NOT_FOUND_CATEGORY = "Client not found";
+const NO_ADDRESS_CATEGORY       = "No address";
 const READING_EMAIL_CATEGORY    = "Reading Email";
 const SENDING_TO_AI_CATEGORY    = "Sending to AI";
 const CREATING_JOB_CATEGORY     = "Creating Job";
@@ -57,7 +58,7 @@ const POLL_INTERVAL_MS          = 5 * 60 * 1000;
 const STATUS_CATEGORIES = [
   PROCESSING_CATEGORY, FAILED_CATEGORY, READING_EMAIL_CATEGORY,
   SENDING_TO_AI_CATEGORY, CREATING_JOB_CATEGORY,
-  CLIENT_NOT_FOUND_CATEGORY,
+  CLIENT_NOT_FOUND_CATEGORY, NO_ADDRESS_CATEGORY,
 ];
 
 let pollRunning = false;
@@ -499,6 +500,8 @@ function buildDescription(result) {
 async function createArofloJob(result, rawEmail, pdfAttachment = null, emailMeta = null, imageAttachments = []) {
   console.log("CREATING AROFLO JOB...");
   const warnings = [];
+
+  if (!result.address) throw new Error("No address found in work order");
 
   const taskTypeId  = TASK_TYPE_MAP[result["task-type"]];
   const substatusId = SUBSTATUS_MAP[result["task-type"]] || "Iyc6LyYK"; // default: Ready to schedule
@@ -1287,6 +1290,7 @@ async function pollInbox(mailbox) {
   const filter = encodeURIComponent(
     `categories/any(c:c eq '${TRIGGER_CATEGORY}')` +
     ` and not categories/any(c:c eq '${CLIENT_NOT_FOUND_CATEGORY}')` +
+    ` and not categories/any(c:c eq '${NO_ADDRESS_CATEGORY}')` +
     ` and not categories/any(c:c eq '${PROCESSING_CATEGORY}')` +
     ` and not categories/any(c:c eq '${FAILED_CATEGORY}')` +
     ` and not categories/any(c:c eq '${READING_EMAIL_CATEGORY}')` +
@@ -1395,6 +1399,9 @@ async function pollInbox(mailbox) {
       if (err.message.startsWith("Client not found")) {
         await setJobStatus(mailbox, message.id, currentCategories, CLIENT_NOT_FOUND_CATEGORY);
         console.log("Tagged as client not found:", message.subject);
+      } else if (err.message.startsWith("No address found")) {
+        await setJobStatus(mailbox, message.id, currentCategories, NO_ADDRESS_CATEGORY);
+        console.log("Tagged as no address:", message.subject);
       } else {
         // Tag as "Failed" — remove it in Outlook to retry
         await setJobStatus(mailbox, message.id, currentCategories, FAILED_CATEGORY);
