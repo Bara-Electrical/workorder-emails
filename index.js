@@ -1268,7 +1268,7 @@ async function setJobStatus(mailbox, messageId, currentCategories, newStatus) {
   return updated;
 }
 
-// Look for a sibling message already tagged "Job created - X" or "Duplicate - X"
+// Look for a sibling message already tagged "Job created - X" or "Existing job - X"
 // elsewhere in the same reply thread — replies to an already-processed work
 // order get their own "Bara AI" tag but shouldn't trigger their own job.
 // Mailbox-wide, not Inbox-scoped — existing filing rules (e.g. "move mail from
@@ -1283,7 +1283,7 @@ async function findJobTagInThread(mailbox, conversationId, excludeMessageId) {
   if (!res.ok) return null;
   for (const m of (data.value || [])) {
     if (m.id === excludeMessageId) continue;
-    const tag = (m.categories || []).find(c => c.startsWith("Job created") || c.startsWith("Duplicate"));
+    const tag = (m.categories || []).find(c => c.startsWith("Job created") || c.startsWith("Existing job"));
     if (tag) return tag;
   }
   return null;
@@ -1304,7 +1304,7 @@ async function tagWholeConversation(mailbox, conversationId, excludeMessageId, t
     for (const m of (data.value || [])) {
       if (m.id === excludeMessageId) continue;
       const categories = [
-        ...(m.categories || []).filter(c => !STATUS_CATEGORIES.includes(c) && !c.startsWith("Job created") && !c.startsWith("Duplicate")),
+        ...(m.categories || []).filter(c => !STATUS_CATEGORIES.includes(c) && !c.startsWith("Job created") && !c.startsWith("Existing job")),
         tag,
       ];
       try {
@@ -1361,7 +1361,7 @@ async function pollInbox(mailbox) {
       console.log(`Reply to already-processed thread — tagging as duplicate of ${siblingTag}:`, message.subject);
       await graphFetch(`/users/${mailbox}/messages/${message.id}`, {
         method: "PATCH",
-        body: JSON.stringify({ categories: [...message.categories.filter(c => !STATUS_CATEGORIES.includes(c)), `Duplicate - ${jobNumber}`] }),
+        body: JSON.stringify({ categories: [...message.categories.filter(c => !STATUS_CATEGORIES.includes(c)), `Existing job - ${jobNumber}`] }),
       });
       continue;
     }
