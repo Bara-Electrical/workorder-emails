@@ -33,6 +33,7 @@ const CLIENT_NAME_MAP = {
   "bw backhouse & associates": "Professionals BW Backhouse & Associates",
   "acton belle property south perth & victoria park": "Acton | Belle Property South Perth and Victoria Park",
   "leifield": "Leifield Real Estate",
+  "leifield - wa": "Leifield Real Estate",
 };
 
 // Sender email domain → Aroflo client name (fallback when AI can't extract name from compound domains)
