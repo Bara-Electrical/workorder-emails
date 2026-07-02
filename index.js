@@ -390,11 +390,22 @@ async function findOrUpdateLocation(clientId, locations, address, tenantName, te
 
   // Strip unit prefix: "1412/380 Murray Street, Perth WA" → "380 Murray Street"
   const streetPart = address.replace(/^\d+\//, "").split(",")[0].trim().toLowerCase();
+  const incomingUnit = address.match(/^(\d+)\//)?.[1] || null;
 
   const forClient = locations;
   const active = forClient.filter(l => l.archived?.toUpperCase() !== "TRUE");
   console.log(`Location search — client ${clientId}: ${forClient.length} location(s) (${active.length} active), searching for "${streetPart}"`);
-  const location = active.find(l => l.locationname?.toLowerCase().includes(streetPart));
+  // A street-only match isn't enough when a building has multiple numbered units on
+  // file — "10/27 X" contains "27 x" as a substring, so it would wrongly match an
+  // incoming "9/27 X" and silently attach the job to a different unit's tenant.
+  // If both the incoming address and the candidate location have a unit number,
+  // they must match exactly.
+  const location = active.find(l => {
+    if (!l.locationname?.toLowerCase().includes(streetPart)) return false;
+    const storedUnit = l.locationname?.match(/^(\d+)\//)?.[1] || null;
+    if (incomingUnit && storedUnit && incomingUnit !== storedUnit) return false;
+    return true;
+  });
 
   if (!location) {
     console.log("No location matching:", streetPart, "— creating new location:", address);
