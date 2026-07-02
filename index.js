@@ -1292,6 +1292,24 @@ async function setJobStatus(mailbox, messageId, currentCategories, newStatus) {
   return updated;
 }
 
+// Look for a sibling message already tagged "Job created - X" or "Duplicate - X"
+// elsewhere in the same reply thread — replies to an already-processed work
+// order get their own "Bara AI" tag but shouldn't trigger their own job.
+async function findJobTagInThread(mailbox, conversationId, excludeMessageId) {
+  const filter = encodeURIComponent(`conversationId eq '${conversationId}'`);
+  const res = await graphFetch(
+    `/users/${mailbox}/mailFolders/inbox/messages?$filter=${filter}&$select=id,categories&$top=25`
+  );
+  const data = await res.json();
+  if (!res.ok) return null;
+  for (const m of (data.value || [])) {
+    if (m.id === excludeMessageId) continue;
+    const tag = (m.categories || []).find(c => c.startsWith("Job created") || c.startsWith("Duplicate"));
+    if (tag) return tag;
+  }
+  return null;
+}
+
 async function pollInbox(mailbox) {
   const filter = encodeURIComponent(
     `categories/any(c:c eq '${TRIGGER_CATEGORY}')` +
@@ -1306,7 +1324,7 @@ async function pollInbox(mailbox) {
   const res  = await graphFetch(
     `/users/${mailbox}/mailFolders/inbox/messages` +
     `?$filter=${filter}` +
-    `&$select=id,subject,body,categories,from,toRecipients` +
+    `&$select=id,subject,body,categories,from,toRecipients,conversationId` +
     `&$expand=attachments($select=id,name,contentType,size)` +
     `&$top=10`
   );
@@ -1319,6 +1337,19 @@ async function pollInbox(mailbox) {
   console.log(`Poll (${mailbox}): ${messages.length} email(s) found`);
 
   for (const message of messages) {
+    const siblingTag = message.conversationId
+      ? await findJobTagInThread(mailbox, message.conversationId, message.id)
+      : null;
+    if (siblingTag) {
+      const jobNumber = siblingTag.split(" - ")[1] || siblingTag;
+      console.log(`Reply to already-processed thread — tagging as duplicate of ${siblingTag}:`, message.subject);
+      await graphFetch(`/users/${mailbox}/messages/${message.id}`, {
+        method: "PATCH",
+        body: JSON.stringify({ categories: [...message.categories.filter(c => !STATUS_CATEGORIES.includes(c)), `Duplicate - ${jobNumber}`] }),
+      });
+      continue;
+    }
+
     let currentCategories = await setJobStatus(mailbox, message.id, message.categories, READING_EMAIL_CATEGORY);
     console.log("Reading:", message.subject);
 
