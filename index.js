@@ -1296,16 +1296,20 @@ async function pollInbox(mailbox) {
   const res  = await graphFetch(
     `/users/${mailbox}/mailFolders/inbox/messages` +
     `?$filter=${filter}` +
-    `&$select=id,subject,body,categories,from,toRecipients,conversationId` +
+    `&$select=id,subject,body,categories,from,toRecipients,conversationId,receivedDateTime` +
     `&$expand=attachments($select=id,name,contentType,size)` +
     `&$top=10`
   );
   const data = await res.json();
   if (!res.ok) throw new Error(`Graph API error ${res.status}: ${JSON.stringify(data?.error || data)}`);
 
-  const messages = (data.value || []).filter(m =>
-    !m.categories.some(c => c.startsWith("Job created"))
-  );
+  // Newest first — when a thread has multiple untagged messages, this ensures the
+  // most recent one (which quotes everything underneath it) is the one processed
+  // and posted to Aroflo; the earlier ones get caught as duplicates by the thread
+  // check below since the newest is tagged first.
+  const messages = (data.value || [])
+    .filter(m => !m.categories.some(c => c.startsWith("Job created")))
+    .sort((a, b) => new Date(b.receivedDateTime) - new Date(a.receivedDateTime));
   console.log(`Poll (${mailbox}): ${messages.length} email(s) found`);
 
   for (const message of messages) {
