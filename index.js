@@ -409,17 +409,20 @@ async function findOrUpdateLocation(clientId, locations, address, tenantName, te
   console.log("FOUND LOCATION:", location.locationid, location.locationname);
 
   if (tenantName || tenantContact || tenantEmail) {
+    // Must be wrapped in <clients><client> — a bare <locations><location> POST to
+    // zone=locations returns status "0" with no error but silently does not apply.
     const xml =
-`<locations>
-  <location>
+`<clients><client>
+  <clientid>${clientId}</clientid>
+  <locations><location>
     <locationid>${location.locationid}</locationid>
     ${tenantName    ? `<sitecontact><![CDATA[${tenantName}]]></sitecontact>`  : ""}
     ${tenantContact ? `<sitephone><![CDATA[${tenantContact}]]></sitephone>`   : ""}
     ${tenantEmail   ? `<siteemail><![CDATA[${tenantEmail}]]></siteemail>`     : ""}
-  </location>
-</locations>`;
+  </location></locations>
+</client></clients>`;
     try {
-      const updateRes = await arofloPost("zone=locations&postxml=" + encodeURIComponent(xml));
+      const updateRes = await arofloPost("zone=clients&postxml=" + encodeURIComponent(xml));
       console.log("Tenant details updated:", JSON.stringify(updateRes?.postresults));
     } catch (err) {
       console.warn("Tenant update failed:", err.message);
