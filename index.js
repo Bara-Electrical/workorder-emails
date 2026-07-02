@@ -1506,9 +1506,12 @@ app.post("/aroflo-webhook", express.json(), async (req, res) => {
 // ================================================================
 // START
 // ================================================================
-app.listen(process.env.PORT || 3000, () => {
+app.listen(process.env.PORT || 3000, async () => {
   console.log(`Server running — deployed ${new Date().toISOString()}`);
-  loadClientCache();
+  // Wait for the client cache before polling — otherwise a work order sitting
+  // in the inbox at deploy time gets processed against an empty cache and
+  // falls back to a less reliable single-candidate live API lookup.
+  await loadClientCache();
   pollEmails();
   forwardRicaEmails();
   processAiTestingEmails();
