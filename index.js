@@ -947,6 +947,7 @@ CRITICAL RULES:
 - account-to must include ALL owners exactly as written, always in the format: owners c/o real estate.
 - real-estate must always be a company or agency name — never a URL or domain. If the source contains something like "aussieproperty.com.au", convert it to a readable name (e.g. "Aussie Property") by stripping the domain extension and formatting as a proper name. If you cannot find it directly, look for it in account-to after the c/o. The sender's email address is provided at the top of the input — use the domain as an additional hint to identify real-estate if the company name is not clearly stated in the content (e.g. "noreply@raywhite.com.au" → "Ray White").
 - order-number is the job/work order number.
+- address is required — if it isn't clearly stated in the body/PDF content, check the email subject line (provided at the top of the input) since it often contains the property address.
 - task-description must be a concise electrician job summary. If anything is listed as conditional or requires approval (e.g. "deluxe clean if approved", "AC2 if required"), include that in the description too.
 - Do NOT include instructions to contact the tenant or PM for access in task-description. Contacting the tenant for access is the default assumption for every job and must not be stated.
 - Key numbers in access-details are reference numbers for our existing key management system — we already hold these keys. Do NOT include any instruction to collect, pick up, or obtain keys in task-description based solely on a key number being listed in access-details.
@@ -982,7 +983,7 @@ Return ONLY valid JSON with these exact keys:
   "confidence": 0.0,
   "notes": ""
 }`,
-    input: `From: ${message.from?.emailAddress?.address || ""}\n\nExtract the following work order and return JSON:\n\n${textForAI}`,
+    input: `From: ${message.from?.emailAddress?.address || ""}\nSubject: ${message.subject || ""}\n\nExtract the following work order and return JSON:\n\n${textForAI}`,
   });
 
   const parsed = JSON.parse(responseAI.output_text);
