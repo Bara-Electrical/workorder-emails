@@ -1271,10 +1271,13 @@ async function setJobStatus(mailbox, messageId, currentCategories, newStatus) {
 // Look for a sibling message already tagged "Job created - X" or "Duplicate - X"
 // elsewhere in the same reply thread — replies to an already-processed work
 // order get their own "Bara AI" tag but shouldn't trigger their own job.
+// Mailbox-wide, not Inbox-scoped — existing filing rules (e.g. "move mail from
+// this client into its own subfolder") can relocate a message out of Inbox
+// well before a later reply in the same thread gets processed.
 async function findJobTagInThread(mailbox, conversationId, excludeMessageId) {
   const filter = encodeURIComponent(`conversationId eq '${conversationId}'`);
   const res = await graphFetch(
-    `/users/${mailbox}/mailFolders/inbox/messages?$filter=${filter}&$select=id,categories&$top=25`
+    `/users/${mailbox}/messages?$filter=${filter}&$select=id,categories&$top=25`
   );
   const data = await res.json();
   if (!res.ok) return null;
@@ -1284,6 +1287,38 @@ async function findJobTagInThread(mailbox, conversationId, excludeMessageId) {
     if (tag) return tag;
   }
   return null;
+}
+
+// Stamp the same job tag onto every other message already in the thread, so
+// anyone looking at any message in the conversation sees the job status
+// immediately instead of just the "Bara AI" trigger tag.
+async function tagWholeConversation(mailbox, conversationId, excludeMessageId, tag) {
+  if (!conversationId) return;
+  try {
+    const filter = encodeURIComponent(`conversationId eq '${conversationId}'`);
+    const res = await graphFetch(
+      `/users/${mailbox}/messages?$filter=${filter}&$select=id,categories&$top=25`
+    );
+    const data = await res.json();
+    if (!res.ok) return;
+    for (const m of (data.value || [])) {
+      if (m.id === excludeMessageId) continue;
+      const categories = [
+        ...(m.categories || []).filter(c => !STATUS_CATEGORIES.includes(c) && !c.startsWith("Job created") && !c.startsWith("Duplicate")),
+        tag,
+      ];
+      try {
+        await graphFetch(`/users/${mailbox}/messages/${m.id}`, {
+          method: "PATCH",
+          body: JSON.stringify({ categories }),
+        });
+      } catch (err) {
+        console.warn("Failed to tag conversation message:", m.id, err.message);
+      }
+    }
+  } catch (err) {
+    console.warn("tagWholeConversation failed:", err.message);
+  }
 }
 
 async function pollInbox(mailbox) {
@@ -1368,6 +1403,8 @@ async function pollInbox(mailbox) {
         body: JSON.stringify({ categories: finalCategories }),
       });
       currentCategories = finalCategories;
+      tagWholeConversation(mailbox, message.conversationId, message.id, jobTag)
+        .catch(err => console.warn("tagWholeConversation:", err.message));
 
       if (allWarnings.length > 0) {
         console.warn("Job created with issues:", allWarnings.map(w => w.tag));
