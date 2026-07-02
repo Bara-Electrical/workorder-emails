@@ -381,6 +381,44 @@ async function createLocation(clientId, address, tenantName, tenantContact, tena
   return null;
 }
 
+// Aroflo silently truncates SiteContact/SitePhone to 50 characters each (confirmed
+// empirically — no validation error, it just clips). For multi-tenant jobs this can
+// cut off a name or number mid-word. Keep the same number of tenants in both fields
+// (so name[i] still lines up with phone[i]) and report anything dropped separately.
+const SITE_FIELD_LIMIT = 50;
+function fitTenantFields(tenantName, tenantContact, maxLen = SITE_FIELD_LIMIT) {
+  const names  = tenantName    ? tenantName.split(",").map(s => s.trim())    : [];
+  const phones = tenantContact ? tenantContact.split(",").map(s => s.trim()) : [];
+  const total  = Math.max(names.length, phones.length);
+  const fitsWithin = (items, count) => items.slice(0, count).join(", ").length <= maxLen;
+
+  let keptCount = total;
+  while (keptCount > 0 &&
+         ((names.length  && !fitsWithin(names, keptCount)) ||
+          (phones.length && !fitsWithin(phones, keptCount)))) {
+    keptCount--;
+  }
+
+  // Single tenant longer than the limit on its own — hard-truncate rather than drop it entirely.
+  if (keptCount === 0 && total > 0) {
+    return {
+      keptName:     names[0]  ? names[0].slice(0, maxLen)  : null,
+      keptPhone:    phones[0] ? phones[0].slice(0, maxLen) : null,
+      overflowName:  names.slice(1),
+      overflowPhone: phones.slice(1),
+      truncated: true,
+    };
+  }
+
+  return {
+    keptName:      names.slice(0, keptCount).join(", ")  || null,
+    keptPhone:      phones.slice(0, keptCount).join(", ") || null,
+    overflowName:   names.slice(keptCount),
+    overflowPhone:  phones.slice(keptCount),
+    truncated: keptCount < total,
+  };
+}
+
 // Find a location by street address from an already-fetched locations array, then
 // update SiteContact/SitePhone if stale, or create the location if it doesn't exist yet.
 // Matches by street address locally — the locationname|like WHERE clause is not
@@ -550,12 +588,27 @@ async function createArofloJob(result, rawEmail, pdfAttachment = null, emailMeta
 
   const { locations, contacts } = await findLocationsAndContacts(client.clientid);
 
+  const tenantFit = fitTenantFields(result["tenant-name"], result["tenant-contact"]);
+  let additionalTenantNote = null;
+  if (tenantFit.truncated) {
+    const rows = Math.max(tenantFit.overflowName.length, tenantFit.overflowPhone.length);
+    const lines = [];
+    for (let i = 0; i < rows; i++) {
+      const line = [tenantFit.overflowName[i], tenantFit.overflowPhone[i]].filter(Boolean).join(", ");
+      if (line) lines.push(`Additional tenant - ${line}`);
+    }
+    additionalTenantNote = lines.join("<br/>");
+    const detail = `SiteContact/SitePhone are capped at ${SITE_FIELD_LIMIT} characters by Aroflo — full list: "${result["tenant-name"] || ""}" / "${result["tenant-contact"] || ""}"`;
+    console.warn(detail);
+    warnings.push({ tag: "Tenant details truncated", detail });
+  }
+
   const location = await findOrUpdateLocation(
     client.clientid,
     locations,
     result.address,
-    result["tenant-name"],
-    result["tenant-contact"],
+    tenantFit.keptName,
+    tenantFit.keptPhone,
     result["tenant-email"]
   );
   if (!location && result.address) {
@@ -692,20 +745,25 @@ async function createArofloJob(result, rawEmail, pdfAttachment = null, emailMeta
       warnings.push({ tag: "Note not posted", detail: "No email content available — note not posted to job" });
     }
 
-    if (noteHtml || substatusId) {
+    const notesXml = [
+      noteHtml             ? `<note><content><![CDATA[${noteHtml}]]></content></note>`             : "",
+      additionalTenantNote ? `<note><content><![CDATA[${additionalTenantNote}]]></content></note>` : "",
+    ].join("");
+
+    if (notesXml || substatusId) {
       const updateXml =
 `<tasks>
   <task>
     <taskid>${confirmedTaskId}</taskid>
     ${substatusId ? `<status>not started</status><substatus><substatusid>${substatusId}</substatusid></substatus>` : ""}
-    ${noteHtml ? `<notes><note><content><![CDATA[${noteHtml}]]></content></note></notes>` : ""}
+    ${notesXml ? `<notes>${notesXml}</notes>` : ""}
   </task>
 </tasks>`;
       try {
         const upZone = await arofloPost("zone=tasks&postxml=" + encodeURIComponent(updateXml));
         const upPr   = upZone.postresults;
         if (Number(upPr?.updatetotal ?? 0) > 0) {
-          console.log("Task update applied — note:", !!noteHtml, "substatus:", substatusId || "n/a");
+          console.log("Task update applied — note:", !!noteHtml, "additional tenant note:", !!additionalTenantNote, "substatus:", substatusId || "n/a");
         } else {
           if (noteHtml) warnings.push({ tag: "Note not posted", detail: "Combined task update did not apply" });
           if (substatusId) warnings.push({ tag: "Substatus failed", detail: "Combined task update did not apply — job may need manual scheduling status update" });
