@@ -232,6 +232,28 @@ async function findLocationsAndContacts(clientId) {
   }
 }
 
+// Check whether a task already exists for this client with the same work-order
+// number — real estate portals (e.g. PropertyMe) sometimes send the same work
+// order from multiple sender addresses, each triggering a separate email.
+async function findDuplicateTask(clientId, orderNumber) {
+  if (!orderNumber) return null;
+  try {
+    const zone = await arofloGet(
+      "zone=tasks" +
+      "&where=" + encodeURIComponent(`and|clientid|=|${clientId}`) +
+      "&where=" + encodeURIComponent(`and|custon|=|${orderNumber}`) +
+      "&page=1"
+    );
+    const raw = zone?.tasks;
+    if (!raw) return null;
+    const arr = Array.isArray(raw) ? raw : [raw];
+    return arr[0] || null;
+  } catch (err) {
+    console.warn("Duplicate task check failed:", err.message);
+    return null;
+  }
+}
+
 // Match a PM contact by name from an already-fetched contacts array.
 function matchContact(contacts, pmName) {
   if (!pmName) return null;
@@ -530,6 +552,12 @@ async function createArofloJob(result, rawEmail, pdfAttachment = null, emailMeta
   }
   if (!client) throw new Error(`Client not found in Aroflo: name="${realEstate}", from="${emailMeta?.from}"`);
   console.log(`CLIENT (via ${clientFoundVia}):`, client.clientid, client.clientname);
+
+  const duplicateTask = await findDuplicateTask(client.clientid, result["order-number"]);
+  if (duplicateTask) {
+    console.log(`Duplicate work order — task already exists for order "${result["order-number"]}": job ${duplicateTask.jobnumber}, taskId ${duplicateTask.taskid}`);
+    return { jobNumber: duplicateTask.jobnumber, warnings: [], duplicate: true };
+  }
 
   const { locations, contacts } = await findLocationsAndContacts(client.clientid);
 
@@ -1311,9 +1339,23 @@ async function pollInbox(mailbox) {
       }
 
       await onStatus(CREATING_JOB_CATEGORY);
-      const { jobNumber, warnings: jobWarnings } = await createArofloJob(result, rawEmail, pdfAttachment, emailMeta, imageAttachments);
-      logActivity("Job created", jobNumber).catch(err => console.warn("logActivity:", err.message));
+      const { jobNumber, warnings: jobWarnings, duplicate } = await createArofloJob(result, rawEmail, pdfAttachment, emailMeta, imageAttachments);
       logAiOutput(result, message.subject).catch(err => console.warn("logAiOutput:", err.message));
+
+      if (duplicate) {
+        console.log(`Duplicate work order — skipped job creation, existing job: ${jobNumber}`);
+        const finalCategories = [
+          ...currentCategories.filter(c => !STATUS_CATEGORIES.includes(c)),
+          `Duplicate - ${jobNumber}`,
+        ];
+        await graphFetch(`/users/${mailbox}/messages/${message.id}`, {
+          method: "PATCH",
+          body: JSON.stringify({ categories: finalCategories }),
+        });
+        continue;
+      }
+
+      logActivity("Job created", jobNumber).catch(err => console.warn("logActivity:", err.message));
       const allWarnings = [...preWarnings, ...jobWarnings];
 
       // Always apply job tag to prevent re-processing; add a specific tag for each failure
