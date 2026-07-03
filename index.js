@@ -1719,11 +1719,11 @@ app.get("/test-photo-note", async (req, res) => {
     if (!doneFolder) return res.json({ error: "'AI done' folder not found" });
     const listRes = await graphFetch(
       `/users/${BRANDON_EMAIL}/mailFolders/${doneFolder}/messages` +
-      `?$filter=${encodeURIComponent("hasAttachments eq true")}` +
-      `&$select=id,subject&$orderby=receivedDateTime desc&$top=60`
+      `?$select=id,subject,hasAttachments&$orderby=receivedDateTime desc&$top=60`
     );
     const listData = await listRes.json();
-    const candidates = listData.value || [];
+    if (!listRes.ok) return res.json({ error: "Graph list query failed", status: listRes.status, detail: listData?.error });
+    const candidates = (listData.value || []).filter(m => m.hasAttachments);
 
     const realPhotos = [];
     const seenAttachmentNames = [];
