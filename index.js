@@ -621,8 +621,16 @@ function buildDescription(result) {
   const parts = [];
   const spacer = `<p>&nbsp;</p>`;
 
-  if (result["task-description"] || result["task-type"]) {
-    parts.push(`<p>${escapeHtml(result["task-description"] || result["task-type"])}</p>`);
+  const desc = result["task-description"] || result["task-type"];
+  if (desc) {
+    // Multiple distinct items are separated by "\n" (see prompt) — render as a bulleted
+    // list so techs can see each task at a glance; a single item stays a plain paragraph.
+    const items = desc.split("\n").map(l => l.trim()).filter(Boolean);
+    parts.push(
+      items.length > 1
+        ? `<ul>${items.map(l => `<li>${escapeHtml(l)}</li>`).join("")}</ul>`
+        : `<p>${escapeHtml(desc)}</p>`
+    );
   }
 
   const hasHighlights = result["expenditure-limit"] || result["access-details"];
@@ -1210,6 +1218,7 @@ CRITICAL RULES:
 - order-number is the job/work order number.
 - address is required — if it isn't clearly stated in the body/PDF content, check the email subject line (provided at the top of the input) since it often contains the property address.
 - task-description must be a concise electrician job summary. If anything is listed as conditional or requires approval (e.g. "deluxe clean if approved", "AC2 if required"), include that in the description too. If the work order lists multiple numbered items and a later reply in the thread says only some of them are electrical (with the rest going to another contractor), the description must restate what those electrical items actually are (not just "points 1 and 2") — copy the item text itself, not just its number, since the reader won't have the original numbered list in front of them. Also note briefly that the remaining item(s) are being handled separately/by another contractor, without going into detail on who.
+- If the job involves two or more distinct tasks/items (e.g. a numbered list in the work order, or several unrelated jobs mentioned in the email), put each one on its own line in task-description, separated by a single newline character ("\n") — one line per item, written as a short standalone instruction. This is rendered as a bulleted list for the technician, so do not add your own numbering, dashes, or bullet characters. If there is genuinely only one task, write it as a single line with no newline.
 - Do NOT include instructions to contact the tenant or PM for access in task-description. Contacting the tenant for access is the default assumption for every job and must not be stated.
 - Key numbers in access-details are reference numbers for our existing key management system — we already hold these keys. Do NOT include any instruction to collect, pick up, or obtain keys in task-description based solely on a key number being listed in access-details.
 - Do NOT guess missing fields — if missing return null.
