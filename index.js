@@ -549,6 +549,13 @@ async function findOrUpdateLocation(clientId, locations, address, tenantName, te
   console.log("[location] Found:", location.locationid, location.locationname);
 
   if (tenantName || tenantContact || tenantEmail) {
+    // Once we have a tenant name, treat it as the authoritative current state and
+    // explicitly clear phone/email rather than omitting them when absent — e.g. a
+    // property going "Vacant" must blank out the previous tenant's number, not just
+    // leave it on file because this update didn't happen to mention a new one.
+    const sitePhoneValue = tenantName ? (tenantContact ?? "") : tenantContact;
+    const siteEmailValue = tenantName ? (tenantEmail   ?? "") : tenantEmail;
+
     // Must be wrapped in <clients><client> — a bare <locations><location> POST to
     // zone=locations returns status "0" with no error but silently does not apply.
     const xml =
@@ -556,9 +563,9 @@ async function findOrUpdateLocation(clientId, locations, address, tenantName, te
   <clientid>${clientId}</clientid>
   <locations><location>
     <locationid>${location.locationid}</locationid>
-    ${tenantName    ? `<sitecontact>${cdata(tenantName)}</sitecontact>`  : ""}
-    ${tenantContact ? `<sitephone>${cdata(tenantContact)}</sitephone>`   : ""}
-    ${tenantEmail   ? `<siteemail>${cdata(tenantEmail)}</siteemail>`     : ""}
+    ${tenantName                       ? `<sitecontact>${cdata(tenantName)}</sitecontact>` : ""}
+    ${sitePhoneValue != null           ? `<sitephone>${cdata(sitePhoneValue)}</sitephone>` : ""}
+    ${siteEmailValue != null           ? `<siteemail>${cdata(siteEmailValue)}</siteemail>` : ""}
   </location></locations>
 </client></clients>`;
     try {
@@ -1140,8 +1147,8 @@ async function processMessage(message, mailbox = WORKORDERS_EMAIL, onStatus = nu
     instructions: `You are a work order extraction system for an electrical company in Australia. Today's date is ${new Date().toLocaleDateString("en-AU", { day: "2-digit", month: "2-digit", year: "numeric" })}.
 
 CRITICAL RULES:
-- tenant-name and tenant-contact come from the Tenant Details section, OR any section labelled "Contact for job access" or similar, OR an inline mention anywhere in the description/notes such as "contact tenant emma for access 0414152246" (extract "Emma" as tenant-name and "0414152246" as tenant-contact in that case). Always scan the full description/instructions text for a phrase like "contact tenant <name>" or "tenant <name> on <number>" even if there is no dedicated tenant section. Never use the Owner Details / Owner section as tenant-name, tenant-contact, or tenant-email — the owner is not the tenant, even if the PM states tenant details were not provided. If no tenant is listed anywhere (including inline) and the property is explicitly stated as vacant, set tenant-name to "Vacant" and ensure access-details captures any lockbox or key collection info. If no tenant is listed and the property is NOT stated as vacant, leave tenant-name null. Never use access details, lockbox info, or key numbers as the tenant name. If multiple tenants are listed, include ALL of them separated by commas — do not drop any.
-- If the email states the tenant is vacating or moving out and the move-out date is within 7 days of today, treat the property as vacant: set tenant-name to "Vacant", set tenant-contact to null, and include in task-description that keys should be collected after the move-out date (e.g. "Collect keys after 3/7").
+- tenant-name and tenant-contact come from the Tenant Details section, OR any section labelled "Contact for job access" or similar, OR an inline mention anywhere in the description/notes such as "contact tenant emma for access 0414152246" or "contact new tenant lance - 0421516195" (extract "Emma"/"Lance" as tenant-name and the number as tenant-contact). Always scan the full description/instructions text for a phrase like "contact tenant <name>", "contact new tenant <name>", or "tenant <name> on <number>" even if there is no dedicated tenant section. An inline "contact (new) tenant <name>" instruction ALWAYS takes priority over a generic vacant/moving-out signal elsewhere in the document — a specific named contact for access means someone must actually be contacted, regardless of the property's formal vacancy status, so extract that person as tenant-name/tenant-contact rather than defaulting to "Vacant". Never use the Owner Details / Owner section as tenant-name, tenant-contact, or tenant-email — the owner is not the tenant, even if the PM states tenant details were not provided. Only set tenant-name to "Vacant" when there is truly no named contact anywhere (including inline) AND the property is explicitly stated as vacant — in that case also ensure access-details captures any lockbox or key collection info. If no tenant is listed and the property is NOT stated as vacant, leave tenant-name null. Never use access details, lockbox info, or key numbers as the tenant name. If multiple tenants are listed, include ALL of them separated by commas — do not drop any.
+- If the email states the tenant is vacating or moving out and the move-out date is within 7 days of today, AND no replacement/new tenant contact is given anywhere, treat the property as vacant: set tenant-name to "Vacant", set tenant-contact to null, and include in task-description that keys should be collected after the move-out date (e.g. "Collect keys after 3/7"). If a new/incoming tenant contact IS given, use that person instead of "Vacant" — see the rule above.
 - access-details is ONLY physical access codes/numbers — key numbers, lockbox codes, gate codes, swipe card numbers. e.g. "Key: 1234", "Lockbox code: 56", "Gate code: 789". Do NOT include contact instructions, tenant names, safety instructions, or anything that is not a physical code or number.
 - expenditure-limit is the dollar amount only — e.g. "$330". Strip any conditions, notes, or extra text after the amount. If the expenditure limit is $0 or zero, return null.
 - confidence is a float 0.0–1.0 rating how confident you are in the overall extraction. 1.0 = all fields clearly present, 0.0 = guessing most fields.
@@ -1513,38 +1520,18 @@ app.get("/find-client", requireApiKey, async (req, res) => {
   res.json({ result, exactCacheHit: exactCacheHit?.clientname || null, partialMatches });
 });
 
-// TEMP: inspect a job's task + location fields — GET /inspect-job?job=103726
-app.get("/inspect-job", requireApiKey, async (req, res) => {
-  const jobNumber = req.query.job;
-  if (!jobNumber) return res.status(400).json({ error: "Pass ?job=<jobnumber>" });
+// TEMP: clear a location's stale SitePhone/SiteEmail directly — one-off cleanup for
+// locations left with a previous tenant's number after the omitted-field bug.
+// GET /clear-site-contact?clientId=...&locationId=...
+app.get("/clear-site-contact", requireApiKey, async (req, res) => {
+  const { clientId, locationId } = req.query;
+  if (!clientId || !locationId) return res.status(400).json({ error: "Pass ?clientId=...&locationId=..." });
   try {
-    const fetched = await arofloGet("zone=tasks&where=" + encodeURIComponent(`and|jobnumber|=|${jobNumber}`) + "&join=" + encodeURIComponent("notes") + "&page=1");
-    const task = toArray(fetched.tasks)[0];
-    if (!task) return res.json({ error: `No task found for job ${jobNumber}` });
-
-    const clientId = task.client?.clientid;
-    let locations = [];
-    if (clientId) {
-      const zone = await arofloGet("zone=clients&join=" + encodeURIComponent("locations") + "&where=" + encodeURIComponent(`and|clientid|=|${clientId}`) + "&page=1");
-      locations = toArray(toArray(zone.clients)[0]?.locations);
-    }
-    const locationId = task.tasklocation?.locationid;
-    const matchedLocation = locations.find(l => l.locationid === locationId);
-
-    res.json({
-      taskId: task.taskid,
-      jobnumber: task.jobnumber,
-      taskname: task.taskname,
-      description: task.description,
-      tasklocation: task.tasklocation,
-      client: task.client,
-      matchedLocation,
-      notes: toArray(task.tasknotes || task.notes),
-      rawTaskKeys: Object.keys(task),
-      raw: req.query.raw === "1" ? task : undefined,
-    });
+    const xml = `<clients><client><clientid>${clientId}</clientid><locations><location><locationid>${locationId}</locationid><sitephone>${cdata("")}</sitephone></location></locations></client></clients>`;
+    const updateRes = await arofloPost("zone=clients&postxml=" + encodeURIComponent(xml));
+    res.json({ ok: true, postresults: updateRes?.postresults });
   } catch (err) {
-    res.json({ error: err.message });
+    res.json({ ok: false, error: err.message });
   }
 });
 
