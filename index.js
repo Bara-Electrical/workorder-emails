@@ -1540,6 +1540,8 @@ app.get("/inspect-job", requireApiKey, async (req, res) => {
       location: task.location,
       client: task.client,
       matchedLocation,
+      rawTaskKeys: Object.keys(task),
+      raw: req.query.raw === "1" ? task : undefined,
     });
   } catch (err) {
     res.json({ error: err.message });
