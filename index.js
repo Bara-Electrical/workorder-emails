@@ -1076,6 +1076,42 @@ function findWorkOrderLink(rawHtml) {
   return null;
 }
 
+// A reply-only message (e.g. "we'll do points 1 and 2, PM will sort a contractor for
+// point 3") often has no work order PDF/link of its own — the original work order lives
+// on an earlier message in the same conversation. Search the rest of the thread for it
+// so the AI still has the actual item list to work with instead of guessing from a bare
+// reply. Fetched per-message (not $expand) since combining $expand=attachments with the
+// conversationId $filter trips Graph's "InefficientFilter" rejection.
+async function findThreadWorkOrderPdf(mailbox, conversationId, excludeMessageId) {
+  try {
+    const res = await graphFetch(
+      `/users/${mailbox}/messages?$filter=${encodeURIComponent(`conversationId eq '${conversationId}'`)}` +
+      `&$select=id,receivedDateTime,hasAttachments&$top=25`
+    );
+    const data = await res.json();
+    if (!res.ok) return null;
+    const others = (data.value || [])
+      .filter(m => m.id !== excludeMessageId && m.hasAttachments)
+      .sort((a, b) => new Date(a.receivedDateTime) - new Date(b.receivedDateTime));
+
+    for (const m of others) {
+      const attRes = await graphFetch(`/users/${mailbox}/messages/${m.id}/attachments?$select=id,name,contentType,size`);
+      const attData = await attRes.json();
+      if (!attRes.ok) continue;
+      const pdf = (attData.value || []).find(a => (a.name || "").toLowerCase().endsWith(".pdf"));
+      if (!pdf) continue;
+      const attachRes  = await graphFetch(`/users/${mailbox}/messages/${m.id}/attachments/${pdf.id}`);
+      const attachData = await attachRes.json();
+      const bytes = Uint8Array.from(atob(attachData.contentBytes), c => c.charCodeAt(0));
+      return { name: pdf.name, data: bytes };
+    }
+    return null;
+  } catch (err) {
+    console.warn("[email] Thread-wide PDF search failed:", err.message);
+    return null;
+  }
+}
+
 // ================================================================
 // EMAIL PROCESSING
 // ================================================================
@@ -1139,6 +1175,19 @@ async function processMessage(message, mailbox = WORKORDERS_EMAIL, onStatus = nu
     const pdfText    = await extractPDF(data);
     textForAI = withEmailBody(pdfText.replace(/\s+/g, " ").trim());
   }
+
+  // Neither a link nor an attachment on this message — it may be a reply further down
+  // a thread (e.g. discussing scope changes) whose original work order PDF is on an
+  // earlier message in the same conversation. Pull that in rather than extracting from
+  // the bare reply text alone.
+  if (!workOrderLink && !workorderAttachment && message.conversationId) {
+    const threadPdf = await findThreadWorkOrderPdf(mailbox, message.conversationId, message.id);
+    if (threadPdf) {
+      pdfAttachment = { name: threadPdf.name, data: new Uint8Array(threadPdf.data) };
+      const pdfText = await extractPDF(threadPdf.data);
+      textForAI = withEmailBody(pdfText.replace(/\s+/g, " ").trim());
+    }
+  }
   if (onStatus) await onStatus(SENDING_TO_AI_CATEGORY);
 
   const responseAI = await openai.responses.create({
@@ -1160,7 +1209,7 @@ CRITICAL RULES:
 - real-estate must always be a company or agency name — never a URL or domain. If the source contains something like "aussieproperty.com.au", convert it to a readable name (e.g. "Aussie Property") by stripping the domain extension and formatting as a proper name. If you cannot find it directly, look for it in account-to after the c/o. The sender's email address is provided at the top of the input — use the domain as an additional hint to identify real-estate if the company name is not clearly stated in the content (e.g. "noreply@raywhite.com.au" → "Ray White").
 - order-number is the job/work order number.
 - address is required — if it isn't clearly stated in the body/PDF content, check the email subject line (provided at the top of the input) since it often contains the property address.
-- task-description must be a concise electrician job summary. If anything is listed as conditional or requires approval (e.g. "deluxe clean if approved", "AC2 if required"), include that in the description too.
+- task-description must be a concise electrician job summary. If anything is listed as conditional or requires approval (e.g. "deluxe clean if approved", "AC2 if required"), include that in the description too. If the work order lists multiple numbered items and a later reply in the thread says only some of them are electrical (with the rest going to another contractor), the description must restate what those electrical items actually are (not just "points 1 and 2") — copy the item text itself, not just its number, since the reader won't have the original numbered list in front of them. Also note briefly that the remaining item(s) are being handled separately/by another contractor, without going into detail on who.
 - Do NOT include instructions to contact the tenant or PM for access in task-description. Contacting the tenant for access is the default assumption for every job and must not be stated.
 - Key numbers in access-details are reference numbers for our existing key management system — we already hold these keys. Do NOT include any instruction to collect, pick up, or obtain keys in task-description based solely on a key number being listed in access-details.
 - Do NOT guess missing fields — if missing return null.
