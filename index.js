@@ -1510,6 +1510,41 @@ app.get("/find-client", requireApiKey, async (req, res) => {
   res.json({ result, exactCacheHit: exactCacheHit?.clientname || null, partialMatches });
 });
 
+// TEMP: inspect a job's current state and re-attempt a trivial substatus update, to tell
+// a genuine transient Aroflo error apart from a real payload bug on our end.
+// GET /debug-task?job=103724
+app.get("/debug-task", requireApiKey, async (req, res) => {
+  const jobNumber = req.query.job;
+  if (!jobNumber) return res.status(400).json({ error: "Pass ?job=<jobnumber>" });
+  try {
+    const fetched = await arofloGet("zone=tasks&where=" + encodeURIComponent(`and|jobnumber|=|${jobNumber}`) + "&page=1");
+    const task = toArray(fetched.tasks)[0];
+    if (!task) return res.json({ error: `No task found for job ${jobNumber}` });
+
+    let retryResult = null;
+    if (req.query.retrySubstatus === "1") {
+      try {
+        const updateXml = `<tasks><task><taskid>${task.taskid}</taskid><status>not started</status><substatus><substatusid>Iyc6LyYK</substatusid></substatus></task></tasks>`;
+        const upZone = await arofloPost("zone=tasks&postxml=" + encodeURIComponent(updateXml));
+        retryResult = { ok: true, updatetotal: upZone.postresults?.updatetotal };
+      } catch (err) {
+        retryResult = { ok: false, error: err.message };
+      }
+    }
+
+    res.json({
+      taskId: task.taskid,
+      jobnumber: task.jobnumber,
+      status: task.status,
+      substatus: task.substatus,
+      notesCount: toArray(task.notes).length,
+      retryResult,
+    });
+  } catch (err) {
+    res.json({ error: err.message });
+  }
+});
+
 // ================================================================
 // AROFLO WEBHOOK — new client created
 // ================================================================
