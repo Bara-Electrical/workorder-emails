@@ -1520,21 +1520,6 @@ app.get("/find-client", requireApiKey, async (req, res) => {
   res.json({ result, exactCacheHit: exactCacheHit?.clientname || null, partialMatches });
 });
 
-// TEMP: clear a location's stale SitePhone/SiteEmail directly — one-off cleanup for
-// locations left with a previous tenant's number after the omitted-field bug.
-// GET /clear-site-contact?clientId=...&locationId=...
-app.get("/clear-site-contact", requireApiKey, async (req, res) => {
-  const { clientId, locationId } = req.query;
-  if (!clientId || !locationId) return res.status(400).json({ error: "Pass ?clientId=...&locationId=..." });
-  try {
-    const xml = `<clients><client><clientid>${clientId}</clientid><locations><location><locationid>${locationId}</locationid><sitephone>${cdata("")}</sitephone></location></locations></client></clients>`;
-    const updateRes = await arofloPost("zone=clients&postxml=" + encodeURIComponent(xml));
-    res.json({ ok: true, postresults: updateRes?.postresults });
-  } catch (err) {
-    res.json({ ok: false, error: err.message });
-  }
-});
-
 // ================================================================
 // AROFLO WEBHOOK — new client created
 // ================================================================
