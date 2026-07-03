@@ -701,8 +701,7 @@ async function createArofloJob(result, rawEmail, pdfAttachment = null, emailMeta
 
   // Upload PDF and any photo attachments to SharePoint
   let oneDriveUrl = null;
-  let photoFolderUrl = null;
-  let photoCount = 0;
+  const photos = [];
   if (jobNumber !== "(see Aroflo)") {
     if (pdfAttachment) {
       try {
@@ -713,26 +712,23 @@ async function createArofloJob(result, rawEmail, pdfAttachment = null, emailMeta
         warnings.push({ tag: "PDF upload failed", detail: err.message });
       }
     }
-    const photoResults = await Promise.all(
-      imageAttachments.map(async img => {
-        try {
-          await uploadPhotoToOneDrive(jobNumber, img.name, img.data, img.contentType);
-          console.log("Photo uploaded:", img.name);
-          return true;
-        } catch (err) {
-          console.warn("Photo upload failed:", img.name, err.message);
-          warnings.push({ tag: "Photo upload failed", detail: `${img.name}: ${err.message}` });
-          return false;
-        }
-      })
-    );
-    photoCount = photoResults.filter(Boolean).length;
-    if (photoCount > 0) {
-      try {
-        photoFolderUrl = await getPhotoFolderUrl(jobNumber);
-      } catch (err) {
-        console.warn("Could not get photo folder URL:", err.message);
-      }
+    if (imageAttachments.length > 0) {
+      const driveId = await getSharepointDriveId();
+      const photoResults = await Promise.all(
+        imageAttachments.map(async img => {
+          try {
+            const item = await uploadPhotoToOneDrive(jobNumber, img.name, img.data, img.contentType);
+            const thumbnailUrl = await getThumbnailUrl(driveId, item.id).catch(() => null);
+            console.log("Photo uploaded:", img.name);
+            return { name: img.name, webUrl: item.webUrl, thumbnailUrl };
+          } catch (err) {
+            console.warn("Photo upload failed:", img.name, err.message);
+            warnings.push({ tag: "Photo upload failed", detail: `${img.name}: ${err.message}` });
+            return null;
+          }
+        })
+      );
+      photos.push(...photoResults.filter(Boolean));
     }
   }
 
@@ -743,7 +739,7 @@ async function createArofloJob(result, rawEmail, pdfAttachment = null, emailMeta
     let noteHtml = null;
     if (rawEmail) {
       try {
-        noteHtml = await emailHtmlForNote(rawEmail, oneDriveUrl, emailMeta, photoFolderUrl, photoCount);
+        noteHtml = await emailHtmlForNote(rawEmail, oneDriveUrl, emailMeta);
       } catch (err) {
         const detail = `Email note not posted to job: ${err.message}`;
         console.warn(detail);
@@ -753,8 +749,11 @@ async function createArofloJob(result, rawEmail, pdfAttachment = null, emailMeta
       warnings.push({ tag: "Note not posted", detail: "No email content available — note not posted to job" });
     }
 
+    const photoGalleryHtml = photos.length > 0 ? buildPhotoGalleryNote(photos) : null;
+
     const notesXml = [
       noteHtml             ? `<note><content><![CDATA[${noteHtml}]]></content></note>`             : "",
+      photoGalleryHtml     ? `<note><content><![CDATA[${photoGalleryHtml}]]></content></note>`      : "",
       additionalTenantNote ? `<note><content><![CDATA[${additionalTenantNote}]]></content></note>` : "",
     ].join("");
 
@@ -838,7 +837,7 @@ async function decodeWrappedLinks(html) {
 }
 
 // Strip scripts/styles/tracking pixels but keep HTML structure for display in Aroflo notes
-async function emailHtmlForNote(html, oneDriveUrl = null, emailMeta = null, photoFolderUrl = null, photoCount = 0) {
+async function emailHtmlForNote(html, oneDriveUrl = null, emailMeta = null) {
   let cleaned = html
     .replace(/<script[\s\S]*?<\/script>/gi, "")
     .replace(/<style[\s\S]*?<\/style>/gi, "")
@@ -859,15 +858,24 @@ async function emailHtmlForNote(html, oneDriveUrl = null, emailMeta = null, phot
     emailMeta?.to      ? cell("To:",         emailMeta.to)      : "",
     emailMeta?.subject ? cell("Subject:",    emailMeta.subject) : "",
     oneDriveUrl        ? cell("Attachment:", `<a href="${oneDriveUrl}" style="color:#1a6bbf" target="_blank">View Work Order PDF</a>`) : "",
-    (photoFolderUrl && photoCount > 0)
-      ? cell("Photos:", `<a href="${photoFolderUrl}" style="color:#1a6bbf" target="_blank">View ${photoCount} photo${photoCount === 1 ? "" : "s"}</a>`)
-      : "",
   ].filter(Boolean).join("");
 
   const titleRow = `<tr><td colspan="2" style="font-size:16px;font-weight:bold;color:#444444;padding:0 0 5px 0">Work Order</td></tr>`;
   const metaHtml = `<table style="border-collapse:collapse;margin:0 0 12px 0">${titleRow}${metaRows}</table>`;
 
   return `${metaHtml}<hr style="border:none;border-top:1px solid #dddddd;margin:0 0 14px 0"><div>${cleaned}</div>`;
+}
+
+// Small clickable thumbnail grid, posted as its own note. Clicking a thumbnail opens that
+// specific photo in SharePoint; because all the job's photos live in the same folder, the
+// tech can still arrow through the rest from there.
+function buildPhotoGalleryNote(photos) {
+  const thumbs = photos.map(p =>
+    `<a href="${p.webUrl}" target="_blank"><img src="${p.thumbnailUrl || p.webUrl}" alt="${p.name}" style="width:110px;height:110px;object-fit:cover;margin:4px;border-radius:4px;border:1px solid #dddddd" /></a>`
+  ).join("");
+
+  const titleRow = `Photos (${photos.length})`;
+  return `<div style="font-size:14px;font-weight:bold;color:#444444;margin:0 0 8px 0">${titleRow}</div><div>${thumbs}</div>`;
 }
 
 // Cached drive ID for the Bara Electrical Services SharePoint document library
@@ -894,13 +902,28 @@ async function uploadWorkOrderToOneDrive(jobNumber, filename, contentBytes, cont
 }
 
 // Photos go in a per-job subfolder (rather than the flat filename-prefixed layout used for
-// the PDF) so the note can link to the folder and techs get SharePoint's native gallery
-// view — open one photo, arrow through the rest — instead of a single dead-end preview.
+// the PDF) so that opening any one of them from the note still gives SharePoint's native
+// gallery view — arrow through the rest of the job's photos — instead of a dead-end preview.
 async function uploadPhotoToOneDrive(jobNumber, filename, contentBytes, contentType) {
   const safeName = filename.replace(/#/g, "").trim();
   const itemPath = ["General", "Other", "AI Workorders [dont touch]", jobNumber, safeName]
     .map(s => encodeURIComponent(s)).join("/");
-  await putSharepointFile(itemPath, contentBytes, contentType);
+  const uploadData = await putSharepointFile(itemPath, contentBytes, contentType);
+  return { id: uploadData.id, webUrl: uploadData.webUrl };
+}
+
+// Thumbnail image URL for a driveItem, to embed as a small clickable preview in the note.
+// These Graph-issued URLs are short-lived (not the permanent webUrl) — fine for a tech
+// checking the job soon after creation, but the thumbnail image itself can go stale later
+// even though the click-through link keeps working.
+async function getThumbnailUrl(driveId, itemId) {
+  const token = await getAccessToken();
+  const res = await fetch(`https://graph.microsoft.com/v1.0/drives/${driveId}/items/${itemId}/thumbnails`, {
+    headers: { Authorization: `Bearer ${token}` },
+  });
+  if (!res.ok) return null;
+  const data = await res.json();
+  return data.value?.[0]?.medium?.url || data.value?.[0]?.large?.url || null;
 }
 
 async function putSharepointFile(itemPath, contentBytes, contentType) {
@@ -923,21 +946,6 @@ async function putSharepointFile(itemPath, contentBytes, contentType) {
   } finally {
     clearTimeout(timer);
   }
-}
-
-// webUrl of the per-job photo folder itself, so the note links to a gallery view rather
-// than a single file.
-async function getPhotoFolderUrl(jobNumber) {
-  const driveId = await getSharepointDriveId();
-  const folderPath = ["General", "Other", "AI Workorders [dont touch]", jobNumber]
-    .map(s => encodeURIComponent(s)).join("/");
-  const token = await getAccessToken();
-  const res = await fetch(`https://graph.microsoft.com/v1.0/drives/${driveId}/root:/${folderPath}`, {
-    headers: { Authorization: `Bearer ${token}` },
-  });
-  if (!res.ok) return null;
-  const data = await res.json();
-  return data.webUrl || null;
 }
 
 // Known work order portal domains
@@ -1680,7 +1688,7 @@ app.get("/find-client", async (req, res) => {
   res.json({ result, exactCacheHit: exactCacheHit?.clientname || null, partialMatches });
 });
 
-// TEMP: exercise the per-job photo-folder + gallery-link note flow against a real job,
+// TEMP: exercise the per-job photo-folder + thumbnail-gallery note flow against a real job,
 // without going through the full email pipeline. GET /test-photo-note?job=103681
 // ================================================================
 app.get("/test-photo-note", async (req, res) => {
@@ -1692,18 +1700,24 @@ app.get("/test-photo-note", async (req, res) => {
     const taskId = arr[0]?.taskid;
     if (!taskId) return res.json({ error: `No task found for job ${jobNumber}` });
 
-    // 1x1 PNG test fixture — content doesn't matter, just needs to be a real image
-    // so SharePoint's preview/gallery renders it.
-    const pngBytes = Buffer.from(
-      "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=",
+    // Small solid-color PNG test fixtures — real enough for SharePoint to generate thumbnails.
+    const redPng = Buffer.from(
+      "iVBORw0KGgoAAAANSUhEUgAAAGQAAABkCAYAAABw4pVUAAAAI0lEQVR4nO3BAQ0AAADCoPdPbQ43oAAAAAAAAAAAAAAAAHgaJAAAAdE2QOsAAAAASUVORK5CYII=",
       "base64"
     );
-    await uploadPhotoToOneDrive(jobNumber, "test-photo-1.png", pngBytes, "image/png");
-    await uploadPhotoToOneDrive(jobNumber, "test-photo-2.png", pngBytes, "image/png");
-    const photoFolderUrl = await getPhotoFolderUrl(jobNumber);
+    const bluePng = Buffer.from(
+      "iVBORw0KGgoAAAANSUhEUgAAAGQAAABkCAYAAABw4pVUAAAAI0lEQVR4nO3BMQEAAADCIPunfjkKYAAAAAAAAAAAAAAAAOA1JAAAAV8Q3TQAAAAASUVORK5CYII=",
+      "base64"
+    );
+    const driveId = await getSharepointDriveId();
+    const item1 = await uploadPhotoToOneDrive(jobNumber, "test-photo-1.png", redPng, "image/png");
+    const item2 = await uploadPhotoToOneDrive(jobNumber, "test-photo-2.png", bluePng, "image/png");
+    const photos = [
+      { name: "test-photo-1.png", webUrl: item1.webUrl, thumbnailUrl: await getThumbnailUrl(driveId, item1.id).catch(() => null) },
+      { name: "test-photo-2.png", webUrl: item2.webUrl, thumbnailUrl: await getThumbnailUrl(driveId, item2.id).catch(() => null) },
+    ];
 
-    const noteHtml = `<p><strong>Test note</strong> — photo gallery link check.</p>` +
-      `<p><a href="${photoFolderUrl}" style="color:#1a6bbf" target="_blank">View 2 photos</a></p>`;
+    const noteHtml = `<p><strong>Test note</strong> — photo gallery check.</p>` + buildPhotoGalleryNote(photos);
     const updateXml =
 `<tasks>
   <task>
@@ -1715,7 +1729,7 @@ app.get("/test-photo-note", async (req, res) => {
 
     res.json({
       taskId,
-      photoFolderUrl,
+      photos,
       noteApplied: Number(upZone.postresults?.updatetotal ?? 0) > 0,
     });
   } catch (err) {
