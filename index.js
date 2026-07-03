@@ -1520,33 +1520,6 @@ app.get("/find-client", requireApiKey, async (req, res) => {
   res.json({ result, exactCacheHit: exactCacheHit?.clientname || null, partialMatches });
 });
 
-// TEMP: re-run just the AI extraction against an already-processed job's original email —
-// read-only, does not touch Aroflo or Outlook categories at all. GET /reextract?job=103726
-app.get("/reextract", requireApiKey, async (req, res) => {
-  const jobNumber = req.query.job;
-  if (!jobNumber) return res.status(400).json({ error: "Pass ?job=<jobnumber>" });
-  try {
-    // Mailbox-wide, not inbox-scoped — filing rules can move a message out of Inbox.
-    const filter = encodeURIComponent(`categories/any(c:c eq 'Job created - ${jobNumber}')`);
-    const listRes = await graphFetch(
-      `/users/${WORKORDERS_EMAIL}/messages` +
-      `?$filter=${filter}` +
-      `&$select=id,subject,body,categories,from,toRecipients,conversationId,receivedDateTime` +
-      `&$expand=attachments($select=id,name,contentType,size)` +
-      `&$top=5`
-    );
-    const listData = await listRes.json();
-    if (!listRes.ok) return res.json({ error: "Graph list failed", detail: listData?.error });
-    const message = (listData.value || [])[0];
-    if (!message) return res.json({ error: `No message found tagged "Job created - ${jobNumber}"` });
-
-    const { result } = await processMessage(message, WORKORDERS_EMAIL);
-    res.json({ subject: message.subject, result });
-  } catch (err) {
-    res.json({ error: err.message });
-  }
-});
-
 // ================================================================
 // AROFLO WEBHOOK — new client created
 // ================================================================
