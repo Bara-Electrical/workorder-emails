@@ -1544,16 +1544,22 @@ app.get("/reextract-job", requireApiKey, async (req, res) => {
 
     const threadRes = await graphFetch(
       `/users/${WORKORDERS_EMAIL}/messages?$filter=${encodeURIComponent(`conversationId eq '${convId}'`)}` +
-      `&$select=id,subject,from,body,receivedDateTime&$expand=attachments($select=id,name,contentType,size)&$top=25`
+      `&$select=id,subject,from,body,receivedDateTime,hasAttachments&$top=25`
     );
     const threadData = await threadRes.json();
     if (!threadRes.ok) return res.status(500).json({ error: "Thread fetch failed", detail: threadData });
     const messages = (threadData.value || []).sort((a, b) => new Date(a.receivedDateTime) - new Date(b.receivedDateTime));
 
-    // Find the first PDF work order attachment anywhere in the thread
+    // Find the first PDF work order attachment anywhere in the thread — fetched
+    // per-message (not $expand) since combining $expand=attachments with the
+    // conversationId $filter trips Graph's "InefficientFilter" rejection.
     let pdfMessage = null, pdfAttachmentMeta = null;
     for (const m of messages) {
-      const pdf = (m.attachments || []).find(a => (a.name || "").toLowerCase().endsWith(".pdf"));
+      if (!m.hasAttachments) continue;
+      const attRes = await graphFetch(`/users/${WORKORDERS_EMAIL}/messages/${m.id}/attachments?$select=id,name,contentType,size`);
+      const attData = await attRes.json();
+      if (!attRes.ok) continue;
+      const pdf = (attData.value || []).find(a => (a.name || "").toLowerCase().endsWith(".pdf"));
       if (pdf) { pdfMessage = m; pdfAttachmentMeta = pdf; break; }
     }
     let pdfText = "", pdfAttachment = null;
