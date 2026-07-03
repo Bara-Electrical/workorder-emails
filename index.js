@@ -701,7 +701,8 @@ async function createArofloJob(result, rawEmail, pdfAttachment = null, emailMeta
 
   // Upload PDF and any photo attachments to SharePoint
   let oneDriveUrl = null;
-  const photoUrls = [];
+  let photoFolderUrl = null;
+  let photoCount = 0;
   if (jobNumber !== "(see Aroflo)") {
     if (pdfAttachment) {
       try {
@@ -715,17 +716,24 @@ async function createArofloJob(result, rawEmail, pdfAttachment = null, emailMeta
     const photoResults = await Promise.all(
       imageAttachments.map(async img => {
         try {
-          const url = await uploadWorkOrderToOneDrive(jobNumber, img.name, img.data, img.contentType);
-          console.log("Photo uploaded:", img.name, url);
-          return url ? { name: img.name, url } : null;
+          await uploadPhotoToOneDrive(jobNumber, img.name, img.data, img.contentType);
+          console.log("Photo uploaded:", img.name);
+          return true;
         } catch (err) {
           console.warn("Photo upload failed:", img.name, err.message);
           warnings.push({ tag: "Photo upload failed", detail: `${img.name}: ${err.message}` });
-          return null;
+          return false;
         }
       })
     );
-    photoUrls.push(...photoResults.filter(Boolean));
+    photoCount = photoResults.filter(Boolean).length;
+    if (photoCount > 0) {
+      try {
+        photoFolderUrl = await getPhotoFolderUrl(jobNumber);
+      } catch (err) {
+        console.warn("Could not get photo folder URL:", err.message);
+      }
+    }
   }
 
   // Post the original email as a note and set the substatus in one combined task
@@ -735,7 +743,7 @@ async function createArofloJob(result, rawEmail, pdfAttachment = null, emailMeta
     let noteHtml = null;
     if (rawEmail) {
       try {
-        noteHtml = await emailHtmlForNote(rawEmail, oneDriveUrl, emailMeta, photoUrls);
+        noteHtml = await emailHtmlForNote(rawEmail, oneDriveUrl, emailMeta, photoFolderUrl, photoCount);
       } catch (err) {
         const detail = `Email note not posted to job: ${err.message}`;
         console.warn(detail);
@@ -830,7 +838,7 @@ async function decodeWrappedLinks(html) {
 }
 
 // Strip scripts/styles/tracking pixels but keep HTML structure for display in Aroflo notes
-async function emailHtmlForNote(html, oneDriveUrl = null, emailMeta = null, photoUrls = []) {
+async function emailHtmlForNote(html, oneDriveUrl = null, emailMeta = null, photoFolderUrl = null, photoCount = 0) {
   let cleaned = html
     .replace(/<script[\s\S]*?<\/script>/gi, "")
     .replace(/<style[\s\S]*?<\/style>/gi, "")
@@ -846,16 +854,14 @@ async function emailHtmlForNote(html, oneDriveUrl = null, emailMeta = null, phot
   const cell = (label, value) =>
     `<tr><td style="color:#888888;font-size:12px;font-weight:bold;padding:1px 12px 1px 0;white-space:nowrap;vertical-align:top">${label}</td><td style="color:#444444;font-size:12px;padding:1px 0">${value}</td></tr>`;
 
-  const photoRows = photoUrls.map((p, i) =>
-    cell(`Photo ${i + 1}:`, `<a href="${p.url}" style="color:#1a6bbf" target="_blank">${p.name}</a>`)
-  ).join("");
-
   const metaRows = [
     emailMeta?.from    ? cell("From:",       emailMeta.from)    : "",
     emailMeta?.to      ? cell("To:",         emailMeta.to)      : "",
     emailMeta?.subject ? cell("Subject:",    emailMeta.subject) : "",
     oneDriveUrl        ? cell("Attachment:", `<a href="${oneDriveUrl}" style="color:#1a6bbf" target="_blank">View Work Order PDF</a>`) : "",
-    photoRows,
+    (photoFolderUrl && photoCount > 0)
+      ? cell("Photos:", `<a href="${photoFolderUrl}" style="color:#1a6bbf" target="_blank">View ${photoCount} photo${photoCount === 1 ? "" : "s"}</a>`)
+      : "",
   ].filter(Boolean).join("");
 
   const titleRow = `<tr><td colspan="2" style="font-size:16px;font-weight:bold;color:#444444;padding:0 0 5px 0">Work Order</td></tr>`;
@@ -883,7 +889,21 @@ async function uploadWorkOrderToOneDrive(jobNumber, filename, contentBytes, cont
   const safeName = filename.replace(/#/g, "").trim();
   const itemPath = ["General", "Other", "AI Workorders [dont touch]", `${jobNumber} - ${safeName}`]
     .map(s => encodeURIComponent(s)).join("/");
+  const uploadData = await putSharepointFile(itemPath, contentBytes, contentType);
+  return uploadData.webUrl || null;
+}
 
+// Photos go in a per-job subfolder (rather than the flat filename-prefixed layout used for
+// the PDF) so the note can link to the folder and techs get SharePoint's native gallery
+// view — open one photo, arrow through the rest — instead of a single dead-end preview.
+async function uploadPhotoToOneDrive(jobNumber, filename, contentBytes, contentType) {
+  const safeName = filename.replace(/#/g, "").trim();
+  const itemPath = ["General", "Other", "AI Workorders [dont touch]", jobNumber, safeName]
+    .map(s => encodeURIComponent(s)).join("/");
+  await putSharepointFile(itemPath, contentBytes, contentType);
+}
+
+async function putSharepointFile(itemPath, contentBytes, contentType) {
   const driveId = await getSharepointDriveId();
 
   const ac = new AbortController();
@@ -899,11 +919,25 @@ async function uploadWorkOrderToOneDrive(jobNumber, filename, contentBytes, cont
       const err = await uploadRes.json().catch(() => ({}));
       throw new Error(`SharePoint upload failed ${uploadRes.status}: ${err?.error?.message || JSON.stringify(err)}`);
     }
-    const uploadData = await uploadRes.json();
-    return uploadData.webUrl || null;
+    return await uploadRes.json();
   } finally {
     clearTimeout(timer);
   }
+}
+
+// webUrl of the per-job photo folder itself, so the note links to a gallery view rather
+// than a single file.
+async function getPhotoFolderUrl(jobNumber) {
+  const driveId = await getSharepointDriveId();
+  const folderPath = ["General", "Other", "AI Workorders [dont touch]", jobNumber]
+    .map(s => encodeURIComponent(s)).join("/");
+  const token = await getAccessToken();
+  const res = await fetch(`https://graph.microsoft.com/v1.0/drives/${driveId}/root:/${folderPath}`, {
+    headers: { Authorization: `Bearer ${token}` },
+  });
+  if (!res.ok) return null;
+  const data = await res.json();
+  return data.webUrl || null;
 }
 
 // Known work order portal domains
@@ -1644,6 +1678,49 @@ app.get("/find-client", async (req, res) => {
     .filter(c => c.clientname.toLowerCase().includes(key) || key.includes(c.clientname.toLowerCase()))
     .map(c => c.clientname);
   res.json({ result, exactCacheHit: exactCacheHit?.clientname || null, partialMatches });
+});
+
+// TEMP: exercise the per-job photo-folder + gallery-link note flow against a real job,
+// without going through the full email pipeline. GET /test-photo-note?job=103681
+// ================================================================
+app.get("/test-photo-note", async (req, res) => {
+  const jobNumber = req.query.job;
+  if (!jobNumber) return res.status(400).json({ error: "Pass ?job=<jobnumber>" });
+  try {
+    const fetched = await arofloGet("zone=tasks&where=" + encodeURIComponent(`and|jobnumber|=|${jobNumber}`) + "&page=1");
+    const arr = Array.isArray(fetched.tasks) ? fetched.tasks : [fetched.tasks];
+    const taskId = arr[0]?.taskid;
+    if (!taskId) return res.json({ error: `No task found for job ${jobNumber}` });
+
+    // 1x1 PNG test fixture — content doesn't matter, just needs to be a real image
+    // so SharePoint's preview/gallery renders it.
+    const pngBytes = Buffer.from(
+      "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=",
+      "base64"
+    );
+    await uploadPhotoToOneDrive(jobNumber, "test-photo-1.png", pngBytes, "image/png");
+    await uploadPhotoToOneDrive(jobNumber, "test-photo-2.png", pngBytes, "image/png");
+    const photoFolderUrl = await getPhotoFolderUrl(jobNumber);
+
+    const noteHtml = `<p><strong>Test note</strong> — photo gallery link check.</p>` +
+      `<p><a href="${photoFolderUrl}" style="color:#1a6bbf" target="_blank">View 2 photos</a></p>`;
+    const updateXml =
+`<tasks>
+  <task>
+    <taskid>${taskId}</taskid>
+    <notes><note><content><![CDATA[${noteHtml}]]></content></note></notes>
+  </task>
+</tasks>`;
+    const upZone = await arofloPost("zone=tasks&postxml=" + encodeURIComponent(updateXml));
+
+    res.json({
+      taskId,
+      photoFolderUrl,
+      noteApplied: Number(upZone.postresults?.updatetotal ?? 0) > 0,
+    });
+  } catch (err) {
+    res.json({ error: err.message });
+  }
 });
 
 // ================================================================
