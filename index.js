@@ -13,7 +13,7 @@ const REQUIRED_ENV = [
 ];
 for (const key of REQUIRED_ENV) {
   if (!process.env[key]) {
-    console.error(`${key} is not set`);
+    console.error(`[startup] ${key} is not set`);
     process.exit(1);
   }
 }
@@ -22,7 +22,11 @@ let airtableBase = null;
 if (process.env.AIRTABLE_API_KEY && process.env.AIRTABLE_BASE_ID) {
   airtableBase = new Airtable({ apiKey: process.env.AIRTABLE_API_KEY }).base(process.env.AIRTABLE_BASE_ID);
 } else {
-  console.warn("AIRTABLE_API_KEY or AIRTABLE_BASE_ID not set — activity and AI logging disabled");
+  console.warn("[startup] AIRTABLE_API_KEY or AIRTABLE_BASE_ID not set — activity and AI logging disabled");
+}
+
+if (!process.env.ADMIN_API_KEY) {
+  console.warn("[startup] ADMIN_API_KEY not set — /clients, /find-client, and /aroflo-webhook are open with no auth");
 }
 
 // Known sender name → Aroflo client name mappings
@@ -67,6 +71,66 @@ app.use(express.json({ limit: "25mb" }));
 
 const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 
+// Gate the debug/introspection endpoints behind a shared secret, checked as either an
+// x-api-key header or a ?key= query param (so it can be embedded directly in a webhook
+// URL, e.g. Aroflo's). Left open with a startup warning if ADMIN_API_KEY isn't set yet,
+// so adding this check can't accidentally take the poll loop down before the env var is set.
+function requireApiKey(req, res, next) {
+  const configured = process.env.ADMIN_API_KEY;
+  if (!configured) return next();
+  const provided = req.headers["x-api-key"] || req.query.key;
+  if (provided !== configured) return res.status(401).json({ error: "Unauthorized" });
+  next();
+}
+
+// Aroflo's XML API returns a bare object for a single result and an array for multiple —
+// normalise both shapes to an array so callers never need to branch on it themselves.
+const toArray = (v) => (v == null ? [] : Array.isArray(v) ? v : [v]);
+
+// Wrap a value in a CDATA section for Aroflo's XML API. A literal "]]>" inside the value
+// would otherwise prematurely close the section and corrupt the rest of the POST body —
+// split it the standard way so the value round-trips safely either way.
+function cdata(value) {
+  return `<![CDATA[${String(value ?? "").replace(/]]>/g, "]]]]><![CDATA[>")}]]>`;
+}
+
+// Escape a plain-text value for safe interpolation into HTML (notes, alert emails).
+// Not for use on values that are themselves meant to contain markup (e.g. the cleaned
+// email body, or the hand-authored HTML templates).
+function escapeHtml(value) {
+  return String(value ?? "")
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;");
+}
+
+// ================================================================
+// RETRY HELPER — transient network errors and 429/5xx get retried with
+// backoff; anything else (4xx, business-logic failures) is not retried.
+// ================================================================
+async function fetchWithRetry(url, options = {}, { attempts = 3, baseDelayMs = 500, label = "fetch" } = {}) {
+  let lastErr, lastRes;
+  for (let i = 0; i < attempts; i++) {
+    try {
+      const res = await fetch(url, options);
+      if (res.ok || (res.status < 500 && res.status !== 429)) return res;
+      lastRes = res;
+      lastErr = new Error(`${label}: HTTP ${res.status}`);
+    } catch (err) {
+      lastErr = err;
+    }
+    if (i < attempts - 1) {
+      const delay = baseDelayMs * 2 ** i;
+      console.warn(`${label} — attempt ${i + 1}/${attempts} failed, retrying in ${delay}ms: ${lastErr.message}`);
+      await new Promise(r => setTimeout(r, delay));
+    }
+  }
+  if (lastRes) return lastRes; // exhausted retries but got a (failing) response — let the caller inspect/report it
+  throw lastErr; // every attempt was a raw network failure
+}
+
 // ================================================================
 // GRAPH API
 // ================================================================
@@ -95,14 +159,14 @@ async function getAccessToken() {
 
 async function graphFetch(path, options = {}) {
   const token = await getAccessToken();
-  return fetch(`https://graph.microsoft.com/v1.0${path}`, {
+  return fetchWithRetry(`https://graph.microsoft.com/v1.0${path}`, {
     ...options,
     headers: {
       Authorization:  `Bearer ${token}`,
       "Content-Type": "application/json",
       ...options.headers,
     },
-  });
+  }, { label: `graphFetch ${path}` });
 }
 
 // ================================================================
@@ -125,39 +189,65 @@ function arofloSign(method, query, ts) {
     .digest("hex");
 }
 
-async function arofloGet(params) {
-  const ts   = new Date().toISOString();
-  const auth = arofloAuth();
-  const res  = await fetch(AROFLO_BASE + "?" + params, {
-    headers: {
-      Accept:          AROFLO_ACCEPT,
-      Authorization:   auth,
-      Authentication:  "HMAC " + arofloSign("GET", params, ts),
-      afdatetimeutc:   ts,
-    },
-  });
-  const data = await res.json();
-  if (data.status !== "0") throw new Error(`Aroflo GET failed: ${data.statusmessage}`);
+// Aroflo's HMAC signature is tied to a specific timestamp, so a retry can't reuse the
+// same signed request — each attempt re-signs with a fresh timestamp. Only network
+// errors and 429/5xx are retried; a clean HTTP response with a non-"0" Aroflo status is
+// a completed request (possibly already applied server-side for POSTs), so it's surfaced
+// immediately rather than retried to avoid duplicating side effects like job/note creation.
+async function arofloRequest(method, urlSuffix, body, label, attempt = 1) {
+  const query = method === "GET" ? urlSuffix : body;
+  const ts    = new Date().toISOString();
+  const auth  = arofloAuth();
+  const headers = {
+    Accept:          AROFLO_ACCEPT,
+    Authorization:   auth,
+    Authentication:  "HMAC " + arofloSign(method, query, ts),
+    afdatetimeutc:   ts,
+  };
+  if (method === "POST") headers["Content-Type"] = "application/x-www-form-urlencoded";
+
+  let res;
+  try {
+    res = await fetch(
+      method === "GET" ? AROFLO_BASE + "?" + urlSuffix : AROFLO_BASE + "?",
+      method === "GET" ? { headers } : { method: "POST", headers, body }
+    );
+  } catch (err) {
+    if (attempt < 3) {
+      const delay = 500 * 2 ** (attempt - 1);
+      console.warn(`${label} network error (attempt ${attempt}/3) — retrying in ${delay}ms: ${err.message}`);
+      await new Promise(r => setTimeout(r, delay));
+      return arofloRequest(method, urlSuffix, body, label, attempt + 1);
+    }
+    throw err;
+  }
+
+  if (!res.ok) {
+    if ((res.status === 429 || res.status >= 500) && attempt < 3) {
+      const delay = 500 * 2 ** (attempt - 1);
+      console.warn(`${label} HTTP ${res.status} (attempt ${attempt}/3) — retrying in ${delay}ms`);
+      await new Promise(r => setTimeout(r, delay));
+      return arofloRequest(method, urlSuffix, body, label, attempt + 1);
+    }
+    throw new Error(`${label} request failed: HTTP ${res.status}`);
+  }
+
+  let data;
+  try {
+    data = await res.json();
+  } catch {
+    throw new Error(`${label} returned non-JSON response (HTTP ${res.status})`);
+  }
+  if (data.status !== "0") throw new Error(`${label} failed: ${data.statusmessage}`);
   return data.zoneresponse;
 }
 
+async function arofloGet(params) {
+  return arofloRequest("GET", params, null, "Aroflo GET");
+}
+
 async function arofloPost(body) {
-  const ts   = new Date().toISOString();
-  const auth = arofloAuth();
-  const res  = await fetch(AROFLO_BASE + "?", {
-    method: "POST",
-    headers: {
-      Accept:          AROFLO_ACCEPT,
-      Authorization:   auth,
-      Authentication:  "HMAC " + arofloSign("POST", body, ts),
-      afdatetimeutc:   ts,
-      "Content-Type":  "application/x-www-form-urlencoded",
-    },
-    body,
-  });
-  const data = await res.json();
-  if (data.status !== "0") throw new Error(`Aroflo POST failed: ${data.statusmessage}`);
-  return data.zoneresponse;
+  return arofloRequest("POST", null, body, "Aroflo POST");
 }
 
 // Task type IDs sourced from live Aroflo system on 2026-06-24
@@ -182,6 +272,7 @@ const SUBSTATUS_MAP = {
 // In-memory client cache: lowercase clientname → client object.
 // Populated at startup and updated via the /aroflo-webhook endpoint.
 const clientCache = new Map();
+let clientCacheLastLoaded = null;
 
 async function loadClientCache() {
   // where=clientid!=0 forces Aroflo to return the full client list.
@@ -193,7 +284,7 @@ async function loadClientCache() {
       const zone = await arofloGet(`zone=clients&where=${WHERE}&page=${page}`);
       const raw  = zone?.clients;
       if (!raw) break;
-      const arr  = Array.isArray(raw) ? raw : [raw];
+      const arr  = toArray(raw);
       for (const c of arr) clientCache.set(c.clientname.toLowerCase(), c);
       loaded += arr.length;
       const current = parseInt(zone.currentpageresults ?? 0);
@@ -201,9 +292,10 @@ async function loadClientCache() {
       if (current < max) break;
       page++;
     }
-    console.log(`Client cache loaded: ${clientCache.size} unique clients across ${page} page(s)`);
+    clientCacheLastLoaded = new Date().toISOString();
+    console.log(`[client] Cache loaded: ${clientCache.size} unique clients across ${page} page(s)`);
   } catch (err) {
-    console.error("Failed to load client cache — fuzzy matching unavailable:", err.message);
+    console.error("[client] Failed to load cache — fuzzy matching unavailable:", err.message);
   }
 }
 
@@ -219,15 +311,13 @@ async function findLocationsAndContacts(clientId) {
       "&page=1"
     );
     const raw    = zone.clients;
-    const client = Array.isArray(raw) ? raw[0] : raw;
-    const locs     = client?.locations;
-    const contacts = client?.contacts;
+    const client = toArray(raw)[0];
     return {
-      locations: locs ? (Array.isArray(locs) ? locs : [locs]) : [],
-      contacts:  contacts ? (Array.isArray(contacts) ? contacts : [contacts]) : [],
+      locations: toArray(client?.locations),
+      contacts:  toArray(client?.contacts),
     };
   } catch (err) {
-    console.warn("Location/contact search failed:", err.message);
+    console.warn("[client] Location/contact search failed:", err.message);
     return { locations: [], contacts: [] };
   }
 }
@@ -239,6 +329,16 @@ function matchContact(contacts, pmName) {
   return contacts.find(c => `${c.givennames} ${c.surname}`.toLowerCase().includes(nameLower)) || null;
 }
 
+// Candidate names to try when matching a client, from most to least specific:
+// the raw name, the part before a "|"/"," separator, that with Pty/Ltd/etc stripped,
+// and just its first word — deduped in order.
+function clientNameCandidates(realEstateName) {
+  const baseName     = realEstateName.split(/[|,]/)[0].trim();
+  const strippedName = baseName.replace(/\s+(?:Pty\.?\s*)?(?:Ltd\.?|Limited|Inc\.?|LLC)\.?$/i, "").trim();
+  return [realEstateName, baseName, strippedName, baseName.split(" ")[0]]
+    .filter((v, i, a) => v && a.indexOf(v) === i);
+}
+
 // Search for a client by name.
 // 1. Exact match against local cache (no API call needed).
 // 2. Starts-with fuzzy match against local cache — only if exactly one result.
@@ -246,18 +346,11 @@ function matchContact(contacts, pmName) {
 async function findClient(realEstateName) {
   if (!realEstateName) return null;
 
-  const baseName    = realEstateName.split(/[|,]/)[0].trim();
-  const strippedName = baseName.replace(/\s+(?:Pty\.?\s*)?(?:Ltd\.?|Limited|Inc\.?|LLC)\.?$/i, "").trim();
+  const candidates = clientNameCandidates(realEstateName);
+  const baseName   = realEstateName.split(/[|,]/)[0].trim();
 
   // Cache lookup — check exact match on each candidate
   if (clientCache.size > 0) {
-    const candidates = [
-      realEstateName,
-      baseName,
-      strippedName,
-      baseName.split(" ")[0],
-    ].filter((v, i, a) => v && a.indexOf(v) === i);
-
     for (const name of candidates) {
       const hit = clientCache.get(name.toLowerCase());
       if (hit) return hit;
@@ -270,30 +363,21 @@ async function findClient(realEstateName) {
       return name.startsWith(query) || query.startsWith(name);
     });
     if (matches.length === 1) {
-      console.log(`Fuzzy client match: "${realEstateName}" → "${matches[0].clientname}"`);
+      console.log(`[client] Fuzzy match: "${realEstateName}" → "${matches[0].clientname}"`);
       return matches[0];
     }
     if (matches.length > 1) {
-      console.warn(`Ambiguous client name "${realEstateName}" — ${matches.length} cache matches: ${matches.map(c => c.clientname).join(", ")}`);
+      console.warn(`[client] Ambiguous name "${realEstateName}" — ${matches.length} cache matches: ${matches.map(c => c.clientname).join(", ")}`);
     }
     return null;
   }
 
   // Cache not loaded yet — fall back to API
-  const candidates = [
-    realEstateName,
-    baseName,
-    strippedName,
-    baseName.split(" ")[0],
-  ].filter((v, i, a) => v && a.indexOf(v) === i);
-
   for (const name of candidates) {
     const zone = await arofloGet(
       "zone=clients&where=" + encodeURIComponent(`and|clientname|=|${name}`) + "&page=1"
     );
-    const raw = zone.clients;
-    if (!raw) continue;
-    const arr = Array.isArray(raw) ? raw : [raw];
+    const arr = toArray(zone.clients);
     if (arr.length > 0) return arr[0];
   }
 
@@ -314,7 +398,7 @@ function parseAustralianAddress(address) {
 
 async function geocodeAddress(address) {
   const key = process.env.HERE_API_KEY;
-  if (!key) { console.warn("HERE_API_KEY not set — skipping geocode"); return null; }
+  if (!key) { console.warn("[location] HERE_API_KEY not set — skipping geocode"); return null; }
   try {
     const url  = "https://geocode.search.hereapi.com/v1/geocode?q=" +
                  encodeURIComponent(address) + "&in=countryCode:AUS&apiKey=" + key;
@@ -323,7 +407,7 @@ async function geocodeAddress(address) {
     const item = data?.items?.[0];
     if (item?.position) return { lat: item.position.lat, lon: item.position.lng };
   } catch (err) {
-    console.warn("Geocode failed:", err.message);
+    console.warn("[location] Geocode failed:", err.message);
   }
   return null;
 }
@@ -335,48 +419,48 @@ async function createLocation(clientId, address, tenantName, tenantContact, tena
 `<clients><client>
   <clientid>${clientId}</clientid>
   <locations><location>
-    <locationname><![CDATA[${street}]]></locationname>
-    <suburb><![CDATA[${suburb}]]></suburb>
-    <state><![CDATA[${state}]]></state>
-    <postcode><![CDATA[${postcode}]]></postcode>
+    <locationname>${cdata(street)}</locationname>
+    <suburb>${cdata(suburb)}</suburb>
+    <state>${cdata(state)}</state>
+    <postcode>${cdata(postcode)}</postcode>
     <country><![CDATA[Australia]]></country>
     ${coords ? `<gpslat>${coords.lat}</gpslat><gpslong>${coords.lon}</gpslong>` : ""}
-    ${tenantName    ? `<sitecontact><![CDATA[${tenantName}]]></sitecontact>`  : ""}
-    ${tenantContact ? `<sitephone><![CDATA[${tenantContact}]]></sitephone>`   : ""}
-    ${tenantEmail   ? `<siteemail><![CDATA[${tenantEmail}]]></siteemail>`     : ""}
+    ${tenantName    ? `<sitecontact>${cdata(tenantName)}</sitecontact>`  : ""}
+    ${tenantContact ? `<sitephone>${cdata(tenantContact)}</sitephone>`   : ""}
+    ${tenantEmail   ? `<siteemail>${cdata(tenantEmail)}</siteemail>`     : ""}
   </location></locations>
 </client></clients>`;
   const createZone = await arofloPost("zone=clients&postxml=" + encodeURIComponent(xml));
-  console.log("Location create response:", JSON.stringify(createZone?.postresults));
+  console.log("[location] Create response:", JSON.stringify(createZone?.postresults));
 
   // Aroflo returns the new locationid under updates.clients[0].locations[0]
   const pr          = createZone?.postresults;
   const updClients  = pr?.updates?.clients;
-  const updClient   = Array.isArray(updClients) ? updClients[0] : updClients;
+  const updClient   = toArray(updClients)[0];
   const updLocs     = updClient?.locations;
-  const newId       = (Array.isArray(updLocs) ? updLocs[0] : updLocs)?.locationid;
+  const newId       = toArray(updLocs)[0]?.locationid;
   if (newId) {
-    console.log("Location created:", newId, address);
+    console.log("[location] Created:", newId, address);
     return { locationid: newId, locationname: address };
   }
 
   // Fall back: re-query to find the location we just created
-  console.log("locationid not in response — fetching newly created location");
+  console.log("[location] locationid not in response — fetching newly created location");
   const zone = await arofloGet(
     "zone=clients" +
     "&where=" + encodeURIComponent(`and|clientid|=|${clientId}`) +
     "&join=locations"
   );
-  const client = Array.isArray(zone.clients) ? zone.clients[0] : zone.clients;
-  const all = client?.locations ? (Array.isArray(client.locations) ? client.locations : [client.locations]) : [];
+  const client = toArray(zone.clients)[0];
+  const all = toArray(client?.locations);
   const streetPart = address.replace(/^\d+\//, "").split(",")[0].trim().toLowerCase();
   const found = all.find(l => l.locationname?.toLowerCase().includes(streetPart));
   if (found) {
-    console.log("Location found after creation:", found.locationid, found.locationname);
+    console.log("[location] Found after creation:", found.locationid, found.locationname);
     return found;
   }
 
-  console.warn("Location created but could not retrieve locationid");
+  console.warn("[location] Created but could not retrieve locationid");
   return null;
 }
 
@@ -428,33 +512,38 @@ async function findOrUpdateLocation(clientId, locations, address, tenantName, te
   // Strip unit prefix: "1412/380 Murray Street, Perth WA" → "380 Murray Street"
   const streetPart = address.replace(/^\d+\//, "").split(",")[0].trim().toLowerCase();
   const incomingUnit = address.match(/^(\d+)\//)?.[1] || null;
+  const { suburb: incomingSuburb } = parseAustralianAddress(address);
 
   const forClient = locations;
   const active = forClient.filter(l => l.archived?.toUpperCase() !== "TRUE");
-  console.log(`Location search — client ${clientId}: ${forClient.length} location(s) (${active.length} active), searching for "${streetPart}"`);
+  console.log(`[location] Search — client ${clientId}: ${forClient.length} location(s) (${active.length} active), searching for "${streetPart}"${incomingSuburb ? ` in "${incomingSuburb}"` : ""}`);
   // A street-only match isn't enough when a building has multiple numbered units on
   // file — "10/27 X" contains "27 x" as a substring, so it would wrongly match an
   // incoming "9/27 X" and silently attach the job to a different unit's tenant.
   // If both the incoming address and the candidate location have a unit number,
-  // they must match exactly.
+  // they must match exactly. Same idea for suburb: the same street name can exist in
+  // two different suburbs for a large client, so require the suburb to agree too
+  // whenever both are known — otherwise a job (and the tenant's details) could get
+  // silently attached to the wrong property.
   const location = active.find(l => {
     if (!l.locationname?.toLowerCase().includes(streetPart)) return false;
     const storedUnit = l.locationname?.match(/^(\d+)\//)?.[1] || null;
     if (incomingUnit && storedUnit && incomingUnit !== storedUnit) return false;
+    if (incomingSuburb && l.suburb && incomingSuburb.toLowerCase() !== l.suburb.toLowerCase()) return false;
     return true;
   });
 
   if (!location) {
-    console.log("No location matching:", streetPart, "— creating new location:", address);
+    console.log("[location] No match for:", streetPart, "— creating new location:", address);
     try {
       return await createLocation(clientId, address, tenantName, tenantContact, tenantEmail);
     } catch (err) {
-      console.warn("Location creation failed:", err.message);
+      console.warn("[location] Creation failed:", err.message);
       return null;
     }
   }
 
-  console.log("FOUND LOCATION:", location.locationid, location.locationname);
+  console.log("[location] Found:", location.locationid, location.locationname);
 
   if (tenantName || tenantContact || tenantEmail) {
     // Must be wrapped in <clients><client> — a bare <locations><location> POST to
@@ -464,16 +553,16 @@ async function findOrUpdateLocation(clientId, locations, address, tenantName, te
   <clientid>${clientId}</clientid>
   <locations><location>
     <locationid>${location.locationid}</locationid>
-    ${tenantName    ? `<sitecontact><![CDATA[${tenantName}]]></sitecontact>`  : ""}
-    ${tenantContact ? `<sitephone><![CDATA[${tenantContact}]]></sitephone>`   : ""}
-    ${tenantEmail   ? `<siteemail><![CDATA[${tenantEmail}]]></siteemail>`     : ""}
+    ${tenantName    ? `<sitecontact>${cdata(tenantName)}</sitecontact>`  : ""}
+    ${tenantContact ? `<sitephone>${cdata(tenantContact)}</sitephone>`   : ""}
+    ${tenantEmail   ? `<siteemail>${cdata(tenantEmail)}</siteemail>`     : ""}
   </location></locations>
 </client></clients>`;
     try {
       const updateRes = await arofloPost("zone=clients&postxml=" + encodeURIComponent(xml));
-      console.log("Tenant details updated:", JSON.stringify(updateRes?.postresults));
+      console.log("[location] Tenant details updated:", JSON.stringify(updateRes?.postresults));
     } catch (err) {
-      console.warn("Tenant update failed:", err.message);
+      console.warn("[location] Tenant update failed:", err.message);
     }
   }
 
@@ -487,7 +576,7 @@ async function logActivity(action, jobNumber) {
       fields: { "Action": action, "Job number": jobNumber || null, "Department": "Admin" },
     }]);
   } catch (err) {
-    console.warn("Airtable activity log failed:", err.message);
+    console.warn("[airtable] Activity log failed:", err.message);
   }
 }
 
@@ -514,7 +603,7 @@ async function logAiOutput(result, emailSubject) {
       },
     }]);
   } catch (err) {
-    console.warn("Airtable AI log failed:", err.message);
+    console.warn("[airtable] AI log failed:", err.message);
   }
 }
 
@@ -523,18 +612,18 @@ function buildDescription(result) {
   const spacer = `<p>&nbsp;</p>`;
 
   if (result["task-description"] || result["task-type"]) {
-    parts.push(`<p>${result["task-description"] || result["task-type"]}</p>`);
+    parts.push(`<p>${escapeHtml(result["task-description"] || result["task-type"])}</p>`);
   }
 
   const hasHighlights = result["expenditure-limit"] || result["access-details"];
   if (hasHighlights) parts.push(spacer);
 
   if (result["expenditure-limit"]) {
-    parts.push(`<p><span style="background:#cce5ff;font-weight:bold">Expenditure Limit: ${result["expenditure-limit"]}</span></p>`);
+    parts.push(`<p><span style="background:#cce5ff;font-weight:bold">Expenditure Limit: ${escapeHtml(result["expenditure-limit"])}</span></p>`);
   }
 
   if (result["access-details"]) {
-    parts.push(`<p><span style="background:#ccffcc;font-weight:bold">Access Details: ${result["access-details"]}</span></p>`);
+    parts.push(`<p><span style="background:#ccffcc;font-weight:bold">Access Details: ${escapeHtml(result["access-details"])}</span></p>`);
   }
 
   // Fall back to task-type if AI forgot to set package (e.g. task-type is EC1 but package is null)
@@ -549,7 +638,7 @@ function buildDescription(result) {
 }
 
 async function createArofloJob(result, rawEmail, pdfAttachment = null, emailMeta = null, imageAttachments = []) {
-  console.log("CREATING AROFLO JOB...");
+  console.log("[job] Creating Aroflo job...");
   const warnings = [];
 
   if (!result.address) throw new Error("No address found in work order");
@@ -558,32 +647,31 @@ async function createArofloJob(result, rawEmail, pdfAttachment = null, emailMeta
   const substatusId = SUBSTATUS_MAP[result["task-type"]] || "Iyc6LyYK"; // default: Ready to schedule
   if (!taskTypeId) {
     const detail = `Unknown task type: "${result["task-type"]}" — task created without a task type`;
-    console.warn(detail);
+    console.warn("[job]", detail);
     warnings.push({ tag: "Unknown task type", detail });
   }
 
   const realEstate = CLIENT_NAME_MAP[result["real-estate"]?.toLowerCase()] || result["real-estate"];
-  console.log(`Client lookup — AI extracted real-estate: "${result["real-estate"]}", resolved to: "${realEstate}", from: "${emailMeta?.from}"`);
+  console.log(`[job] Client lookup — AI extracted real-estate: "${result["real-estate"]}", resolved to: "${realEstate}", from: "${emailMeta?.from}"`);
   let client = await findClient(realEstate);
   let clientFoundVia = "name";
   if (!client && emailMeta?.from) {
     const domain = emailMeta.from.split("@")[1];
     const domainName = domain && EMAIL_DOMAIN_MAP[domain.toLowerCase()];
-    console.log(`Client not found by name — domain: "${domain}", domain map hit: "${domainName || "none"}"`);
+    console.log(`[job] Client not found by name — domain: "${domain}", domain map hit: "${domainName || "none"}"`);
     if (domainName) {
       client = await findClient(domainName);
       if (!client) {
         // Client not in cache (may be a supplier/subcontractor type) — try live Aroflo API
-        console.log(`Cache miss for "${domainName}" — trying live Aroflo API lookup`);
+        console.log(`[job] Cache miss for "${domainName}" — trying live Aroflo API lookup`);
         const zone = await arofloGet(`zone=clients&where=${encodeURIComponent(`and|clientname|=|${domainName}`)}&page=1`);
-        const raw = zone?.clients;
-        if (raw) client = Array.isArray(raw) ? raw[0] : raw;
+        client = toArray(zone?.clients)[0] || null;
       }
       clientFoundVia = `email domain (${domainName})`;
     }
   }
   if (!client) throw new Error(`Client not found in Aroflo: name="${realEstate}", from="${emailMeta?.from}"`);
-  console.log(`CLIENT (via ${clientFoundVia}):`, client.clientid, client.clientname);
+  console.log(`[job] Client (via ${clientFoundVia}):`, client.clientid, client.clientname);
 
   const { locations, contacts } = await findLocationsAndContacts(client.clientid);
 
@@ -594,11 +682,11 @@ async function createArofloJob(result, rawEmail, pdfAttachment = null, emailMeta
     const lines = [];
     for (let i = 0; i < rows; i++) {
       const line = [tenantFit.overflowName[i], tenantFit.overflowPhone[i]].filter(Boolean).join(", ");
-      if (line) lines.push(`Additional tenant - ${line}`);
+      if (line) lines.push(`Additional tenant - ${escapeHtml(line)}`);
     }
     additionalTenantNote = lines.join("<br/>");
     const detail = `SiteContact/SitePhone are capped at ${SITE_FIELD_LIMIT} characters by Aroflo — full list: "${result["tenant-name"] || ""}" / "${result["tenant-contact"] || ""}"`;
-    console.warn(detail);
+    console.warn("[job]", detail);
     warnings.push({ tag: "Tenant details truncated", detail });
   }
 
@@ -612,27 +700,18 @@ async function createArofloJob(result, rawEmail, pdfAttachment = null, emailMeta
   );
   if (!location && result.address) {
     const detail = `Location not linked for "${result.address}" — address used as site name fallback`;
-    console.warn(detail);
+    console.warn("[job]", detail);
     warnings.push({ tag: "Location not linked", detail });
   }
 
   const pmContact = matchContact(contacts, result["property-manager"]);
   if (pmContact) {
-    console.log("PM CONTACT:", pmContact.contactid, pmContact.contactname);
+    console.log("[job] PM contact:", pmContact.contactid, pmContact.contactname);
   } else if (result["property-manager"]) {
     const detail = `PM contact not found in Aroflo: "${result["property-manager"]}"`;
-    console.warn(detail);
+    console.warn("[job]", detail);
     warnings.push({ tag: "PM not in Aroflo", detail });
   }
-
-  const notes = [
-    result["order-number"]     ? `Work Order: ${result["order-number"]}`          : null,
-    result["tenant-name"]      ? `Tenant: ${result["tenant-name"]}`                : null,
-    result["tenant-contact"]   ? `Tenant Contact: ${result["tenant-contact"]}`     : null,
-    result["access-details"]      ? `Access Details: ${result["access-details"]}`           : null,
-    result["expenditure-limit"]   ? `Expenditure Limit: ${result["expenditure-limit"]}`     : null,
-    result["property-manager"]    ? `Property Manager: ${result["property-manager"]}`       : null,
-  ].filter(Boolean).join("\n");
 
   const dueDate = (() => {
     const d = new Date();
@@ -656,12 +735,12 @@ async function createArofloJob(result, rawEmail, pdfAttachment = null, emailMeta
     <client><clientid>${client.clientid}</clientid></client>
     ${pmContact ? `<contact><userid>${pmContact.userid}</userid></contact>` : ""}
     ${location ? `<location><locationid>${location.locationid}</locationid></location>` : ""}
-    ${result.address && !location  ? `<sitename>${result.address}</sitename>`          : ""}
-    <taskname>${taskName}</taskname>
-    <description><![CDATA[${buildDescription(result)}]]></description>
+    ${result.address && !location  ? `<sitename>${cdata(result.address)}</sitename>`          : ""}
+    <taskname>${cdata(taskName)}</taskname>
+    <description>${cdata(buildDescription(result))}</description>
     <duedate>${dueDate}</duedate>
-    ${result["order-number"] ? `<custon>${result["order-number"]}</custon>` : ""}
-    ${(result["account-to"] || realEstate) ? `<customfields><customfield><name><![CDATA[ Account To: ]]></name><type><![CDATA[ text ]]></type><value><![CDATA[${result["account-to"] || realEstate}]]></value></customfield></customfields>` : ""}
+    ${result["order-number"] ? `<custon>${cdata(result["order-number"])}</custon>` : ""}
+    ${(result["account-to"] || realEstate) ? `<customfields><customfield><name><![CDATA[ Account To: ]]></name><type><![CDATA[ text ]]></type><value>${cdata(result["account-to"] || realEstate)}</value></customfield></customfields>` : ""}
   </task>
 </tasks>`;
 
@@ -670,33 +749,32 @@ async function createArofloJob(result, rawEmail, pdfAttachment = null, emailMeta
   const insertTotal = Number(pr?.inserttotal ?? 0);
 
   if (insertTotal < 1) {
-    const errors = pr?.errors;
-    const msgs   = errors && (Array.isArray(errors) ? errors : [errors]).length
-      ? (Array.isArray(errors) ? errors : [errors]).map(e => e.detail || e.message || JSON.stringify(e)).join("; ")
+    const errArr = toArray(pr?.errors);
+    const msgs   = errArr.length
+      ? errArr.map(e => e.detail || e.message || JSON.stringify(e)).join("; ")
       : "No job inserted";
     throw new Error(`Aroflo task creation failed: ${msgs}`);
   }
 
-  const inserted = pr?.inserts?.tasks;
-  const task     = Array.isArray(inserted) ? inserted[0] : inserted;
+  const task     = toArray(pr?.inserts?.tasks)[0];
   const taskId   = task?.taskid;
 
   // jobnumber isn't in the insert response — fetch it. Also use the fetched taskId
-  // for note posting since it's the same format /test-note uses and is confirmed working.
+  // for note posting since it's confirmed to work with this format.
   let jobNumber = "(see Aroflo)";
   let confirmedTaskId = taskId;
   if (taskId) {
     try {
       const fetched = await arofloGet("zone=tasks&where=" + encodeURIComponent(`and|taskid|=|${taskId}`) + "&page=1");
-      const arr = Array.isArray(fetched.tasks) ? fetched.tasks : [fetched.tasks];
+      const arr = toArray(fetched.tasks);
       jobNumber = arr[0]?.jobnumber || taskId;
       confirmedTaskId = arr[0]?.taskid || taskId;
     } catch (err) {
-      console.warn("Could not fetch job number:", err.message);
+      console.warn("[job] Could not fetch job number:", err.message);
       jobNumber = taskId;
     }
   }
-  console.log("AROFLO JOB CREATED — job number:", jobNumber, "taskId:", confirmedTaskId);
+  console.log("[job] Aroflo job created — job number:", jobNumber, "taskId:", confirmedTaskId);
 
   // Upload PDF and any photo attachments to SharePoint
   let oneDriveUrl = null;
@@ -705,9 +783,9 @@ async function createArofloJob(result, rawEmail, pdfAttachment = null, emailMeta
     if (pdfAttachment) {
       try {
         oneDriveUrl = await uploadWorkOrderToOneDrive(jobNumber, pdfAttachment.name, pdfAttachment.data);
-        console.log("PDF uploaded to OneDrive:", oneDriveUrl);
+        console.log("[sharepoint] PDF uploaded:", oneDriveUrl);
       } catch (err) {
-        console.warn("OneDrive upload failed:", err.message);
+        console.warn("[sharepoint] PDF upload failed:", err.message);
         warnings.push({ tag: "PDF upload failed", detail: err.message });
       }
     }
@@ -718,10 +796,10 @@ async function createArofloJob(result, rawEmail, pdfAttachment = null, emailMeta
           try {
             const item = await uploadPhotoToOneDrive(jobNumber, img.name, img.data, img.contentType);
             const thumbnailUrl = await getThumbnailUrl(driveId, item.id).catch(() => null);
-            console.log("Photo uploaded:", img.name);
+            console.log("[sharepoint] Photo uploaded:", img.name);
             return { name: img.name, webUrl: item.webUrl, thumbnailUrl };
           } catch (err) {
-            console.warn("Photo upload failed:", img.name, err.message);
+            console.warn("[sharepoint] Photo upload failed:", img.name, err.message);
             warnings.push({ tag: "Photo upload failed", detail: `${img.name}: ${err.message}` });
             return null;
           }
@@ -741,7 +819,7 @@ async function createArofloJob(result, rawEmail, pdfAttachment = null, emailMeta
         noteHtml = await emailHtmlForNote(rawEmail, oneDriveUrl, emailMeta);
       } catch (err) {
         const detail = `Email note not posted to job: ${err.message}`;
-        console.warn(detail);
+        console.warn("[job]", detail);
         warnings.push({ tag: "Note not posted", detail });
       }
     } else {
@@ -751,9 +829,9 @@ async function createArofloJob(result, rawEmail, pdfAttachment = null, emailMeta
     const photoGalleryHtml = photos.length > 0 ? buildPhotoGalleryNote(photos) : null;
 
     const notesXml = [
-      noteHtml             ? `<note><content><![CDATA[${noteHtml}]]></content></note>`             : "",
-      photoGalleryHtml     ? `<note><content><![CDATA[${photoGalleryHtml}]]></content></note>`      : "",
-      additionalTenantNote ? `<note><content><![CDATA[${additionalTenantNote}]]></content></note>` : "",
+      noteHtml             ? `<note><content>${cdata(noteHtml)}</content></note>`             : "",
+      photoGalleryHtml     ? `<note><content>${cdata(photoGalleryHtml)}</content></note>`      : "",
+      additionalTenantNote ? `<note><content>${cdata(additionalTenantNote)}</content></note>` : "",
     ].join("");
 
     if (notesXml || substatusId) {
@@ -769,7 +847,7 @@ async function createArofloJob(result, rawEmail, pdfAttachment = null, emailMeta
         const upZone = await arofloPost("zone=tasks&postxml=" + encodeURIComponent(updateXml));
         const upPr   = upZone.postresults;
         if (Number(upPr?.updatetotal ?? 0) > 0) {
-          console.log("Task update applied — note:", !!noteHtml, "additional tenant note:", !!additionalTenantNote, "substatus:", substatusId || "n/a");
+          console.log("[job] Task update applied — note:", !!noteHtml, "additional tenant note:", !!additionalTenantNote, "substatus:", substatusId || "n/a");
         } else {
           if (noteHtml) warnings.push({ tag: "Note not posted", detail: "Combined task update did not apply" });
           if (substatusId) warnings.push({ tag: "Substatus failed", detail: "Combined task update did not apply — job may need manual scheduling status update" });
@@ -853,9 +931,9 @@ async function emailHtmlForNote(html, oneDriveUrl = null, emailMeta = null) {
     `<tr><td style="color:#888888;font-size:12px;font-weight:bold;padding:1px 12px 1px 0;white-space:nowrap;vertical-align:top">${label}</td><td style="color:#444444;font-size:12px;padding:1px 0">${value}</td></tr>`;
 
   const metaRows = [
-    emailMeta?.from    ? cell("From:",       emailMeta.from)    : "",
-    emailMeta?.to      ? cell("To:",         emailMeta.to)      : "",
-    emailMeta?.subject ? cell("Subject:",    emailMeta.subject) : "",
+    emailMeta?.from    ? cell("From:",       escapeHtml(emailMeta.from))    : "",
+    emailMeta?.to      ? cell("To:",         escapeHtml(emailMeta.to))      : "",
+    emailMeta?.subject ? cell("Subject:",    escapeHtml(emailMeta.subject)) : "",
     oneDriveUrl        ? cell("Attachment:", `<a href="${oneDriveUrl}" style="color:#1a6bbf" target="_blank">View Work Order PDF</a>`) : "",
   ].filter(Boolean).join("");
 
@@ -880,7 +958,7 @@ function buildFolderUrl(webUrl) {
 function buildPhotoGalleryNote(photos) {
   const folderUrl = buildFolderUrl(photos[0].webUrl);
   const thumbs = photos.map(p =>
-    `<a href="${folderUrl}" target="_blank"><img src="${p.thumbnailUrl || p.webUrl}" alt="${p.name}" style="width:110px;height:110px;object-fit:cover;margin:0 8px 8px 0;border-radius:4px;border:1px solid #dddddd" /></a>`
+    `<a href="${folderUrl}" target="_blank"><img src="${p.thumbnailUrl || p.webUrl}" alt="${escapeHtml(p.name)}" style="width:110px;height:110px;object-fit:cover;margin:0 8px 8px 0;border-radius:4px;border:1px solid #dddddd" /></a>`
   ).join("");
 
   const titleRow = `Photos (${photos.length})`;
@@ -926,10 +1004,7 @@ async function uploadPhotoToOneDrive(jobNumber, filename, contentBytes, contentT
 // checking the job soon after creation, but the thumbnail image itself can go stale later
 // even though the click-through link keeps working.
 async function getThumbnailUrl(driveId, itemId) {
-  const token = await getAccessToken();
-  const res = await fetch(`https://graph.microsoft.com/v1.0/drives/${driveId}/items/${itemId}/thumbnails`, {
-    headers: { Authorization: `Bearer ${token}` },
-  });
+  const res = await graphFetch(`/drives/${driveId}/items/${itemId}/thumbnails`);
   if (!res.ok) return null;
   const data = await res.json();
   return data.value?.[0]?.medium?.url || data.value?.[0]?.large?.url || null;
@@ -942,11 +1017,12 @@ async function putSharepointFile(itemPath, contentBytes, contentType) {
   const timer = setTimeout(() => ac.abort(), 20000);
 
   try {
-    const token = await getAccessToken();
-    const uploadRes = await fetch(
-      `https://graph.microsoft.com/v1.0/drives/${driveId}/root:/${itemPath}:/content`,
-      { method: "PUT", headers: { Authorization: `Bearer ${token}`, "Content-Type": contentType }, body: contentBytes, signal: ac.signal }
-    );
+    const uploadRes = await graphFetch(`/drives/${driveId}/root:/${itemPath}:/content`, {
+      method: "PUT",
+      headers: { "Content-Type": contentType },
+      body: contentBytes,
+      signal: ac.signal,
+    });
     if (!uploadRes.ok) {
       const err = await uploadRes.json().catch(() => ({}));
       throw new Error(`SharePoint upload failed ${uploadRes.status}: ${err?.error?.message || JSON.stringify(err)}`);
@@ -1034,7 +1110,7 @@ async function processMessage(message, mailbox = WORKORDERS_EMAIL, onStatus = nu
         if (linkText.length > 200) textForAI = withEmailBody(linkText);
       }
     } catch (err) {
-      console.error("Link fetch error:", err.message);
+      console.error("[email] Link fetch error:", err.message);
     }
   }
 
@@ -1175,16 +1251,37 @@ Return ONLY valid JSON with these exact keys:
           const attRes  = await graphFetch(`/users/${mailbox}/messages/${message.id}/attachments/${a.id}`);
           const attData = await attRes.json();
           const imgData = Uint8Array.from(atob(attData.contentBytes), c => c.charCodeAt(0));
-          console.log("Image attachment downloaded:", a.name);
+          console.log("[email] Image attachment downloaded:", a.name);
           return { name: a.name, data: imgData, contentType: a.contentType || "image/jpeg" };
         } catch (err) {
-          console.warn("Failed to download image attachment:", a.name, err.message);
+          console.warn("[email] Failed to download image attachment:", a.name, err.message);
           return null;
         }
       })
   )).filter(Boolean);
 
   return { result: parsed, rawEmail: rawBody, pdfAttachment, imageAttachments, emailMeta };
+}
+
+// Best-effort alert email to Brandon — used for both per-job warnings and
+// poll-loop-level failures. Never throws; a failure to send is only logged.
+async function sendAlertEmail(subject, htmlBody, context) {
+  try {
+    await graphFetch(`/users/${WORKORDERS_EMAIL}/sendMail`, {
+      method: "POST",
+      body: JSON.stringify({
+        message: {
+          subject,
+          toRecipients: [{ emailAddress: { address: BRANDON_EMAIL } }],
+          body: { contentType: "HTML", content: htmlBody },
+        },
+        saveToSentItems: false,
+      }),
+    });
+    console.log(`[alert] Email sent — ${context}`);
+  } catch (err) {
+    console.error(`[alert] Failed to send email — ${context}:`, err.message);
+  }
 }
 
 // POLL LOOP
@@ -1246,11 +1343,11 @@ async function tagWholeConversation(mailbox, conversationId, excludeMessageId, t
           body: JSON.stringify({ categories }),
         });
       } catch (err) {
-        console.warn("Failed to tag conversation message:", m.id, err.message);
+        console.warn("[poll] Failed to tag conversation message:", m.id, err.message);
       }
     }
   } catch (err) {
-    console.warn("tagWholeConversation failed:", err.message);
+    console.warn("[poll] tagWholeConversation failed:", err.message);
   }
 }
 
@@ -1283,7 +1380,7 @@ async function pollInbox(mailbox) {
   const messages = (data.value || [])
     .filter(m => !m.categories.some(c => c.startsWith("Job created")))
     .sort((a, b) => new Date(b.receivedDateTime) - new Date(a.receivedDateTime));
-  console.log(`Poll (${mailbox}): ${messages.length} email(s) found`);
+  console.log(`[poll] (${mailbox}): ${messages.length} email(s) found`);
 
   for (const message of messages) {
     const siblingTag = message.conversationId
@@ -1291,7 +1388,7 @@ async function pollInbox(mailbox) {
       : null;
     if (siblingTag) {
       const jobNumber = siblingTag.split(" - ")[1] || siblingTag;
-      console.log(`Reply to already-processed thread — tagging as duplicate of ${siblingTag}:`, message.subject);
+      console.log(`[poll] Reply to already-processed thread — tagging as duplicate of ${siblingTag}:`, message.subject);
       await graphFetch(`/users/${mailbox}/messages/${message.id}`, {
         method: "PATCH",
         body: JSON.stringify({ categories: [...message.categories.filter(c => !STATUS_CATEGORIES.includes(c)), `Existing job - ${jobNumber}`] }),
@@ -1300,7 +1397,7 @@ async function pollInbox(mailbox) {
     }
 
     let currentCategories = await setJobStatus(mailbox, message.id, message.categories, READING_EMAIL_CATEGORY);
-    console.log("Reading:", message.subject);
+    console.log("[poll] Reading:", message.subject);
 
     try {
       const onStatus = async (status) => {
@@ -1320,16 +1417,19 @@ async function pollInbox(mailbox) {
 
       await onStatus(CREATING_JOB_CATEGORY);
       const { jobNumber, warnings: jobWarnings } = await createArofloJob(result, rawEmail, pdfAttachment, emailMeta, imageAttachments);
-      logAiOutput(result, message.subject).catch(err => console.warn("logAiOutput:", err.message));
-      logActivity("Job created", jobNumber).catch(err => console.warn("logActivity:", err.message));
+      logAiOutput(result, message.subject).catch(err => console.warn("[airtable] logAiOutput:", err.message));
+      logActivity("Job created", jobNumber).catch(err => console.warn("[airtable] logActivity:", err.message));
       const allWarnings = [...preWarnings, ...jobWarnings];
 
-      // Always apply job tag to prevent re-processing; add a specific tag for each failure
+      // Always apply job tag to prevent re-processing; add a specific tag for each distinct
+      // failure type (multiple failures of the same kind — e.g. several failed photo
+      // uploads — share one tag rather than repeating it).
       const jobTag = `Job created - ${jobNumber}`;
+      const warningTags = [...new Set(allWarnings.map(w => w.tag))];
       const finalCategories = [
         ...currentCategories.filter(c => !STATUS_CATEGORIES.includes(c)),
         jobTag,
-        ...allWarnings.map(w => w.tag),
+        ...warningTags,
       ];
       await graphFetch(`/users/${mailbox}/messages/${message.id}`, {
         method: "PATCH",
@@ -1337,45 +1437,31 @@ async function pollInbox(mailbox) {
       });
       currentCategories = finalCategories;
       tagWholeConversation(mailbox, message.conversationId, message.id, jobTag)
-        .catch(err => console.warn("tagWholeConversation:", err.message));
+        .catch(err => console.warn("[poll] tagWholeConversation:", err.message));
 
       if (allWarnings.length > 0) {
-        console.warn("Job created with issues:", allWarnings.map(w => w.tag));
-        try {
-          const warningLines = allWarnings.map(w => `<li style="margin:4px 0;font-family:sans-serif;font-size:14px"><strong>${w.tag}:</strong> ${w.detail}</li>`).join("");
-          await graphFetch(`/users/${WORKORDERS_EMAIL}/sendMail`, {
-            method: "POST",
-            body: JSON.stringify({
-              message: {
-                subject: `Action required — Job ${jobNumber} created with issues`,
-                toRecipients: [{ emailAddress: { address: BRANDON_EMAIL } }],
-                body: {
-                  contentType: "HTML",
-                  content: `<p style="font-family:sans-serif;font-size:14px">Job <strong>${jobNumber}</strong> was created in Aroflo but the following need attention:</p><ul>${warningLines}</ul><p style="font-family:sans-serif;font-size:12px;color:#888">Original email: ${message.subject}</p>`,
-                },
-              },
-              saveToSentItems: false,
-            }),
-          });
-          console.log("Alert email sent for job:", jobNumber);
-        } catch (alertErr) {
-          console.error("Failed to send alert email for job", jobNumber, alertErr.message);
-        }
+        console.warn("[job] Created with issues:", allWarnings.map(w => w.tag));
+        const warningLines = allWarnings.map(w => `<li style="margin:4px 0;font-family:sans-serif;font-size:14px"><strong>${escapeHtml(w.tag)}:</strong> ${escapeHtml(w.detail)}</li>`).join("");
+        await sendAlertEmail(
+          `Action required — Job ${jobNumber} created with issues`,
+          `<p style="font-family:sans-serif;font-size:14px">Job <strong>${escapeHtml(jobNumber)}</strong> was created in Aroflo but the following need attention:</p><ul>${warningLines}</ul><p style="font-family:sans-serif;font-size:12px;color:#888">Original email: ${escapeHtml(message.subject)}</p>`,
+          `job ${jobNumber}`
+        );
       } else {
-        console.log("Tagged as done:", message.subject);
+        console.log("[poll] Tagged as done:", message.subject);
       }
     } catch (err) {
-      console.error("Error processing message:", message.subject, err.message);
+      console.error("[poll] Error processing message:", message.subject, err.message);
       if (err.message.startsWith("Client not found")) {
         await setJobStatus(mailbox, message.id, currentCategories, CLIENT_NOT_FOUND_CATEGORY);
-        console.log("Tagged as client not found:", message.subject);
+        console.log("[poll] Tagged as client not found:", message.subject);
       } else if (err.message.startsWith("No address found")) {
         await setJobStatus(mailbox, message.id, currentCategories, NO_ADDRESS_CATEGORY);
-        console.log("Tagged as no address:", message.subject);
+        console.log("[poll] Tagged as no address:", message.subject);
       } else {
         // Tag as "Failed" — remove it in Outlook to retry
         await setJobStatus(mailbox, message.id, currentCategories, FAILED_CATEGORY);
-        console.log("Tagged as failed:", message.subject);
+        console.log("[poll] Tagged as failed:", message.subject);
       }
     }
   }
@@ -1383,51 +1469,36 @@ async function pollInbox(mailbox) {
 
 async function pollEmails() {
   if (pollRunning) {
-    console.log("Poll skipped — previous run still in progress");
+    console.log("[poll] Skipped — previous run still in progress");
     return;
   }
   pollRunning = true;
   try {
     await pollInbox(WORKORDERS_EMAIL);
-    await pollInbox(BRANDON_EMAIL);
   } catch (err) {
-    console.error("Poll error:", err);
+    console.error("[poll] Poll error:", err);
+    await sendAlertEmail(
+      "Action required — work order poll failed",
+      `<p style="font-family:sans-serif;font-size:14px">The email poll loop failed with an error and did not finish checking for new work orders:</p><pre style="font-family:monospace;font-size:12px;background:#f5f5f5;padding:8px;border-radius:4px">${escapeHtml(err.message || String(err))}</pre><p style="font-family:sans-serif;font-size:12px;color:#888">This will retry automatically on the next poll cycle.</p>`,
+      "poll loop failure"
+    );
   } finally {
     pollRunning = false;
   }
 }
 
-
-// ================================================================
-// Manual trigger to process Brandon's inbox immediately
-// ================================================================
-app.get("/run-from-inbox", async (req, res) => {
-  if (pollRunning) {
-    res.json({ status: "skipped", reason: "poll already running" });
-    return;
-  }
-  res.json({ status: "triggered" });
-  pollRunning = true;
-  try {
-    await pollInbox(BRANDON_EMAIL);
-  } catch (err) {
-    console.error("run-from-inbox error:", err.message);
-  } finally {
-    pollRunning = false;
-  }
-});
-
 // ================================================================
 // TEMP: Dump client cache as JSON — GET /clients
 // ================================================================
-app.get("/clients", (req, res) => {
+app.get("/clients", requireApiKey, (req, res) => {
   res.json({
     count: clientCache.size,
+    lastLoaded: clientCacheLastLoaded,
     clients: [...clientCache.values()].map(c => ({ clientid: c.clientid, clientname: c.clientname })),
   });
 });
 
-app.get("/find-client", async (req, res) => {
+app.get("/find-client", requireApiKey, async (req, res) => {
   const name = req.query.name;
   if (!name) return res.status(400).json({ error: "Pass ?name=..." });
   const result = await findClient(name);
@@ -1442,8 +1513,8 @@ app.get("/find-client", async (req, res) => {
 // ================================================================
 // AROFLO WEBHOOK — new client created
 // ================================================================
-app.post("/aroflo-webhook", express.json(), async (req, res) => {
-  console.log("Aroflo webhook received:", JSON.stringify(req.body));
+app.post("/aroflo-webhook", requireApiKey, express.json(), async (req, res) => {
+  console.log("[webhook] Aroflo webhook received:", JSON.stringify(req.body));
   res.sendStatus(200);
   await loadClientCache();
 });
@@ -1452,7 +1523,7 @@ app.post("/aroflo-webhook", express.json(), async (req, res) => {
 // START
 // ================================================================
 app.listen(process.env.PORT || 3000, async () => {
-  console.log(`Server running — deployed ${new Date().toISOString()}`);
+  console.log(`[startup] Server running — deployed ${new Date().toISOString()}`);
   // Wait for the client cache before polling — otherwise a work order sitting
   // in the inbox at deploy time gets processed against an empty cache and
   // falls back to a less reliable single-candidate live API lookup.
