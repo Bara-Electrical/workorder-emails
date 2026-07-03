@@ -866,25 +866,22 @@ async function emailHtmlForNote(html, oneDriveUrl = null, emailMeta = null) {
   return `${metaHtml}<hr style="border:none;border-top:1px solid #dddddd;margin:0 0 14px 0"><div>${cleaned}</div>`;
 }
 
-// A plain driveItem webUrl opens the file in isolation with no folder context, so there's
-// no gallery navigation. SharePoint's "browse in folder" deep link (onedrive.aspx with id +
-// parent params) loads the file's parent folder alongside it, which gives the native
-// prev/next arrow navigation between sibling files.
-function buildFolderPreviewUrl(webUrl) {
+// A plain driveItem webUrl opens the file in isolation with no folder context — no gallery
+// navigation. Browsing to the parent folder and clicking a photo from there does give
+// SharePoint's native arrow navigation between sibling files (confirmed manually), so every
+// thumbnail links to the shared folder rather than a single-file deep link.
+function buildFolderUrl(webUrl) {
   const u = new URL(webUrl);
-  const filePath = decodeURIComponent(u.pathname);
-  const parentPath = filePath.slice(0, filePath.lastIndexOf("/"));
-  const segments = filePath.split("/").filter(Boolean); // ["sites", "BaraElectricalServices", ...]
-  const siteBase = `${u.origin}/${segments[0]}/${segments[1]}`;
-  return `${siteBase}/_layouts/15/onedrive.aspx?id=${encodeURIComponent(filePath)}&parent=${encodeURIComponent(parentPath)}`;
+  return u.origin + u.pathname.slice(0, u.pathname.lastIndexOf("/"));
 }
 
-// Small clickable thumbnail grid, posted as its own note. Clicking a thumbnail opens that
-// specific photo in SharePoint with its folder context loaded; because all the job's photos
-// live in the same folder, the tech can still arrow through the rest from there.
+// Small clickable thumbnail grid, posted as its own note. Every thumbnail links to the same
+// job photo folder — opening it gives SharePoint's native gallery view where the tech can
+// click through all of the job's photos with arrow navigation.
 function buildPhotoGalleryNote(photos) {
+  const folderUrl = buildFolderUrl(photos[0].webUrl);
   const thumbs = photos.map(p =>
-    `<a href="${buildFolderPreviewUrl(p.webUrl)}" target="_blank"><img src="${p.thumbnailUrl || p.webUrl}" alt="${p.name}" style="width:110px;height:110px;object-fit:cover;margin:4px;border-radius:4px;border:1px solid #dddddd" /></a>`
+    `<a href="${folderUrl}" target="_blank"><img src="${p.thumbnailUrl || p.webUrl}" alt="${p.name}" style="width:110px;height:110px;object-fit:cover;margin:4px;border-radius:4px;border:1px solid #dddddd" /></a>`
   ).join("");
 
   const titleRow = `Photos (${photos.length})`;
@@ -1769,7 +1766,7 @@ app.get("/test-photo-note", async (req, res) => {
 
     res.json({
       taskId,
-      photos: photos.map(p => ({ ...p, galleryUrl: buildFolderPreviewUrl(p.webUrl) })),
+      photos: photos.map(p => ({ ...p, folderUrl: buildFolderUrl(p.webUrl) })),
       noteApplied: Number(upZone.postresults?.updatetotal ?? 0) > 0,
     });
   } catch (err) {
