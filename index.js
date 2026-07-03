@@ -1513,60 +1513,6 @@ app.get("/find-client", requireApiKey, async (req, res) => {
   res.json({ result, exactCacheHit: exactCacheHit?.clientname || null, partialMatches });
 });
 
-// TEMP: inspect a job's current state and re-attempt a trivial substatus update, to tell
-// a genuine transient Aroflo error apart from a real payload bug on our end.
-// GET /debug-task?job=103724
-app.get("/debug-task", requireApiKey, async (req, res) => {
-  const jobNumber = req.query.job;
-  if (!jobNumber) return res.status(400).json({ error: "Pass ?job=<jobnumber>" });
-  try {
-    const fetched = await arofloGet("zone=tasks&where=" + encodeURIComponent(`and|jobnumber|=|${jobNumber}`) + "&page=1");
-    const task = toArray(fetched.tasks)[0];
-    if (!task) return res.json({ error: `No task found for job ${jobNumber}` });
-
-    let retryResult = null;
-    if (req.query.retrySubstatus === "1") {
-      try {
-        const updateXml = `<tasks><task><taskid>${task.taskid}</taskid><status>not started</status><substatus><substatusid>Iyc6LyYK</substatusid></substatus></task></tasks>`;
-        const upZone = await arofloPost("zone=tasks&postxml=" + encodeURIComponent(updateXml));
-        retryResult = { ok: true, updatetotal: upZone.postresults?.updatetotal };
-      } catch (err) {
-        retryResult = { ok: false, error: err.message };
-      }
-    }
-
-    // Isolate size vs CDATA-splitting as the cause: post a synthetic note of a given size,
-    // optionally containing a literal "]]>" to exercise the split-CDATA path.
-    let noteTestResult = null;
-    if (req.query.noteTestSize) {
-      try {
-        const size = Number(req.query.noteTestSize);
-        const includeCdataBreak = req.query.noteTestBreak === "1";
-        let filler = "x".repeat(Math.max(0, size - 20));
-        if (includeCdataBreak) filler = filler.slice(0, -6) + " ]]> " + filler.slice(-6);
-        const noteHtml = `<p>Debug note test (${size} chars, break=${includeCdataBreak}): ${filler}</p>`;
-        const updateXml = `<tasks><task><taskid>${task.taskid}</taskid><notes><note><content>${cdata(noteHtml)}</content></note></notes></task></tasks>`;
-        const upZone = await arofloPost("zone=tasks&postxml=" + encodeURIComponent(updateXml));
-        noteTestResult = { ok: true, updatetotal: upZone.postresults?.updatetotal, xmlLength: updateXml.length };
-      } catch (err) {
-        noteTestResult = { ok: false, error: err.message };
-      }
-    }
-
-    res.json({
-      taskId: task.taskid,
-      jobnumber: task.jobnumber,
-      status: task.status,
-      substatus: task.substatus,
-      notesCount: toArray(task.notes).length,
-      retryResult,
-      noteTestResult,
-    });
-  } catch (err) {
-    res.json({ error: err.message });
-  }
-});
-
 // ================================================================
 // AROFLO WEBHOOK — new client created
 // ================================================================
