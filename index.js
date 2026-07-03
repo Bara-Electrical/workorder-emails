@@ -1713,22 +1713,41 @@ app.get("/test-photo-note", async (req, res) => {
     const taskId = arr[0]?.taskid;
     if (!taskId) return res.json({ error: `No task found for job ${jobNumber}` });
 
-    // Small solid-color PNG test fixtures — real enough for SharePoint to generate thumbnails.
-    const redPng = Buffer.from(
-      "iVBORw0KGgoAAAANSUhEUgAAAGQAAABkCAYAAABw4pVUAAAAI0lEQVR4nO3BAQ0AAADCoPdPbQ43oAAAAAAAAAAAAAAAAHgaJAAAAdE2QOsAAAAASUVORK5CYII=",
-      "base64"
+    // Pull real photo attachments from recent processed emails in Brandon's "AI done"
+    // folder, instead of synthetic test images, to rule out SharePoint choking on fake files.
+    const doneFolder = await getAiDoneFolderId();
+    if (!doneFolder) return res.json({ error: "'AI done' folder not found" });
+    const listRes = await graphFetch(
+      `/users/${BRANDON_EMAIL}/mailFolders/${doneFolder}/messages` +
+      `?$filter=${encodeURIComponent("hasAttachments eq true")}` +
+      `&$select=id,subject&$orderby=receivedDateTime desc&$top=20`
     );
-    const bluePng = Buffer.from(
-      "iVBORw0KGgoAAAANSUhEUgAAAGQAAABkCAYAAABw4pVUAAAAI0lEQVR4nO3BMQEAAADCIPunfjkKYAAAAAAAAAAAAAAAAOA1JAAAAV8Q3TQAAAAASUVORK5CYII=",
-      "base64"
-    );
+    const listData = await listRes.json();
+    const candidates = listData.value || [];
+
+    const realPhotos = [];
+    for (const msg of candidates) {
+      if (realPhotos.length >= 2) break;
+      const attRes  = await graphFetch(`/users/${BRANDON_EMAIL}/messages/${msg.id}/attachments`);
+      const attData = await attRes.json();
+      for (const a of (attData.value || [])) {
+        if (realPhotos.length >= 2) break;
+        if (/inky/i.test(a.name || "")) continue;
+        if (!(/\.(jpe?g|png|gif|bmp|webp)$/i.test(a.name || "") || (a.contentType || "").startsWith("image/"))) continue;
+        if (!a.contentBytes) continue;
+        realPhotos.push({ name: a.name, contentType: a.contentType || "image/jpeg", data: Buffer.from(a.contentBytes, "base64") });
+      }
+    }
+    if (realPhotos.length === 0) return res.json({ error: "No real photo attachments found in 'AI done' folder to test with" });
+
     const driveId = await getSharepointDriveId();
-    const item1 = await uploadPhotoToOneDrive(jobNumber, "test-photo-1.png", redPng, "image/png");
-    const item2 = await uploadPhotoToOneDrive(jobNumber, "test-photo-2.png", bluePng, "image/png");
-    const photos = [
-      { name: "test-photo-1.png", webUrl: item1.webUrl, thumbnailUrl: await getThumbnailUrl(driveId, item1.id).catch(() => null) },
-      { name: "test-photo-2.png", webUrl: item2.webUrl, thumbnailUrl: await getThumbnailUrl(driveId, item2.id).catch(() => null) },
-    ];
+    const photos = [];
+    for (const [i, rp] of realPhotos.entries()) {
+      const filename = `test-real-${i + 1}-${rp.name}`;
+      const item = await uploadPhotoToOneDrive(jobNumber, filename, rp.data, rp.contentType);
+      const thumbnailUrl = await getThumbnailUrl(driveId, item.id).catch(() => null);
+      photos.push({ name: filename, webUrl: item.webUrl, thumbnailUrl });
+    }
 
     const noteHtml = `<p><strong>Test note</strong> — photo gallery check.</p>` + buildPhotoGalleryNote(photos);
     const updateXml =
