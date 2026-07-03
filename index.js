@@ -881,7 +881,7 @@ function buildFolderUrl(webUrl) {
 function buildPhotoGalleryNote(photos) {
   const folderUrl = buildFolderUrl(photos[0].webUrl);
   const thumbs = photos.map(p =>
-    `<a href="${folderUrl}" target="_blank"><img src="${p.thumbnailUrl || p.webUrl}" alt="${p.name}" style="width:110px;height:110px;object-fit:cover;margin:4px;border-radius:4px;border:1px solid #dddddd" /></a>`
+    `<a href="${folderUrl}" target="_blank"><img src="${p.thumbnailUrl || p.webUrl}" alt="${p.name}" style="width:110px;height:110px;object-fit:cover;margin:0 8px 8px 0;border-radius:4px;border:1px solid #dddddd" /></a>`
   ).join("");
 
   const titleRow = `Photos (${photos.length})`;
@@ -1696,82 +1696,6 @@ app.get("/find-client", async (req, res) => {
     .filter(c => c.clientname.toLowerCase().includes(key) || key.includes(c.clientname.toLowerCase()))
     .map(c => c.clientname);
   res.json({ result, exactCacheHit: exactCacheHit?.clientname || null, partialMatches });
-});
-
-// TEMP: exercise the per-job photo-folder + thumbnail-gallery note flow against a real job,
-// without going through the full email pipeline. GET /test-photo-note?job=103681
-// ================================================================
-app.get("/test-photo-note", async (req, res) => {
-  const jobNumber = req.query.job;
-  if (!jobNumber) return res.status(400).json({ error: "Pass ?job=<jobnumber>" });
-  try {
-    const fetched = await arofloGet("zone=tasks&where=" + encodeURIComponent(`and|jobnumber|=|${jobNumber}`) + "&page=1");
-    const arr = Array.isArray(fetched.tasks) ? fetched.tasks : [fetched.tasks];
-    const taskId = arr[0]?.taskid;
-    if (!taskId) return res.json({ error: `No task found for job ${jobNumber}` });
-
-    // Pull real photo attachments from recent processed emails in Brandon's "AI done"
-    // folder, instead of synthetic test images, to rule out SharePoint choking on fake files.
-    const doneFolder = await getAiDoneFolderId();
-    if (!doneFolder) return res.json({ error: "'AI done' folder not found" });
-    const listRes = await graphFetch(
-      `/users/${BRANDON_EMAIL}/mailFolders/${doneFolder}/messages` +
-      `?$select=id,subject,hasAttachments&$orderby=receivedDateTime desc&$top=60`
-    );
-    const listData = await listRes.json();
-    if (!listRes.ok) return res.json({ error: "Graph list query failed", status: listRes.status, detail: listData?.error });
-    const candidates = (listData.value || []).filter(m => m.hasAttachments);
-
-    const realPhotos = [];
-    const seenAttachmentNames = [];
-    for (const msg of candidates) {
-      if (realPhotos.length >= 2) break;
-      const attRes  = await graphFetch(`/users/${BRANDON_EMAIL}/messages/${msg.id}/attachments`);
-      const attData = await attRes.json();
-      for (const a of (attData.value || [])) {
-        seenAttachmentNames.push(a.name);
-        if (realPhotos.length >= 2) break;
-        if (/inky/i.test(a.name || "")) continue;
-        if (!(/\.(jpe?g|png|gif|bmp|webp)$/i.test(a.name || "") || (a.contentType || "").startsWith("image/"))) continue;
-        if (!a.contentBytes) continue;
-        realPhotos.push({ name: a.name, contentType: a.contentType || "image/jpeg", data: Buffer.from(a.contentBytes, "base64") });
-      }
-    }
-    if (realPhotos.length === 0) {
-      return res.json({
-        error: "No real photo attachments found in 'AI done' folder to test with",
-        candidatesChecked: candidates.length,
-        attachmentNamesSeen: seenAttachmentNames.slice(0, 40),
-      });
-    }
-
-    const driveId = await getSharepointDriveId();
-    const photos = [];
-    for (const [i, rp] of realPhotos.entries()) {
-      const filename = `test-real-${i + 1}-${rp.name}`;
-      const item = await uploadPhotoToOneDrive(jobNumber, filename, rp.data, rp.contentType);
-      const thumbnailUrl = await getThumbnailUrl(driveId, item.id).catch(() => null);
-      photos.push({ name: filename, webUrl: item.webUrl, thumbnailUrl });
-    }
-
-    const noteHtml = `<p><strong>Test note</strong> — photo gallery check.</p>` + buildPhotoGalleryNote(photos);
-    const updateXml =
-`<tasks>
-  <task>
-    <taskid>${taskId}</taskid>
-    <notes><note><content><![CDATA[${noteHtml}]]></content></note></notes>
-  </task>
-</tasks>`;
-    const upZone = await arofloPost("zone=tasks&postxml=" + encodeURIComponent(updateXml));
-
-    res.json({
-      taskId,
-      photos: photos.map(p => ({ ...p, folderUrl: buildFolderUrl(p.webUrl) })),
-      noteApplied: Number(upZone.postresults?.updatetotal ?? 0) > 0,
-    });
-  } catch (err) {
-    res.json({ error: err.message });
-  }
 });
 
 // ================================================================
