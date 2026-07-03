@@ -1518,7 +1518,7 @@ app.get("/inspect-job", requireApiKey, async (req, res) => {
   const jobNumber = req.query.job;
   if (!jobNumber) return res.status(400).json({ error: "Pass ?job=<jobnumber>" });
   try {
-    const fetched = await arofloGet("zone=tasks&where=" + encodeURIComponent(`and|jobnumber|=|${jobNumber}`) + "&page=1");
+    const fetched = await arofloGet("zone=tasks&where=" + encodeURIComponent(`and|jobnumber|=|${jobNumber}`) + "&join=" + encodeURIComponent("notes") + "&page=1");
     const task = toArray(fetched.tasks)[0];
     if (!task) return res.json({ error: `No task found for job ${jobNumber}` });
 
@@ -1528,7 +1528,7 @@ app.get("/inspect-job", requireApiKey, async (req, res) => {
       const zone = await arofloGet("zone=clients&join=" + encodeURIComponent("locations") + "&where=" + encodeURIComponent(`and|clientid|=|${clientId}`) + "&page=1");
       locations = toArray(toArray(zone.clients)[0]?.locations);
     }
-    const locationId = task.location?.locationid;
+    const locationId = task.tasklocation?.locationid;
     const matchedLocation = locations.find(l => l.locationid === locationId);
 
     res.json({
@@ -1536,10 +1536,10 @@ app.get("/inspect-job", requireApiKey, async (req, res) => {
       jobnumber: task.jobnumber,
       taskname: task.taskname,
       description: task.description,
-      sitename: task.sitename,
-      location: task.location,
+      tasklocation: task.tasklocation,
       client: task.client,
       matchedLocation,
+      notes: toArray(task.tasknotes || task.notes),
       rawTaskKeys: Object.keys(task),
       raw: req.query.raw === "1" ? task : undefined,
     });
