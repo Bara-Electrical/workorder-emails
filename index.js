@@ -866,12 +866,25 @@ async function emailHtmlForNote(html, oneDriveUrl = null, emailMeta = null) {
   return `${metaHtml}<hr style="border:none;border-top:1px solid #dddddd;margin:0 0 14px 0"><div>${cleaned}</div>`;
 }
 
+// A plain driveItem webUrl opens the file in isolation with no folder context, so there's
+// no gallery navigation. SharePoint's "browse in folder" deep link (onedrive.aspx with id +
+// parent params) loads the file's parent folder alongside it, which gives the native
+// prev/next arrow navigation between sibling files.
+function buildFolderPreviewUrl(webUrl) {
+  const u = new URL(webUrl);
+  const filePath = decodeURIComponent(u.pathname);
+  const parentPath = filePath.slice(0, filePath.lastIndexOf("/"));
+  const segments = filePath.split("/").filter(Boolean); // ["sites", "BaraElectricalServices", ...]
+  const siteBase = `${u.origin}/${segments[0]}/${segments[1]}`;
+  return `${siteBase}/_layouts/15/onedrive.aspx?id=${encodeURIComponent(filePath)}&parent=${encodeURIComponent(parentPath)}`;
+}
+
 // Small clickable thumbnail grid, posted as its own note. Clicking a thumbnail opens that
-// specific photo in SharePoint; because all the job's photos live in the same folder, the
-// tech can still arrow through the rest from there.
+// specific photo in SharePoint with its folder context loaded; because all the job's photos
+// live in the same folder, the tech can still arrow through the rest from there.
 function buildPhotoGalleryNote(photos) {
   const thumbs = photos.map(p =>
-    `<a href="${p.webUrl}" target="_blank"><img src="${p.thumbnailUrl || p.webUrl}" alt="${p.name}" style="width:110px;height:110px;object-fit:cover;margin:4px;border-radius:4px;border:1px solid #dddddd" /></a>`
+    `<a href="${buildFolderPreviewUrl(p.webUrl)}" target="_blank"><img src="${p.thumbnailUrl || p.webUrl}" alt="${p.name}" style="width:110px;height:110px;object-fit:cover;margin:4px;border-radius:4px;border:1px solid #dddddd" /></a>`
   ).join("");
 
   const titleRow = `Photos (${photos.length})`;
@@ -1729,7 +1742,7 @@ app.get("/test-photo-note", async (req, res) => {
 
     res.json({
       taskId,
-      photos,
+      photos: photos.map(p => ({ ...p, galleryUrl: buildFolderPreviewUrl(p.webUrl) })),
       noteApplied: Number(upZone.postresults?.updatetotal ?? 0) > 0,
     });
   } catch (err) {
