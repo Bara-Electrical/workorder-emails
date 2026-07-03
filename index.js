@@ -1544,11 +1544,11 @@ app.get("/reextract-job", requireApiKey, async (req, res) => {
 
     const threadRes = await graphFetch(
       `/users/${WORKORDERS_EMAIL}/messages?$filter=${encodeURIComponent(`conversationId eq '${convId}'`)}` +
-      `&$select=id,subject,from,body,receivedDateTime&$expand=attachments($select=id,name,contentType,size)&$top=25&$orderby=receivedDateTime asc`
+      `&$select=id,subject,from,body,receivedDateTime&$expand=attachments($select=id,name,contentType,size)&$top=25`
     );
     const threadData = await threadRes.json();
     if (!threadRes.ok) return res.status(500).json({ error: "Thread fetch failed", detail: threadData });
-    const messages = threadData.value || [];
+    const messages = (threadData.value || []).sort((a, b) => new Date(a.receivedDateTime) - new Date(b.receivedDateTime));
 
     // Find the first PDF work order attachment anywhere in the thread
     let pdfMessage = null, pdfAttachmentMeta = null;
