@@ -49,7 +49,6 @@ const NO_ADDRESS_CATEGORY       = "No address";
 const READING_EMAIL_CATEGORY    = "Reading Email";
 const SENDING_TO_AI_CATEGORY    = "Sending to AI";
 const CREATING_JOB_CATEGORY     = "Creating Job";
-const RICA_CATEGORY             = "Rica";
 const WORKORDERS_EMAIL          = "workorders@baraelectrical.com.au";
 const BRANDON_EMAIL             = "brandon.roberts@baraelectrical.com.au";
 const POLL_INTERVAL_MS          = 5 * 60 * 1000;
@@ -1188,196 +1187,6 @@ Return ONLY valid JSON with these exact keys:
   return { result: parsed, rawEmail: rawBody, pdfAttachment, imageAttachments, emailMeta };
 }
 
-// ================================================================
-// RICA FORWARD LOOP
-// ================================================================
-async function forwardRicaEmails() {
-  try {
-    // Read Rica-tagged emails from workorders inbox — read-only, nothing changes there
-    const filter = encodeURIComponent(`categories/any(c:c eq '${RICA_CATEGORY}')`);
-    const res    = await graphFetch(
-      `/users/${WORKORDERS_EMAIL}/mailFolders/inbox/messages` +
-      `?$filter=${filter}&$select=id,subject,body,hasAttachments&$top=50`
-    );
-    const data = await res.json();
-    if (!res.ok) throw new Error(`Graph API error ${res.status}: ${JSON.stringify(data?.error)}`);
-
-    const emails = data.value || [];
-    if (emails.length) console.log(`Rica: ${emails.length} tagged email(s) in workorders inbox`);
-
-    const aiTestingFolder = await getAiTestingFolderId();
-    const aiDoneFolder    = await getAiDoneFolderId();
-
-    for (const email of emails) {
-      const fwdSubject  = `AI testing - FW: ${email.subject}`;
-      const safeSubj    = fwdSubject.replace(/'/g, "''");
-      const dedupFilter = encodeURIComponent(`subject eq '${safeSubj}'`);
-
-      // Dedup: check "AI testing" folder (unprocessed) and "AI done" folder (already processed)
-      const testingFolder = aiTestingFolder
-        ? `/users/${BRANDON_EMAIL}/mailFolders/${aiTestingFolder}/messages`
-        : `/users/${BRANDON_EMAIL}/mailFolders/inbox/messages`;
-      const dedupRes  = await graphFetch(`${testingFolder}?$filter=${dedupFilter}&$select=id&$top=1`);
-      const dedupData = await dedupRes.json();
-      if (dedupData.value?.length > 0) continue;
-
-      if (aiDoneFolder) {
-        const doneRes  = await graphFetch(`/users/${BRANDON_EMAIL}/mailFolders/${aiDoneFolder}/messages?$filter=${dedupFilter}&$select=id&$top=1`);
-        const doneData = await doneRes.json();
-        if (doneData.value?.length > 0) continue;
-      }
-
-      // Fetch attachments if present
-      let attachments = [];
-      if (email.hasAttachments) {
-        const attRes  = await graphFetch(`/users/${WORKORDERS_EMAIL}/messages/${email.id}/attachments`);
-        const attData = await attRes.json();
-        attachments = (attData.value || []).map(a => ({
-          "@odata.type": "#microsoft.graph.fileAttachment",
-          name:         a.name,
-          contentType:  a.contentType,
-          contentBytes: a.contentBytes,
-        }));
-      }
-
-      // Strip Graph metadata from body before sending — passing email.body directly
-      // can cause Exchange to ignore the custom subject
-      const message = {
-        subject:      fwdSubject,
-        body:         { contentType: email.body?.contentType || "html", content: email.body?.content || "" },
-        toRecipients: [{ emailAddress: { address: BRANDON_EMAIL } }],
-      };
-      if (attachments.length) message.attachments = attachments;
-
-      console.log("Rica: sending with subject:", fwdSubject);
-      const sendRes = await graphFetch(`/users/${WORKORDERS_EMAIL}/sendMail`, {
-        method: "POST",
-        body: JSON.stringify({ message, saveToSentItems: false }),
-      });
-
-      if (!sendRes.ok) {
-        const sendErr = await sendRes.json().catch(() => ({}));
-        console.warn("Rica send failed:", email.subject, sendRes.status, JSON.stringify(sendErr?.error));
-        continue;
-      }
-      console.log("Rica sent to Brandon:", fwdSubject);
-    }
-  } catch (err) {
-    console.error("Rica forward error:", err.message);
-  }
-}
-
-// ================================================================
-// AI TESTING LOOP — process emails in Brandon's "AI testing" folder,
-// reply with extracted info, no Aroflo job created
-// ================================================================
-let aiTestingFolderId  = null;
-let aiDoneFolderId     = null;
-let aiTestingRunning   = false;
-
-async function getAiTestingFolderId() {
-  if (aiTestingFolderId) return aiTestingFolderId;
-  const res  = await graphFetch(`/users/${BRANDON_EMAIL}/mailFolders?$select=id,displayName&$top=50`);
-  const data = await res.json();
-  const folder = (data.value || []).find(f => f.displayName === "AI testing");
-  aiTestingFolderId = folder?.id || null;
-  if (!aiTestingFolderId) console.warn("AI testing: 'AI testing' folder not found in Brandon's mailbox");
-  return aiTestingFolderId;
-}
-
-async function getAiDoneFolderId() {
-  if (aiDoneFolderId) return aiDoneFolderId;
-  const res  = await graphFetch(`/users/${BRANDON_EMAIL}/mailFolders?$select=id,displayName&$top=50`);
-  const data = await res.json();
-  const folder = (data.value || []).find(f => f.displayName === "AI done");
-  aiDoneFolderId = folder?.id || null;
-  if (!aiDoneFolderId) console.warn("AI testing: 'AI done' folder not found in Brandon's mailbox");
-  return aiDoneFolderId;
-}
-
-async function processAiTestingEmails() {
-  if (aiTestingRunning) return;
-  aiTestingRunning = true;
-  try {
-    console.log("AI testing: checking...");
-    const folderId = await getAiTestingFolderId();
-    if (!folderId) {
-      console.log("AI testing: folder not found, skipping");
-      return;
-    }
-
-    const res  = await graphFetch(
-      `/users/${BRANDON_EMAIL}/mailFolders/${folderId}/messages` +
-      `?$select=id,subject,body,categories,internetMessageId` +
-      `&$expand=attachments($select=id,name,contentType,size)` +
-      `&$top=50`
-    );
-    const data = await res.json();
-    if (!res.ok) throw new Error(`Graph error ${res.status}: ${JSON.stringify(data?.error)}`);
-
-    const messages = (data.value || []).filter(m => !/^re:/i.test(m.subject));
-    console.log(`AI testing: ${messages.length} email(s) to process`);
-
-    for (const message of messages) {
-      try {
-        const { result } = await processMessage(message, BRANDON_EMAIL);
-        console.log("AI testing result:", result);
-        await logAiOutput(result, message.subject);
-
-        const confidence = result["confidence"] ?? null;
-        const aiNotes    = result["notes"] || null;
-        const skipKeys   = new Set(["confidence", "notes"]);
-        const rows = Object.entries(result)
-          .filter(([k]) => !skipKeys.has(k))
-          .map(([k, v]) => `<tr><td style="padding:3px 16px 3px 0;font-weight:bold;vertical-align:top">${k}</td><td style="padding:3px 0">${v ?? "<em>not found</em>"}</td></tr>`)
-          .join("");
-
-        const confidenceColour = confidence >= 0.8 ? "#2e7d32" : confidence >= 0.5 ? "#e65100" : "#c62828";
-        const confidenceHtml = confidence !== null
-          ? `<p style="font-family:sans-serif;font-size:14px"><strong>Confidence:</strong> <span style="color:${confidenceColour};font-weight:bold">${confidence}</span></p>`
-          : "";
-        const notesHtml = aiNotes
-          ? `<p style="font-family:sans-serif;font-size:14px;color:#555"><strong>AI Notes:</strong> ${aiNotes}</p>`
-          : "";
-
-        const sendRes = await graphFetch(`/users/${BRANDON_EMAIL}/messages/${message.id}/reply`, {
-          method: "POST",
-          body: JSON.stringify({
-            message: {
-              toRecipients: [{ emailAddress: { address: BRANDON_EMAIL } }],
-              body: {
-                contentType: "HTML",
-                content: `${confidenceHtml}${notesHtml}<p><strong>AI extracted the following from this work order:</strong></p><table style="font-family:sans-serif;font-size:14px;border-collapse:collapse">${rows}</table>`,
-              },
-            },
-          }),
-        });
-        if (!sendRes.ok) {
-          const err = await sendRes.json().catch(() => ({}));
-          throw new Error(`Send failed ${sendRes.status}: ${JSON.stringify(err?.error)}`);
-        }
-
-        // Move to AI done folder so it won't be reprocessed
-        const doneFolderId = await getAiDoneFolderId();
-        if (doneFolderId) {
-          await graphFetch(`/users/${BRANDON_EMAIL}/messages/${message.id}/move`, {
-            method: "POST",
-            body: JSON.stringify({ destinationId: doneFolderId }),
-          });
-        }
-
-        console.log("AI testing: replied to", message.subject);
-      } catch (err) {
-        console.error("AI testing error:", message.subject, err.message);
-      }
-    }
-  } catch (err) {
-    console.error("AI testing poll error:", err.message);
-  } finally {
-    aiTestingRunning = false;
-  }
-}
-
 // POLL LOOP
 // ================================================================
 async function setJobStatus(mailbox, messageId, currentCategories, newStatus) {
@@ -1590,14 +1399,6 @@ async function pollEmails() {
 
 
 // ================================================================
-// Manual trigger for AI testing check
-// ================================================================
-app.get("/run-ai-test", async (req, res) => {
-  res.json({ status: "triggered" });
-  await processAiTestingEmails();
-});
-
-// ================================================================
 // Manual trigger to process Brandon's inbox immediately
 // ================================================================
 app.get("/run-from-inbox", async (req, res) => {
@@ -1613,66 +1414,6 @@ app.get("/run-from-inbox", async (req, res) => {
     console.error("run-from-inbox error:", err.message);
   } finally {
     pollRunning = false;
-  }
-});
-
-// TEMP: Test Rica forwarding — GET /test-rica
-// ================================================================
-app.get("/test-rica", async (req, res) => {
-  try {
-    // 1. Check what Rica emails exist in workorders inbox
-    const filter = encodeURIComponent(`categories/any(c:c eq '${RICA_CATEGORY}')`);
-    const listRes  = await graphFetch(
-      `/users/${WORKORDERS_EMAIL}/mailFolders/inbox/messages` +
-      `?$filter=${filter}&$select=id,subject,body,categories&$top=50`
-    );
-    const listData = await listRes.json();
-    if (!listRes.ok) return res.json({ step: "list Rica", error: listData?.error });
-    const emails = listData.value || [];
-
-    // Also grab recent emails from workorders to show actual category names for debugging
-    const recentRes  = await graphFetch(
-      `/users/${WORKORDERS_EMAIL}/mailFolders/inbox/messages` +
-      `?$select=subject,categories&$orderby=receivedDateTime desc&$top=20`
-    );
-    const recentData = await recentRes.json();
-    const recentCats = (recentData.value || []).map(m => ({ subject: m.subject?.slice(0, 60), categories: m.categories }));
-
-    if (emails.length === 0) return res.json({ found: 0, message: "No Rica-tagged emails found in workorders inbox", recentEmails: recentCats });
-
-    // 2. Forward the first one using the /forward endpoint (proven to work)
-    const email   = emails[0];
-    const sendRes = await graphFetch(
-      `/users/${WORKORDERS_EMAIL}/messages/${email.id}/forward`,
-      {
-        method: "POST",
-        body: JSON.stringify({
-          toRecipients: [{ emailAddress: { address: BRANDON_EMAIL } }],
-        }),
-      }
-    );
-    const fwdStatus = sendRes.status;
-    const fwdBody   = sendRes.status !== 202 ? await sendRes.json().catch(() => null) : null;
-
-    // 3. Wait then check Brandon's inbox for recent emails
-    await new Promise(r => setTimeout(r, 6000));
-    const since     = new Date(Date.now() - 120000).toISOString();
-    const findRes   = await graphFetch(
-      `/users/${BRANDON_EMAIL}/mailFolders/inbox/messages` +
-      `?$filter=${encodeURIComponent(`receivedDateTime ge ${since}`)}` +
-      `&$select=id,subject,categories&$orderby=receivedDateTime desc&$top=10`
-    );
-    const findData  = await findRes.json();
-
-    res.json({
-      ricaEmailsFound:  emails.map(e => ({ id: e.id, subject: e.subject })),
-      forwardStatus:    fwdStatus,
-      forwardError:     fwdBody,
-      brandonRecentEmails: (findData.value || []).map(m => ({ subject: m.subject, categories: m.categories })),
-      brandonInboxError:   findRes.ok ? null : findData?.error,
-    });
-  } catch (err) {
-    res.json({ error: err.message });
   }
 });
 
@@ -1717,9 +1458,5 @@ app.listen(process.env.PORT || 3000, async () => {
   // falls back to a less reliable single-candidate live API lookup.
   await loadClientCache();
   pollEmails();
-  forwardRicaEmails();
-  processAiTestingEmails();
   setInterval(pollEmails, POLL_INTERVAL_MS);
-  setInterval(forwardRicaEmails, POLL_INTERVAL_MS);
-  setInterval(processAiTestingEmails, POLL_INTERVAL_MS);
 });
