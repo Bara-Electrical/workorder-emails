@@ -1720,17 +1720,19 @@ app.get("/test-photo-note", async (req, res) => {
     const listRes = await graphFetch(
       `/users/${BRANDON_EMAIL}/mailFolders/${doneFolder}/messages` +
       `?$filter=${encodeURIComponent("hasAttachments eq true")}` +
-      `&$select=id,subject&$orderby=receivedDateTime desc&$top=20`
+      `&$select=id,subject&$orderby=receivedDateTime desc&$top=60`
     );
     const listData = await listRes.json();
     const candidates = listData.value || [];
 
     const realPhotos = [];
+    const seenAttachmentNames = [];
     for (const msg of candidates) {
       if (realPhotos.length >= 2) break;
       const attRes  = await graphFetch(`/users/${BRANDON_EMAIL}/messages/${msg.id}/attachments`);
       const attData = await attRes.json();
       for (const a of (attData.value || [])) {
+        seenAttachmentNames.push(a.name);
         if (realPhotos.length >= 2) break;
         if (/inky/i.test(a.name || "")) continue;
         if (!(/\.(jpe?g|png|gif|bmp|webp)$/i.test(a.name || "") || (a.contentType || "").startsWith("image/"))) continue;
@@ -1738,7 +1740,13 @@ app.get("/test-photo-note", async (req, res) => {
         realPhotos.push({ name: a.name, contentType: a.contentType || "image/jpeg", data: Buffer.from(a.contentBytes, "base64") });
       }
     }
-    if (realPhotos.length === 0) return res.json({ error: "No real photo attachments found in 'AI done' folder to test with" });
+    if (realPhotos.length === 0) {
+      return res.json({
+        error: "No real photo attachments found in 'AI done' folder to test with",
+        candidatesChecked: candidates.length,
+        attachmentNamesSeen: seenAttachmentNames.slice(0, 40),
+      });
+    }
 
     const driveId = await getSharepointDriveId();
     const photos = [];
