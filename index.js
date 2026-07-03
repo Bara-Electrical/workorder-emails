@@ -1513,6 +1513,28 @@ app.get("/find-client", requireApiKey, async (req, res) => {
   res.json({ result, exactCacheHit: exactCacheHit?.clientname || null, partialMatches });
 });
 
+// TEMP: inspect a job's task + location fields — GET /inspect-job?job=103726
+app.get("/inspect-job", requireApiKey, async (req, res) => {
+  const jobNumber = req.query.job;
+  if (!jobNumber) return res.status(400).json({ error: "Pass ?job=<jobnumber>" });
+  try {
+    const fetched = await arofloGet("zone=tasks&where=" + encodeURIComponent(`and|jobnumber|=|${jobNumber}`) + "&join=locations,clients&page=1");
+    const task = toArray(fetched.tasks)[0];
+    if (!task) return res.json({ error: `No task found for job ${jobNumber}` });
+    res.json({
+      taskId: task.taskid,
+      jobnumber: task.jobnumber,
+      taskname: task.taskname,
+      description: task.description,
+      sitename: task.sitename,
+      location: task.location,
+      client: task.client,
+    });
+  } catch (err) {
+    res.json({ error: err.message });
+  }
+});
+
 // ================================================================
 // AROFLO WEBHOOK — new client created
 // ================================================================
