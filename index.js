@@ -1520,6 +1520,159 @@ app.get("/find-client", requireApiKey, async (req, res) => {
 });
 
 // ================================================================
+// TEMP: Re-extract a job's task description from its full email thread
+// (including replies) and optionally apply the fix + backfill the work
+// order PDF link if it was never uploaded. GET /reextract-job?jobnumber=X
+// Remove once job 103727 is confirmed fixed.
+// ================================================================
+app.get("/reextract-job", requireApiKey, async (req, res) => {
+  try {
+    const jobnumber = req.query.jobnumber;
+    if (!jobnumber) return res.status(400).json({ error: "Pass ?jobnumber=..." });
+    const apply = req.query.apply === "true";
+
+    const taskZone = await arofloGet("zone=tasks&where=" + encodeURIComponent(`and|jobnumber|=|${jobnumber}`) + "&page=1");
+    const task = toArray(taskZone.tasks)[0];
+    if (!task) return res.status(404).json({ error: "Task not found in Aroflo" });
+
+    const tagFilter = encodeURIComponent(`categories/any(c:c eq 'Job created - ${jobnumber}')`);
+    const tagRes = await graphFetch(`/users/${WORKORDERS_EMAIL}/messages?$filter=${tagFilter}&$select=id,conversationId&$top=5`);
+    const tagData = await tagRes.json();
+    if (!tagRes.ok) return res.status(500).json({ error: "Graph search failed", detail: tagData });
+    const convId = tagData.value?.[0]?.conversationId;
+    if (!convId) return res.status(404).json({ error: "No tagged email found for this job" });
+
+    const threadRes = await graphFetch(
+      `/users/${WORKORDERS_EMAIL}/messages?$filter=${encodeURIComponent(`conversationId eq '${convId}'`)}` +
+      `&$select=id,subject,from,body,receivedDateTime&$expand=attachments($select=id,name,contentType,size)&$top=25&$orderby=receivedDateTime asc`
+    );
+    const threadData = await threadRes.json();
+    if (!threadRes.ok) return res.status(500).json({ error: "Thread fetch failed", detail: threadData });
+    const messages = threadData.value || [];
+
+    // Find the first PDF work order attachment anywhere in the thread
+    let pdfMessage = null, pdfAttachmentMeta = null;
+    for (const m of messages) {
+      const pdf = (m.attachments || []).find(a => (a.name || "").toLowerCase().endsWith(".pdf"));
+      if (pdf) { pdfMessage = m; pdfAttachmentMeta = pdf; break; }
+    }
+    let pdfText = "", pdfAttachment = null;
+    if (pdfMessage) {
+      const attachRes = await graphFetch(`/users/${WORKORDERS_EMAIL}/messages/${pdfMessage.id}/attachments/${pdfAttachmentMeta.id}`);
+      const attachData = await attachRes.json();
+      const data = Uint8Array.from(atob(attachData.contentBytes), c => c.charCodeAt(0));
+      pdfAttachment = { name: pdfAttachmentMeta.name, data: new Uint8Array(data) };
+      pdfText = (await extractPDF(data)).replace(/\s+/g, " ").trim();
+    }
+
+    const combinedThreadText = messages.map(m => {
+      const text = (m.body?.contentType === "html" ? cleanHtml(m.body.content) : m.body?.content || "").replace(/\s+/g, " ").trim();
+      return `--- Message from ${m.from?.emailAddress?.address || "?"} (${m.receivedDateTime}) ---\n${text}`;
+    }).join("\n\n");
+
+    const textForAI = pdfText
+      ? `--- WORK ORDER PDF CONTENT (prefer this) ---\n${pdfText}\n\n--- FULL EMAIL THREAD, oldest first (use for anything not found above, including any follow-up scope changes) ---\n${combinedThreadText}`
+      : combinedThreadText;
+
+    const firstMsg = messages[0];
+    const responseAI = await openai.responses.create({
+      model: "gpt-5-mini",
+      text: { format: { type: "json_object" } },
+      instructions: `You are a work order extraction system for an electrical company in Australia. Today's date is ${new Date().toLocaleDateString("en-AU", { day: "2-digit", month: "2-digit", year: "numeric" })}.
+
+CRITICAL RULES:
+- tenant-name and tenant-contact come from the Tenant Details section, OR any section labelled "Contact for job access" or similar, OR an inline mention anywhere in the description/notes such as "contact tenant emma for access 0414152246" or "contact new tenant lance - 0421516195" (extract "Emma"/"Lance" as tenant-name and the number as tenant-contact). Always scan the full description/instructions text for a phrase like "contact tenant <name>", "contact new tenant <name>", or "tenant <name> on <number>" even if there is no dedicated tenant section. An inline "contact (new) tenant <name>" instruction ALWAYS takes priority over a generic vacant/moving-out signal elsewhere in the document — a specific named contact for access means someone must actually be contacted, regardless of the property's formal vacancy status, so extract that person as tenant-name/tenant-contact rather than defaulting to "Vacant". Never use the Owner Details / Owner section as tenant-name, tenant-contact, or tenant-email — the owner is not the tenant, even if the PM states tenant details were not provided. Only set tenant-name to "Vacant" when there is truly no named contact anywhere (including inline) AND the property is explicitly stated as vacant — in that case also ensure access-details captures any lockbox or key collection info. If no tenant is listed and the property is NOT stated as vacant, leave tenant-name null. Never use access details, lockbox info, or key numbers as the tenant name. If multiple tenants are listed, include ALL of them separated by commas — do not drop any.
+- If the email states the tenant is vacating or moving out and the move-out date is within 7 days of today, AND no replacement/new tenant contact is given anywhere, treat the property as vacant: set tenant-name to "Vacant", set tenant-contact to null, and include in task-description that keys should be collected after the move-out date (e.g. "Collect keys after 3/7"). If a new/incoming tenant contact IS given, use that person instead of "Vacant" — see the rule above.
+- access-details is ONLY physical access codes/numbers — key numbers, lockbox codes, gate codes, swipe card numbers. e.g. "Key: 1234", "Lockbox code: 56", "Gate code: 789". Do NOT include contact instructions, tenant names, safety instructions, or anything that is not a physical code or number.
+- expenditure-limit is the dollar amount only — e.g. "$330". Strip any conditions, notes, or extra text after the amount. If the expenditure limit is $0 or zero, return null.
+- confidence is a float 0.0–1.0 rating how confident you are in the overall extraction. 1.0 = all fields clearly present, 0.0 = guessing most fields.
+- notes is any concerns, ambiguities, or flags worth mentioning — e.g. missing fields, conflicting info, unusual job details. Leave null if nothing to flag.
+- tenant-contact must contain phone numbers ONLY — no names, no labels, just the numbers. Only use a number if it is explicitly and unambiguously tied to the tenant (e.g. appears in a Tenant section, is labelled "Tenant Phone"/"Tenant Mobile"/"Contact Number", or immediately follows an inline "contact tenant <name>" style phrase). If you are unsure whether a number belongs to the tenant, leave tenant-contact null. If there are multiple confirmed tenant numbers, separate with commas. Prefer mobile over home numbers. Australian numbers always start with 0 (e.g. 0412 345 678) — always include the leading 0.
+- tenant-email is the tenant's email address. Only include if explicitly labelled as the tenant's email. Leave null if not present or uncertain.
+- property-manager comes from the Property Manager section, OR from an Agency Details section where the manager is listed (e.g. "Manager: Jane Smith"). Use the person's name only, not the agency name.
+- account-to must include ALL owners exactly as written, always in the format: owners c/o real estate.
+- real-estate must always be a company or agency name — never a URL or domain. If the source contains something like "aussieproperty.com.au", convert it to a readable name (e.g. "Aussie Property") by stripping the domain extension and formatting as a proper name. If you cannot find it directly, look for it in account-to after the c/o. The sender's email address is provided at the top of the input — use the domain as an additional hint to identify real-estate if the company name is not clearly stated in the content (e.g. "noreply@raywhite.com.au" → "Ray White").
+- order-number is the job/work order number.
+- address is required — if it isn't clearly stated in the body/PDF content, check the email subject line (provided at the top of the input) since it often contains the property address.
+- task-description must be a concise electrician job summary. If anything is listed as conditional or requires approval (e.g. "deluxe clean if approved", "AC2 if required"), include that in the description too. If the work order lists multiple numbered items and a later reply in the thread says only some of them are electrical (with the rest going to another contractor), the description must restate what those electrical items actually are (not just "points 1 and 2") — copy the item text itself, not just its number, since the reader won't have the original numbered list in front of them. Also note briefly that the remaining item(s) are being handled separately/by another contractor, without going into detail on who.
+- Do NOT include instructions to contact the tenant or PM for access in task-description. Contacting the tenant for access is the default assumption for every job and must not be stated.
+- Key numbers in access-details are reference numbers for our existing key management system — we already hold these keys. Do NOT include any instruction to collect, pick up, or obtain keys in task-description based solely on a key number being listed in access-details.
+- Do NOT guess missing fields — if missing return null.
+- The text may be a structured form (with clear sections) OR plain prose in an email. Extract the same fields either way — don't return null just because sections aren't labelled.
+- If the input contains both a PDF CONTENT section and an EMAIL THREAD section, prefer the PDF for all fields but check the full thread (including replies) for anything not found in the PDF, especially later scope changes.
+- For task-type: if the text explicitly mentions EC1, AC1, AC2, or ACEC1 anywhere, use that — it takes priority over everything else, even if other work is also mentioned. If a compliance check or aircon service is recommended or suggested (e.g. "recommend compliance check", "suggest an EC1"), treat it as that task type — recommendations from a PM or owner should be acted on. EXCEPTION: if the work order includes a package (EC1/AC1/AC2/ACEC1) AND additional work beyond the package, set task-type to "Real Estate General Maintenance" (or "Real Estate Aircon Maintenance" if the extra work is aircon-related) — but still set the package field to the package code. NOTE: smoke alarm testing, replacement, or supply is already included within EC1 — do not treat it as additional work beyond the package.
+- package: set to "EC1", "AC1", "AC2", or "ACEC1" if the job involves one of these standard packages — even if task-type has been set to general/aircon maintenance due to extra work being present. Only return null if there is genuinely no package involved at all (e.g. a pure repair or general maintenance job with no compliance check or aircon service).
+
+TASK TYPES:
+EC1 = Electrical Compliance Check only
+AC1 = Aircon Servicing only
+AC2 = Deluxe Aircon Clean
+ACEC1 = Aircon service AND electrical compliance check combined
+Real Estate Aircon Maintenance = aircon related jobs
+Real Estate General Maintenance = everything else
+
+Return ONLY valid JSON with these exact keys:
+{
+  "task-type": "",
+  "tenant-name": "",
+  "tenant-contact": "",
+  "tenant-email": "",
+  "address": "",
+  "task-description": "",
+  "real-estate": "",
+  "property-manager": "",
+  "account-to": "",
+  "order-number": "",
+  "access-details": "",
+  "expenditure-limit": "",
+  "package": "EC1 | AC1 | AC2 | ACEC1 | null",
+  "confidence": 0.0,
+  "notes": ""
+}`,
+      input: `From: ${firstMsg?.from?.emailAddress?.address || ""}\nSubject: ${firstMsg?.subject || ""}\n\nExtract the following work order and return JSON:\n\n${textForAI}`,
+    });
+    const result = JSON.parse(responseAI.output_text);
+
+    let applied = { descriptionUpdated: false, pdfUploaded: false, oneDriveUrl: null, error: null };
+    if (apply) {
+      try {
+        const newDescription = buildDescription(result);
+        const updateParts = [`<description>${cdata(newDescription)}</description>`];
+
+        if (pdfAttachment) {
+          const oneDriveUrl = await uploadWorkOrderToOneDrive(jobnumber, pdfAttachment.name, pdfAttachment.data);
+          applied.pdfUploaded = true;
+          applied.oneDriveUrl = oneDriveUrl;
+          const noteHtml = `<p><strong>Work order PDF:</strong> <a href="${oneDriveUrl}" target="_blank">View Work Order PDF</a></p>`;
+          updateParts.push(`<notes><note><content>${cdata(noteHtml)}</content></note></notes>`);
+        }
+
+        const updateXml = `<tasks><task><taskid>${task.taskid}</taskid>${updateParts.join("")}</task></tasks>`;
+        const upZone = await arofloPost("zone=tasks&postxml=" + encodeURIComponent(updateXml));
+        const upPr = upZone.postresults;
+        applied.descriptionUpdated = Number(upPr?.updatetotal ?? 0) > 0;
+      } catch (err) {
+        applied.error = err.message;
+      }
+    }
+
+    res.json({
+      jobnumber,
+      taskid: task.taskid,
+      threadMessageCount: messages.length,
+      pdfFoundInThread: !!pdfMessage,
+      pdfFoundInMessageSubject: pdfMessage?.subject || null,
+      currentDescription: task.description,
+      newResult: result,
+      newDescriptionPreview: buildDescription(result),
+      applied,
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ================================================================
 // AROFLO WEBHOOK — new client created
 // ================================================================
 app.post("/aroflo-webhook", requireApiKey, express.json(), async (req, res) => {
