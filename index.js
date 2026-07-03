@@ -1526,9 +1526,10 @@ app.get("/reextract", requireApiKey, async (req, res) => {
   const jobNumber = req.query.job;
   if (!jobNumber) return res.status(400).json({ error: "Pass ?job=<jobnumber>" });
   try {
+    // Mailbox-wide, not inbox-scoped — filing rules can move a message out of Inbox.
     const filter = encodeURIComponent(`categories/any(c:c eq 'Job created - ${jobNumber}')`);
     const listRes = await graphFetch(
-      `/users/${WORKORDERS_EMAIL}/mailFolders/inbox/messages` +
+      `/users/${WORKORDERS_EMAIL}/messages` +
       `?$filter=${filter}` +
       `&$select=id,subject,body,categories,from,toRecipients,conversationId,receivedDateTime` +
       `&$expand=attachments($select=id,name,contentType,size)` +
