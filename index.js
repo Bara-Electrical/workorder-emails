@@ -88,10 +88,13 @@ function requireApiKey(req, res, next) {
 const toArray = (v) => (v == null ? [] : Array.isArray(v) ? v : [v]);
 
 // Wrap a value in a CDATA section for Aroflo's XML API. A literal "]]>" inside the value
-// would otherwise prematurely close the section and corrupt the rest of the POST body —
-// split it the standard way so the value round-trips safely either way.
+// would otherwise prematurely close the section and corrupt the rest of the POST body.
+// The XML-spec-correct fix is to split it into two adjacent CDATA sections, but Aroflo's
+// own parser chokes on that (confirmed empirically — rejects it as "Invalid postxml
+// value"/"Internal IMSAPI Error" even though it's valid XML). Breaking up the sequence
+// with a space instead keeps everything in one CDATA section, which Aroflo handles fine.
 function cdata(value) {
-  return `<![CDATA[${String(value ?? "").replace(/]]>/g, "]]]]><![CDATA[>")}]]>`;
+  return `<![CDATA[${String(value ?? "").replace(/]]>/g, "]] >")}]]>`;
 }
 
 // Escape a plain-text value for safe interpolation into HTML (notes, alert emails).
