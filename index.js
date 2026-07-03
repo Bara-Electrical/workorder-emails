@@ -1397,12 +1397,11 @@ async function pollInbox(mailbox) {
       ? await findJobTagInThread(mailbox, message.conversationId, message.id)
       : null;
     if (siblingTag) {
-      const jobNumber = siblingTag.split(" - ")[1] || siblingTag;
-      console.log(`[poll] Reply to already-processed thread — tagging as duplicate of ${siblingTag}:`, message.subject);
-      await graphFetch(`/users/${mailbox}/messages/${message.id}`, {
-        method: "PATCH",
-        body: JSON.stringify({ categories: [...message.categories.filter(c => !STATUS_CATEGORIES.includes(c)), `Existing job - ${jobNumber}`] }),
-      });
+      // Skip without tagging — leaving both "Job created - X" (on the original message)
+      // and "Existing job - X" (on this reply) visible in the same conversation looked
+      // messy, and the original tag already makes the job findable. This reply keeps its
+      // trigger category and gets this same check re-run on the next poll, which is cheap.
+      console.log(`[poll] Reply to already-processed thread (${siblingTag}) — skipping, no tag applied:`, message.subject);
       continue;
     }
 
