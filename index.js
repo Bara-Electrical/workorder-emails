@@ -705,6 +705,18 @@ function extractLockboxDetails(accessDetails) {
   return lockboxParts.length ? lockboxParts.join(", ") : null;
 }
 
+// Pulls out the "collect keys after <date>" style line the AI is instructed to add to
+// task-description for vacant properties (see the vacant-property prompt rule) — matched
+// loosely (both "collect" and "key" present) since the AI's exact wording varies.
+function extractKeyCollectionLine(taskDescription) {
+  if (!taskDescription) return null;
+  const line = taskDescription
+    .split("\n")
+    .map(l => l.trim())
+    .find(l => /collect/i.test(l) && /key/i.test(l));
+  return line || null;
+}
+
 function buildDescription(result) {
   const parts = [];
   const spacer = `<p>&nbsp;</p>`;
@@ -931,13 +943,14 @@ async function createArofloJob(result, rawEmail, pdfAttachment = null, emailMeta
       warnings.push({ tag: "Note not posted", detail: "No email content available — note not posted to job" });
     }
 
+    const today     = new Date();
+    const dateStamp = `${today.getDate()}/${today.getMonth() + 1}`;
+
     // Prefer adding overflow tenants as a dated, initialled line in the staff-pinned
     // SCHEDULING NOTE rather than a brand-new note. Only falls back to a separate note
     // if that pinned note can't be found/edited (e.g. not yet added to this job).
     let additionalTenantNote = null;
     if (tenantOverflowLines.length > 0) {
-      const today      = new Date();
-      const dateStamp  = `${today.getDate()}/${today.getMonth() + 1}`;
       const failedLines = [];
       for (const line of tenantOverflowLines) {
         try {
@@ -956,12 +969,43 @@ async function createArofloJob(result, rawEmail, pdfAttachment = null, emailMeta
       }
     }
 
+    // Vacant properties are unattended, so a lockbox code or a "collect keys" instruction
+    // needs to be visible to whoever books the job in, not just buried in the task
+    // description — surface both in the scheduling note the same way as overflow tenants.
+    let vacantAccessNote = null;
+    const isVacant = (result["tenant-name"] || "").trim().toLowerCase() === "vacant";
+    if (isVacant) {
+      const vacantLines = [];
+      const lockboxDetails    = extractLockboxDetails(result["access-details"]);
+      const keyCollectionLine = extractKeyCollectionLine(result["task-description"]);
+      if (lockboxDetails)    vacantLines.push(`Vacant - ${lockboxDetails}`);
+      if (keyCollectionLine) vacantLines.push(`Vacant - ${keyCollectionLine}`);
+
+      const failedLines = [];
+      for (const line of vacantLines) {
+        try {
+          await appendToPinnedNoteSection(confirmedTaskId, "scheduling", `${dateStamp} ${line} - ${AI_NOTE_INITIALS}`);
+        } catch (err) {
+          console.warn("[job] Could not append vacant access info to scheduling note:", err.message);
+          failedLines.push(line);
+        }
+      }
+      if (failedLines.length > 0) {
+        vacantAccessNote = failedLines.map(line => escapeHtml(line)).join("<br/>");
+        warnings.push({
+          tag: "Vacant access info not added to scheduling note",
+          detail: `Pinned scheduling note not editable — posted as a separate note instead: ${failedLines.join("; ")}`,
+        });
+      }
+    }
+
     const photoGalleryHtml = photos.length > 0 ? buildPhotoGalleryNote(photos) : null;
 
     const notesXml = [
       noteHtml             ? `<note><content>${cdata(noteHtml)}</content></note>`             : "",
       photoGalleryHtml     ? `<note><content>${cdata(photoGalleryHtml)}</content></note>`      : "",
       additionalTenantNote ? `<note><content>${cdata(additionalTenantNote)}</content></note>` : "",
+      vacantAccessNote     ? `<note><content>${cdata(vacantAccessNote)}</content></note>`     : "",
     ].join("");
 
     if (notesXml || substatusId) {
@@ -977,7 +1021,7 @@ async function createArofloJob(result, rawEmail, pdfAttachment = null, emailMeta
         const upZone = await arofloPost("zone=tasks&postxml=" + encodeURIComponent(updateXml));
         const upPr   = upZone.postresults;
         if (Number(upPr?.updatetotal ?? 0) > 0) {
-          console.log("[job] Task update applied — note:", !!noteHtml, "additional tenant note:", !!additionalTenantNote, "substatus:", substatusId || "n/a");
+          console.log("[job] Task update applied — note:", !!noteHtml, "additional tenant note:", !!additionalTenantNote, "vacant access note:", !!vacantAccessNote, "substatus:", substatusId || "n/a");
         } else {
           if (noteHtml) warnings.push({ tag: "Note not posted", detail: "Combined task update did not apply" });
           if (substatusId) warnings.push({ tag: "Substatus failed", detail: "Combined task update did not apply — job may need manual scheduling status update" });
