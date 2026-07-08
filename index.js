@@ -694,9 +694,21 @@ async function logAiOutput(result, emailSubject) {
   }
 }
 
+// Techs need a lockbox code to get into an unattended property, but key numbers,
+// gate codes, and swipe cards aren't actionable on the job (keys are already held
+// by us, gate/swipe access is arranged separately) — so only lockbox info surfaces
+// in the visible task description; the full access-details string is still logged
+// to Airtable for record-keeping.
+function extractLockboxDetails(accessDetails) {
+  if (!accessDetails) return null;
+  const lockboxParts = accessDetails.split(",").map(s => s.trim()).filter(s => /lockbox/i.test(s));
+  return lockboxParts.length ? lockboxParts.join(", ") : null;
+}
+
 function buildDescription(result) {
   const parts = [];
   const spacer = `<p>&nbsp;</p>`;
+  const lockboxDetails = extractLockboxDetails(result["access-details"]);
 
   const desc = result["task-description"] || result["task-type"];
   if (desc) {
@@ -710,15 +722,15 @@ function buildDescription(result) {
     );
   }
 
-  const hasHighlights = result["expenditure-limit"] || result["access-details"];
+  const hasHighlights = result["expenditure-limit"] || lockboxDetails;
   if (hasHighlights) parts.push(spacer);
 
   if (result["expenditure-limit"]) {
     parts.push(`<p><span style="background:#cce5ff;font-weight:bold">Expenditure Limit: ${escapeHtml(result["expenditure-limit"])}</span></p>`);
   }
 
-  if (result["access-details"]) {
-    parts.push(`<p><span style="background:#ccffcc;font-weight:bold">Access Details: ${escapeHtml(result["access-details"])}</span></p>`);
+  if (lockboxDetails) {
+    parts.push(`<p><span style="background:#ccffcc;font-weight:bold">Access Details: ${escapeHtml(lockboxDetails)}</span></p>`);
   }
 
   // Fall back to task-type if AI forgot to set package (e.g. task-type is EC1 but package is null)
@@ -1542,13 +1554,20 @@ Return ONLY valid JSON with these exact keys:
     parsed["expenditure-limit"] = null;
   }
 
-  // Australian mobile numbers are 10 digits starting with 0 — if AI drops the leading 0, restore it
+  // Australian mobile numbers are 10 digits starting with 0 — restore a leading 0 the
+  // AI sometimes drops, then normalise spacing to "04xx xxx xxx" regardless of how the
+  // source formatted it (no spaces, dashes, brackets, etc). Numbers that aren't a
+  // standard 10-digit mobile (landlines, partial numbers) are left as-is.
   if (parsed["tenant-contact"]) {
     parsed["tenant-contact"] = parsed["tenant-contact"]
       .split(",")
       .map(n => {
-        const digits = n.replace(/\D/g, "");
-        return digits.length === 9 && digits.startsWith("4") ? "0" + n.trim() : n.trim();
+        const trimmed = n.trim();
+        let digits = trimmed.replace(/\D/g, "");
+        if (digits.length === 9 && digits.startsWith("4")) digits = "0" + digits;
+        return digits.length === 10 && digits.startsWith("04")
+          ? `${digits.slice(0, 4)} ${digits.slice(4, 7)} ${digits.slice(7)}`
+          : trimmed;
       })
       .join(", ");
   }
