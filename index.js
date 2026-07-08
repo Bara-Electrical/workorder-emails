@@ -264,6 +264,8 @@ const PINNED_NOTE_SECTIONS = {
   parts:      "PARTS NOTE",
 };
 
+const AI_NOTE_INITIALS = "AI";
+
 async function appendToPinnedNoteSection(taskId, section, text) {
   const label = PINNED_NOTE_SECTIONS[section];
   if (!label) throw new Error(`Unknown pinned note section: ${section}`);
@@ -769,15 +771,13 @@ async function createArofloJob(result, rawEmail, pdfAttachment = null, emailMeta
   const { locations, contacts } = await findLocationsAndContacts(client.clientid);
 
   const tenantFit = fitTenantFields(result["tenant-name"], result["tenant-contact"]);
-  let additionalTenantNote = null;
+  const tenantOverflowLines = [];
   if (tenantFit.truncated) {
     const rows = Math.max(tenantFit.overflowName.length, tenantFit.overflowPhone.length);
-    const lines = [];
     for (let i = 0; i < rows; i++) {
       const line = [tenantFit.overflowName[i], tenantFit.overflowPhone[i]].filter(Boolean).join(", ");
-      if (line) lines.push(`Additional tenant - ${escapeHtml(line)}`);
+      if (line) tenantOverflowLines.push(line);
     }
-    additionalTenantNote = lines.join("<br/>");
     const detail = `SiteContact/SitePhone are capped at ${SITE_FIELD_LIMIT} characters by Aroflo — full list: "${result["tenant-name"] || ""}" / "${result["tenant-contact"] || ""}"`;
     console.warn("[job]", detail);
     warnings.push({ tag: "Tenant details truncated", detail });
@@ -917,6 +917,31 @@ async function createArofloJob(result, rawEmail, pdfAttachment = null, emailMeta
       }
     } else {
       warnings.push({ tag: "Note not posted", detail: "No email content available — note not posted to job" });
+    }
+
+    // Prefer adding overflow tenants as a dated, initialled line in the staff-pinned
+    // SCHEDULING NOTE rather than a brand-new note. Only falls back to a separate note
+    // if that pinned note can't be found/edited (e.g. not yet added to this job).
+    let additionalTenantNote = null;
+    if (tenantOverflowLines.length > 0) {
+      const today      = new Date();
+      const dateStamp  = `${today.getDate()}/${today.getMonth() + 1}`;
+      const failedLines = [];
+      for (const line of tenantOverflowLines) {
+        try {
+          await appendToPinnedNoteSection(confirmedTaskId, "scheduling", `${dateStamp} Additional tenant ${line} - ${AI_NOTE_INITIALS}`);
+        } catch (err) {
+          console.warn("[job] Could not append additional tenant to scheduling note:", err.message);
+          failedLines.push(line);
+        }
+      }
+      if (failedLines.length > 0) {
+        additionalTenantNote = failedLines.map(line => `Additional tenant - ${escapeHtml(line)}`).join("<br/>");
+        warnings.push({
+          tag: "Additional tenant not added to scheduling note",
+          detail: `Pinned scheduling note not editable — posted as a separate note instead: ${failedLines.join("; ")}`,
+        });
+      }
     }
 
     const photoGalleryHtml = photos.length > 0 ? buildPhotoGalleryNote(photos) : null;
