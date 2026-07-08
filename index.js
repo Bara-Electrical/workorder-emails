@@ -253,6 +253,80 @@ async function arofloPost(body) {
   return arofloRequest("POST", null, body, "Aroflo POST");
 }
 
+// Staff manually pin an "ADMIN/SCHEDULING/INVOICING/PARTS NOTE" template note (sticky=true)
+// to jobs — hand-edited per job, not something Bara AI creates. This appends a line under
+// one of its sections (matched by heading text) without touching the rest of the note.
+const PINNED_NOTE_SECTIONS = {
+  admin:      "ADMIN NOTE",
+  scheduling: "SCHEDULING NOTE",
+  invoicing:  "INVOICING NOTE",
+  parts:      "PARTS NOTE",
+};
+
+async function appendToPinnedNoteSection(taskId, section, text) {
+  const label = PINNED_NOTE_SECTIONS[section];
+  if (!label) throw new Error(`Unknown pinned note section: ${section}`);
+
+  const fetched = await arofloGet(
+    "zone=tasks&join=" + encodeURIComponent("notes") +
+    "&where=" + encodeURIComponent(`and|taskid|=|${taskId}`) +
+    "&page=1"
+  );
+  const task = toArray(fetched.tasks)[0];
+  if (!task) throw new Error(`Task ${taskId} not found`);
+
+  const notes = toArray(task.tasknotes);
+  const pinnedNote = notes.find(n =>
+    n.sticky === "true" &&
+    /ADMIN\s*NOTE:/i.test(n.content || "") &&
+    /SCHEDULING\s*NOTE:/i.test(n.content || "")
+  );
+  if (!pinnedNote) throw new Error(`Pinned admin/scheduling note not found on task ${taskId}`);
+
+  // Match the section's whole <p>...</p> block; non-greedy so it stops at the first
+  // closing </p> after the heading rather than swallowing the rest of the note.
+  const sectionRe = new RegExp(`(<p>[\\s\\S]*?${label.replace(/\s+/g, "\\s*")}:[\\s\\S]*?)(</p>)`, "i");
+  if (!sectionRe.test(pinnedNote.content)) {
+    throw new Error(`Could not locate "${label}" section inside pinned note on task ${taskId}`);
+  }
+  const updatedContent = pinnedNote.content.replace(
+    sectionRe,
+    (_match, before, closeTag) => {
+      // Split off the content after the last <br> (the current last line of the
+      // section) plus any trailing closing tags (e.g. INVOICING NOTE's wrapping
+      // </span>), so a bare "-" placeholder line can be replaced in place instead
+      // of appending a new line below it.
+      const brMatches = [...before.matchAll(/<br\s*\/?>/gi)];
+      const lastBr = brMatches[brMatches.length - 1];
+      const head = lastBr ? before.slice(0, lastBr.index + lastBr[0].length) : before;
+      const tail = lastBr ? before.slice(lastBr.index + lastBr[0].length) : "";
+
+      const trailingTags = tail.match(/(?:<\/[a-z]+>\s*)*$/i)?.[0] || "";
+      const lineText = tail.slice(0, tail.length - trailingTags.length);
+      const isPlaceholder = lineText.replace(/&nbsp;/gi, "").trim() === "-";
+
+      const newLine = isPlaceholder
+        ? `- ${escapeHtml(text)}`
+        : `${lineText}<br />\n- ${escapeHtml(text)}`;
+
+      return `${head}${newLine}${trailingTags}${closeTag}`;
+    }
+  );
+
+  const xml =
+`<tasks>
+  <task>
+    <taskid>${taskId}</taskid>
+    <notes><note><noteid>${pinnedNote.noteid}</noteid><content>${cdata(updatedContent)}</content><sticky>true</sticky></note></notes>
+  </task>
+</tasks>`;
+
+  const zone = await arofloPost("zone=tasks&postxml=" + encodeURIComponent(xml));
+  if (Number(zone.postresults?.updatetotal ?? 0) < 1) {
+    throw new Error(`Aroflo did not confirm the pinned note update for task ${taskId}`);
+  }
+}
+
 // Task type IDs sourced from live Aroflo system on 2026-06-24
 const TASK_TYPE_MAP = {
   "EC1":                            "JCYqLyBSQCAgCg==", // $120 Standard Electrical Compliance
@@ -1052,7 +1126,7 @@ async function putSharepointFile(itemPath, contentBytes, contentType) {
 }
 
 // Known work order portal domains
-const WORKORDER_DOMAINS = /tapihq\.com|propertytree\.com|propertyme\.com\.au|console\.net\.au|inspection\.express/i;
+const WORKORDER_DOMAINS = /tapihq\.com|propertytree\.com|propertyme\.com\.au|console\.net\.au|inspection\.express|ailo\.io/i;
 
 // Search raw HTML anchor tags — match on link text containing "work order" or "workorder".
 function findWorkOrderLink(rawHtml) {
@@ -1072,6 +1146,10 @@ function findWorkOrderLink(rawHtml) {
     if (!href.startsWith("https://")) continue;
     const dest = /safelinks\.protection\.outlook\.com/i.test(href)
       ? (() => { try { return decodeURIComponent(new URL(href).searchParams.get("url") || href); } catch { return href; } })()
+      // Inky wraps links as shared.outlook.inky.com/link?domain=<real-destination-domain>&t=...
+      // — the real domain is right there in the query string, no redirect needed to check it.
+      : /shared\.outlook\.inky\.com/i.test(href)
+      ? (() => { try { return new URL(href).searchParams.get("domain") || href; } catch { return href; } })()
       : href;
     if (/workorder/i.test(dest) || WORKORDER_DOMAINS.test(dest)) return href;
   }
@@ -1082,6 +1160,38 @@ function findWorkOrderLink(rawHtml) {
   if (m) return m[0].split(/[>")\s]/)[0].trim();
 
   return null;
+}
+
+// Resolve a link, bypassing Inky's click-through interstitial (it stops the redirect
+// until re-requested with confirm=True appended).
+async function fetchFollowingInky(url) {
+  let response = await fetch(url, { redirect: "follow", headers: { "User-Agent": "Mozilla/5.0" } });
+  if (response.url.includes("shared.outlook.inky.com") && !response.url.includes("confirm=True")) {
+    response = await fetch(response.url + "&confirm=True", { redirect: "follow", headers: { "User-Agent": "Mozilla/5.0" } });
+  }
+  return response;
+}
+
+// Some PM systems (e.g. Ray White/Ailo) link job photos in the email body instead of
+// attaching them as real MIME attachments — same "Files" list as the work order PDF link.
+// Recognise them the same way: anchor text is the filename, destination domain is a known
+// portal/file-service domain.
+function findLinkedPhotoLinks(rawHtml) {
+  const unescaped = rawHtml.replace(/&amp;/g, "&");
+  const anchors   = [...unescaped.matchAll(/<a\s[^>]*href="([^"]+)"[^>]*>([\s\S]*?)<\/a>/gi)];
+  const links = [];
+  for (const [, href, rawText] of anchors) {
+    if (!href.startsWith("https://")) continue;
+    const name = rawText.replace(/<[^>]*>/g, "").trim();
+    if (!/\.(jpe?g|png|gif|bmp|webp)$/i.test(name)) continue;
+    const dest = /safelinks\.protection\.outlook\.com/i.test(href)
+      ? (() => { try { return decodeURIComponent(new URL(href).searchParams.get("url") || href); } catch { return href; } })()
+      : /shared\.outlook\.inky\.com/i.test(href)
+      ? (() => { try { return new URL(href).searchParams.get("domain") || href; } catch { return href; } })()
+      : href;
+    if (WORKORDER_DOMAINS.test(dest)) links.push({ href, name });
+  }
+  return links;
 }
 
 // A reply-only message (e.g. "we'll do points 1 and 2, PM will sort a contractor for
@@ -1140,24 +1250,15 @@ async function processMessage(message, mailbox = WORKORDERS_EMAIL, onStatus = nu
 
   if (workOrderLink) {
     try {
-      let response = await fetch(workOrderLink, {
-        redirect: "follow",
-        headers: { "User-Agent": "Mozilla/5.0" },
-      });
-
-      // Inky link protection stops the redirect — bypass with confirm=True
-      if (response.url.includes("shared.outlook.inky.com") && !response.url.includes("confirm=True")) {
-        response = await fetch(response.url + "&confirm=True", {
-          redirect: "follow",
-          headers: { "User-Agent": "Mozilla/5.0" },
-        });
-      }
-
+      const response = await fetchFollowingInky(workOrderLink);
       const contentType = response.headers.get("content-type") || "";
       if (contentType.includes("pdf")) {
         const buffer  = await response.arrayBuffer();
-        const pdfText = await extractPDF(new Uint8Array(buffer));
+        const data    = new Uint8Array(buffer);
+        const pdfText = await extractPDF(data);
         textForAI = withEmailBody(pdfText.replace(/\s+/g, " ").trim());
+        const urlName = decodeURIComponent(response.url.split("/").pop().split("?")[0] || "");
+        pdfAttachment = { name: urlName.toLowerCase().endsWith(".pdf") ? urlName : "WorkOrder.pdf", data };
       } else {
         const html     = await response.text();
         const linkText = cleanHtml(html).slice(0, 50000);
@@ -1167,6 +1268,24 @@ async function processMessage(message, mailbox = WORKORDERS_EMAIL, onStatus = nu
       console.error("[email] Link fetch error:", err.message);
     }
   }
+
+  // Photos linked in the email body (same "Files" list as the work order link above)
+  // rather than attached as real MIME attachments — download them the same way.
+  const linkedPhotos = (await Promise.all(
+    findLinkedPhotoLinks(rawBody).map(async ({ href, name }) => {
+      try {
+        const response = await fetchFollowingInky(href);
+        const contentType = response.headers.get("content-type") || "";
+        if (!contentType.startsWith("image/")) return null;
+        const buffer = await response.arrayBuffer();
+        console.log("[email] Linked photo downloaded:", name);
+        return { name, data: new Uint8Array(buffer), contentType };
+      } catch (err) {
+        console.warn("[email] Failed to download linked photo:", name, err.message);
+        return null;
+      }
+    })
+  )).filter(Boolean);
 
   // Work order PDF attachment — takes priority over link
   const workorderAttachment = attachments.find(a =>
@@ -1310,7 +1429,7 @@ Return ONLY valid JSON with these exact keys:
   };
 
   // Download image attachments in parallel
-  const imageAttachments = (await Promise.all(
+  const mimeImageAttachments = (await Promise.all(
     attachments
       .filter(a => !/inky/i.test(a.name || ""))
       .filter(a => /\.(jpe?g|png|gif|bmp|webp)$/i.test(a.name || "") || (a.contentType || "").startsWith("image/"))
@@ -1327,6 +1446,8 @@ Return ONLY valid JSON with these exact keys:
         }
       })
   )).filter(Boolean);
+
+  const imageAttachments = [...mimeImageAttachments, ...linkedPhotos];
 
   return { result: parsed, rawEmail: rawBody, pdfAttachment, imageAttachments, emailMeta };
 }
@@ -1455,11 +1576,12 @@ async function pollInbox(mailbox) {
       ? await findJobTagInThread(mailbox, message.conversationId, message.id)
       : null;
     if (siblingTag) {
-      // Skip without tagging — leaving both "Job created - X" (on the original message)
-      // and "Existing job - X" (on this reply) visible in the same conversation looked
-      // messy, and the original tag already makes the job findable. This reply keeps its
-      // trigger category and gets this same check re-run on the next poll, which is cheap.
-      console.log(`[poll] Reply to already-processed thread (${siblingTag}) — skipping, no tag applied:`, message.subject);
+      // A later reply that arrived after the job-creation sweep already tagged the rest
+      // of the thread — re-stamp the sibling's tag across the whole conversation again
+      // (including this message) rather than leaving it untagged, so it doesn't look like
+      // Bara AI never saw it. No new job is created.
+      console.log(`[poll] Reply to already-processed thread (${siblingTag}) — restamping conversation:`, message.subject);
+      await tagWholeConversation(mailbox, message.conversationId, null, siblingTag);
       continue;
     }
 
