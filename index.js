@@ -3,6 +3,7 @@ import express from "express";
 import OpenAI from "openai";
 import * as pdfjsLib from "pdfjs-dist/legacy/build/pdf.mjs";
 import { createHmac } from "crypto";
+import { deflateSync } from "node:zlib";
 import { PACKAGE_TEMPLATES } from "./templates.js";
 import Airtable from "airtable";
 
@@ -957,16 +958,117 @@ async function createArofloJob(result, rawEmail, pdfAttachment = null, emailMeta
 // ================================================================
 // PDF + HTML helpers
 // ================================================================
-async function extractPDF(data) {
-  const loadingTask = pdfjsLib.getDocument({ data });
-  const pdf         = await loadingTask.promise;
+
+// Below this pixel area an embedded image is almost always a letterhead logo or
+// icon rather than an actual site photo (a real photo comfortably clears this —
+// e.g. 640x329) — skip it so the gallery isn't cluttered with agency branding.
+const MIN_PDF_IMAGE_AREA = 40000;
+
+const PNG_CRC_TABLE = (() => {
+  const table = new Uint32Array(256);
+  for (let n = 0; n < 256; n++) {
+    let c = n;
+    for (let k = 0; k < 8; k++) c = (c & 1) ? (0xedb88320 ^ (c >>> 1)) : (c >>> 1);
+    table[n] = c >>> 0;
+  }
+  return table;
+})();
+
+function pngCrc32(buf) {
+  let c = 0xffffffff;
+  for (let i = 0; i < buf.length; i++) c = PNG_CRC_TABLE[(c ^ buf[i]) & 0xff] ^ (c >>> 8);
+  return (c ^ 0xffffffff) >>> 0;
+}
+
+function pngChunk(type, data) {
+  const len = Buffer.alloc(4);
+  len.writeUInt32BE(data.length, 0);
+  const typeBuf = Buffer.from(type, "ascii");
+  const crc = Buffer.alloc(4);
+  crc.writeUInt32BE(pngCrc32(Buffer.concat([typeBuf, data])), 0);
+  return Buffer.concat([len, typeBuf, data, crc]);
+}
+
+// Encodes pdfjs's decoded raw pixel data (RGB/RGBA/greyscale, one byte per
+// channel) into a PNG — avoids pulling in a `canvas`/native image dependency
+// just to save a handful of embedded photos per work order.
+function encodePngFromRawImage(width, height, channels, rawData) {
+  const colorType = channels === 4 ? 6 : channels === 3 ? 2 : 0; // RGBA=6, RGB=2, Greyscale=0
+  const stride    = width * channels;
+  const raw       = Buffer.alloc((stride + 1) * height);
+  for (let y = 0; y < height; y++) {
+    raw[y * (stride + 1)] = 0; // filter type: none
+    Buffer.from(rawData.buffer, rawData.byteOffset + y * stride, stride).copy(raw, y * (stride + 1) + 1);
+  }
+  const ihdr = Buffer.alloc(13);
+  ihdr.writeUInt32BE(width, 0);
+  ihdr.writeUInt32BE(height, 4);
+  ihdr[8] = 8; // bit depth
+  ihdr[9] = colorType;
+  const signature = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+  return Buffer.concat([
+    signature,
+    pngChunk("IHDR", ihdr),
+    pngChunk("IDAT", deflateSync(raw)),
+    pngChunk("IEND", Buffer.alloc(0)),
+  ]);
+}
+
+// Resolves a decoded image object from pdfjs's page.objs store — image decoding
+// happens asynchronously in the background even after getOperatorList() resolves,
+// so this waits for it via the callback form rather than the (often premature) sync get().
+function waitForPdfImage(objs, objId, timeoutMs = 8000) {
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error(`Timed out waiting for image ${objId}`)), timeoutMs);
+    objs.get(objId, val => { clearTimeout(timer); resolve(val); });
+  });
+}
+
+// Parses a work order PDF once for both its text content (for the AI extraction
+// prompt) and any embedded photos (e.g. a tech's annotated "requested GPO
+// position" shot) so they can be pulled into the same SharePoint photo gallery
+// as email-attached photos instead of being silently dropped.
+async function parsePDF(data) {
+  const { OPS } = pdfjsLib;
+  const pdf = await pdfjsLib.getDocument({ data }).promise;
   let text = "";
+  const images = [];
+  let photoCount = 0;
+
   for (let i = 1; i <= pdf.numPages; i++) {
-    const page    = await pdf.getPage(i);
+    const page = await pdf.getPage(i);
+
     const content = await page.getTextContent();
     text += content.items.map(item => item.str).join(" ") + "\n";
+
+    const opList = await page.getOperatorList();
+    const seenOnPage = new Set();
+    for (let j = 0; j < opList.fnArray.length; j++) {
+      const fn = opList.fnArray[j];
+      if (fn !== OPS.paintImageXObject && fn !== OPS.paintImageXObjectRepeat && fn !== OPS.paintJpegXObject) continue;
+      const objId = opList.argsArray[j][0];
+      if (seenOnPage.has(objId)) continue;
+      seenOnPage.add(objId);
+
+      try {
+        const img = await waitForPdfImage(page.objs, objId);
+        if (!img?.width || !img?.height) continue;
+        if (img.width * img.height < MIN_PDF_IMAGE_AREA) continue;
+        const channels = img.kind === 3 ? 4 : img.kind === 2 ? 3 : 1;
+        photoCount++;
+        images.push({
+          name:        `WorkOrder-photo-${photoCount}.png`,
+          data:        encodePngFromRawImage(img.width, img.height, channels, img.data),
+          contentType: "image/png",
+        });
+      } catch (err) {
+        console.warn(`[pdf] Skipped embedded image ${objId} on page ${i}:`, err.message);
+      }
+    }
+    page.cleanup();
   }
-  return text;
+
+  return { text, images };
 }
 
 function cleanHtml(html) {
@@ -1240,6 +1342,7 @@ async function processMessage(message, mailbox = WORKORDERS_EMAIL, onStatus = nu
   const emailBodyText = (message.body?.contentType === "html" ? cleanHtml(rawBody) : rawBody).replace(/\s+/g, " ").trim();
   let   textForAI     = emailBodyText;
   let   pdfAttachment = null;
+  let   pdfImages     = [];
 
   function withEmailBody(primary) {
     return `--- WORK ORDER CONTENT (prefer this) ---\n${primary}\n\n--- EMAIL BODY (use for anything not found above) ---\n${emailBodyText}`;
@@ -1255,8 +1358,9 @@ async function processMessage(message, mailbox = WORKORDERS_EMAIL, onStatus = nu
       if (contentType.includes("pdf")) {
         const buffer  = await response.arrayBuffer();
         const data    = new Uint8Array(buffer);
-        const pdfText = await extractPDF(data);
+        const { text: pdfText, images } = await parsePDF(data);
         textForAI = withEmailBody(pdfText.replace(/\s+/g, " ").trim());
+        pdfImages = images;
         const urlName = decodeURIComponent(response.url.split("/").pop().split("?")[0] || "");
         pdfAttachment = { name: urlName.toLowerCase().endsWith(".pdf") ? urlName : "WorkOrder.pdf", data };
       } else {
@@ -1299,8 +1403,9 @@ async function processMessage(message, mailbox = WORKORDERS_EMAIL, onStatus = nu
     const attachData = await attachRes.json();
     const data       = Uint8Array.from(atob(attachData.contentBytes), c => c.charCodeAt(0));
     pdfAttachment = { name: workorderAttachment.name, data: new Uint8Array(data) }; // copy before pdfjs detaches the buffer
-    const pdfText    = await extractPDF(data);
+    const { text: pdfText, images } = await parsePDF(data);
     textForAI = withEmailBody(pdfText.replace(/\s+/g, " ").trim());
+    pdfImages = images;
   }
 
   // Neither a link nor an attachment on this message — it may be a reply further down
@@ -1311,8 +1416,9 @@ async function processMessage(message, mailbox = WORKORDERS_EMAIL, onStatus = nu
     const threadPdf = await findThreadWorkOrderPdf(mailbox, message.conversationId, message.id);
     if (threadPdf) {
       pdfAttachment = { name: threadPdf.name, data: new Uint8Array(threadPdf.data) };
-      const pdfText = await extractPDF(threadPdf.data);
+      const { text: pdfText, images } = await parsePDF(threadPdf.data);
       textForAI = withEmailBody(pdfText.replace(/\s+/g, " ").trim());
+      pdfImages = images;
     }
   }
   if (onStatus) await onStatus(SENDING_TO_AI_CATEGORY);
@@ -1447,7 +1553,7 @@ Return ONLY valid JSON with these exact keys:
       })
   )).filter(Boolean);
 
-  const imageAttachments = [...mimeImageAttachments, ...linkedPhotos];
+  const imageAttachments = [...mimeImageAttachments, ...linkedPhotos, ...pdfImages];
 
   return { result: parsed, rawEmail: rawBody, pdfAttachment, imageAttachments, emailMeta };
 }
