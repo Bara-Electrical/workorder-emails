@@ -1,0 +1,293 @@
+=== TOP LEVEL INFO ===
+Name: AroFlo API
+Variables count: [33m7[39m
+
+=== STRUCTURE ===
+[FOLDER] LastUpdate
+  - [GET] Get lastupdate since  https://api.aroflo.com/{{urlVarString}}
+  - [GET] Get lastupdate Tasks  https://api.aroflo.com/{{urlVarString}}
+  - [GET] Get lastupdate Quotes  https://api.aroflo.com/{{urlVarString}}
+[FOLDER] BusinessUnits
+  [FOLDER] JOIN locations
+    - [GET] BusinessUnits and Locations  https://api.aroflo.com/{{urlVarString}}
+  [FOLDER] JOIN priorities
+    - [GET] BusinessUnits and Priorities  https://api.aroflo.com/{{urlVarString}}
+  - [GET] BusinessUnits  https://api.aroflo.com/{{urlVarString}}
+  - [GET] Archived BusinessUnits  https://api.aroflo.com/{{urlVarString}}
+[FOLDER] PermissionGroups
+  - [GET] Get PermissionGroups  https://api.aroflo.com/{{urlVarString}}
+[FOLDER] Users
+  [FOLDER] JOIN customfields
+    - [GET] Get Users and customfields  https://api.aroflo.com/{{urlVarString}}
+    - [POST] Update Users customfield  https://api.aroflo.com/
+    - [POST] Create User with Custom Fields  https://api.aroflo.com/
+  [FOLDER] JOIN permissiongroups
+    - [GET] Get Users and permissiongroups  https://api.aroflo.com/{{urlVarString}}
+    - [POST] Update Users permissiongroups  https://api.aroflo.com/
+  [FOLDER] JOIN documentsandphotos
+    - [GET] Get Users and DocumentsandPhotos  https://api.aroflo.com/{{urlVarString}}
+  [FOLDER] JOIN notes
+    - [GET] Get Users and Notes  https://api.aroflo.com/{{urlVarString}}
+  [FOLDER] JOIN trackingcentredefaults
+    - [GET] Get Users and trackingcentredefaults  https://api.aroflo.com/{{urlVarString}}
+  [FOLDER] JOIN featureaccess
+    - [GET] Get Users and featureaccess  https://api.aroflo.com/{{urlVarString}}
+    - [POST] Update Users "Reset Password through Forgot Password"  https://api.aroflo.com/
+  - [GET] Get Users  https://api.aroflo.com/{{urlVarString}}
+  - [GET] Get Users with set position  https://api.aroflo.com/{{urlVarString}}
+  - [GET] Get a specific User  https://api.aroflo.com/{{urlVarString}}
+  - [POST] Create User  https://api.aroflo.com/
+  - [POST] Update Users mobile number  https://api.aroflo.com/
+[FOLDER] UserPosition
+  - [GET] Get UserPosition  https://api.aroflo.com/{{urlVarString}}
+[FOLDER] Timesheets
+  - [GET] Get Timesheets  https://api.aroflo.com/{{urlVarString}}
+  - [GET] Get Timesheets for timesheetid  https://api.aroflo.com/{{urlVarString}}
+  - [GET] Get Timesheets for taskid  https://api.aroflo.com/{{urlVarString}}
+  - [GET] Get Timesheets for workdate  https://api.aroflo.com/{{urlVarString}}
+  - [GET] Get Timesheets for userid  https://api.aroflo.com/{{urlVarString}}
+  - [GET] Get Timesheets for type `productive`  https://api.aroflo.com/{{urlVarString}}
+[FOLDER] TransactionTerms
+  - [GET] Get TransactionTerms  https://api.aroflo.com/{{urlVarString}}
+[FOLDER] Priorities
+  - [GET] Get Priorities  https://api.aroflo.com/{{urlVarString}}
+  - [GET] Get Client Priorties  https://api.aroflo.com/{{urlVarString}}
+  - [POST] Create Client Priorties  https://api.aroflo.com/
+  - [POST] Update BU Priorty  https://api.aroflo.com/
+[FOLDER] Clients
+  [FOLDER] JOIN locations
+    - [GET] Get Clients and Locations  https://api.aroflo.com/{{urlVarString}}
+    - [POST] Create Location for Client  https://api.aroflo.com/
+  [FOLDER] JOIN notes
+    - [GET] Get Clients and Notes  https://api.aroflo.com/{{urlVarString}}
+  [FOLDER] JOIN locationcustomfields
+    - [GET] Get Locations and LocationCustomFields for Client  https://api.aroflo.com/{{urlVarString}}
+  [FOLDER] JOIN contacts
+    - [GET] Get active Contacts for Client  https://api.aroflo.com/{{urlVarString}}
+    - [POST] Create Contact for Client  https://api.aroflo.com/
+    - [POST] Update Contacts for Client  https://api.aroflo.com/
+    - [POST] Archive a Contact  https://api.aroflo.com/
+  [FOLDER] JOIN customfields
+    - [GET] Get CustomFields for a particular Client  https://api.aroflo.com/{{urlVarString}}
+    - [POST] Update Client Custom Field  https://api.aroflo.com/
+  [FOLDER] JOIN priorities
+    - [GET] Get Priorities for a particular Client  https://api.aroflo.com/{{urlVarString}}
+  [FOLDER] JOIN documentsandphotos
+    - [GET] Get DocumentsAndPhotos for a particular Client  https://api.aroflo.com/{{urlVarString}}
+  - [GET] Get "Postable"/Updated Clients  https://api.aroflo.com/{{urlVarString}}
+  - [GET] Search for Client by Name  https://api.aroflo.com/{{urlVarString}}
+  - [POST] Create Client  https://api.aroflo.com/
+  - [POST] Update Client primary contact phone  https://api.aroflo.com/
+  - [POST] Mark Clients as processed.  https://api.aroflo.com/
+[FOLDER] ClientNotes
+  - [GET] Get ClientNotes  https://api.aroflo.com/{{urlVarString}}
+  - [POST] Create ClientNote  https://api.aroflo.com/
+  - [POST] Update ClientNote  https://api.aroflo.com/
+[FOLDER] Contacts
+  - [GET] Get Contacts  https://api.aroflo.com/{{urlVarString}}
+[FOLDER] Locations
+  - [GET] Get Locations  https://api.aroflo.com/{{urlVarString}}
+[FOLDER] Quotes
+  [FOLDER] JOIN documentsandphotos
+    - [GET] Get Quote with documentsandphotos  https://api.aroflo.com/{{urlVarString}}
+  [FOLDER] JOIN lineitems
+    - [GET] Get Quote with lineitems  https://api.aroflo.com/{{urlVarString}}
+  [FOLDER] JOIN notes
+    - [GET] Get Quote with notes  https://api.aroflo.com/{{urlVarString}}
+  [FOLDER] JOIN projects
+    - [GET] Get Quote with Projects  https://api.aroflo.com/{{urlVarString}}
+  [FOLDER] JOIN trackingcentres
+    - [GET] Get Quote with LineItems and TrackingCentres  https://api.aroflo.com/{{urlVarString}}
+  - [GET] Get In Progress Quotes  https://api.aroflo.com/{{urlVarString}}
+[FOLDER] QuoteLineItems
+  - [GET] Get QuoteLineItems  https://api.aroflo.com/{{urlVarString}}
+[FOLDER] TaskTypes
+  - [GET] Get TaskTypes  https://api.aroflo.com/{{urlVarString}}
+  - [GET] Get TaskTypes for a Client  https://api.aroflo.com/{{urlVarString}}
+[FOLDER] Tasks
+  [FOLDER] JOIN documentsandphotos
+    - [GET] Get Tasks with documentsandphotos  https://api.aroflo.com/{{urlVarString}}
+  [FOLDER] JOIN notes
+    - [GET] Get Tasks with notes  https://api.aroflo.com/{{urlVarString}}
+    - [POST] Insert Notes to Task  https://api.aroflo.com/
+    - [GET] Update Note on Task  https://api.aroflo.com/{{urlVarString}}
+  [FOLDER] JOIN assignedhistory
+    - [GET] Get Task with assignedhistory  https://api.aroflo.com/{{urlVarString}}
+  [FOLDER] JOIN material
+    - [GET] Get Task with Materials  https://api.aroflo.com/{{urlVarString}}
+    - [POST] Insert AdHoc material to Task  https://api.aroflo.com/
+  [FOLDER] JOIN labour
+    - [GET] Get Task with Labour  https://api.aroflo.com/{{urlVarString}}
+  [FOLDER] JOIN expense
+    - [GET] Get Task with Expenses  https://api.aroflo.com/{{urlVarString}}
+  [FOLDER] JOIN purchaseorders
+    - [GET] Get Task with Purchase Orders  https://api.aroflo.com/{{urlVarString}}
+  [FOLDER] JOIN assets
+    - [GET] Get Task with Assets  https://api.aroflo.com/{{urlVarString}}
+  [FOLDER] JOIN customfields
+    - [GET] Get Task with Custom Fields  https://api.aroflo.com/{{urlVarString}}
+    - [POST] Create Task with Custom Fields  https://api.aroflo.com/
+  [FOLDER] JOIN location
+    - [GET] Get Task with Location  https://api.aroflo.com/{{urlVarString}}
+  [FOLDER] JOIN locationcustomfields
+    - [GET] Get Task with Location Custom Fields  https://api.aroflo.com/{{urlVarString}}
+  [FOLDER] JOIN project
+    - [GET] Get Task with Project  https://api.aroflo.com/{{urlVarString}}
+    - [POST] Update Task and Project/Stage  https://api.aroflo.com/
+  [FOLDER] JOIN tasktotals
+    - [GET] Get Task and tasktotals  https://api.aroflo.com/{{urlVarString}}
+  [FOLDER] JOIN  substatus
+    - [GET] Get Tasks and Substatus  https://api.aroflo.com/{{urlVarString}}
+    - [POST] Update Task Substatus  https://api.aroflo.com/
+  [FOLDER] JOIN salesperson
+    - [GET] Get Tasks for the salesperson "James Nesbitt"  https://api.aroflo.com/{{urlVarString}}
+    - [GET] Get Tasks for the salesperson_id  https://api.aroflo.com/{{urlVarString}}
+  [FOLDER] JOIN quote
+    - [GET] Get Tasks with quote data  https://api.aroflo.com/{{urlVarString}}
+  - [GET] Get Tasks  https://api.aroflo.com/{{urlVarString}}
+  - [GET] Get Tasks due for a date range  https://api.aroflo.com/{{urlVarString}}
+  - [POST] Create Task  https://api.aroflo.com/
+  - [POST] Update Task  https://api.aroflo.com/
+  - [POST] Mark Task as linkprocessed  https://api.aroflo.com/
+[FOLDER] TaskMaterials
+  - [GET] Get TaskMaterials  https://api.aroflo.com/{{urlVarString}}
+  - [POST] Insert AdHoc materials  https://api.aroflo.com/
+  - [POST] Mark TaskMaterials LinkProcessed  https://api.aroflo.com/
+[FOLDER] TaskLabours
+  - [GET] Get Tasklabours  https://api.aroflo.com/{{urlVarString}}
+  - [POST] Mark Tasklabours LinkProcessed  https://api.aroflo.com/
+  - [GET] Get Tasklabours for workdatetimestart  https://api.aroflo.com/{{urlVarString}}
+[FOLDER] TaskExpenses
+  - [GET] Get Taskexpenses  https://api.aroflo.com/{{urlVarString}}
+[FOLDER] TaskResources
+  - [POST] Insert Task Resource  https://api.aroflo.com/
+[FOLDER] Invoices
+  [FOLDER] JOIN lineitems
+    - [GET] Get Approved Invoices including line items  https://api.aroflo.com/{{urlVarString}}
+  [FOLDER] JOIN trackingcentres
+    - [GET] Get Approved Invoices with LineItems and TrackingCentres  https://api.aroflo.com/{{urlVarString}}
+  [FOLDER] JOIN task
+    - [GET] Get Approved Invoices include task details  https://api.aroflo.com/{{urlVarString}}
+  [FOLDER] JOIN project
+    - [GET] Get Approved Invoices include project details  https://api.aroflo.com/{{urlVarString}}
+  - [GET] Get Approved Invoices updated after 2018-11-01 11:00:00  https://api.aroflo.com/{{urlVarString}}
+  - [GET] Get all invoices for certain taskid  https://api.aroflo.com/{{urlVarString}}
+  - [POST] Update Processed Invoices  https://api.aroflo.com/
+[FOLDER] Payments
+  - [GET] Get Payments  https://api.aroflo.com/{{urlVarString}}
+[FOLDER] Suppliers
+  [FOLDER] JOIN locations
+    - [GET] Get Suppliers and Locations  https://api.aroflo.com/{{urlVarString}}
+    - [POST] Create Location for Supplier  https://api.aroflo.com/
+    - [POST] Update Location for Supplier  https://api.aroflo.com/
+  [FOLDER] JOIN locationcustomfields
+    - [GET] Get Locations and LocationCustomFields for Supplier  https://api.aroflo.com/{{urlVarString}}
+    - [POST] Update Custom Field on Location  https://api.aroflo.com/
+  [FOLDER] JOIN contacts
+    - [GET] Get active Contacts for Supplier  https://api.aroflo.com/{{urlVarString}}
+    - [POST] Archive a Contact  https://api.aroflo.com/
+    - [POST] Create Contact for Supplier  https://api.aroflo.com/
+  [FOLDER] JOIN customfields
+    - [GET] Get CustomFields for a particular Supplier  https://api.aroflo.com/{{urlVarString}}
+  - [GET] Get Suppliers  https://api.aroflo.com/{{urlVarString}}
+  - [GET] Get "Postable"/Updated Suppliers  https://api.aroflo.com/{{urlVarString}}
+  - [POST] Create Supplier  https://api.aroflo.com/
+  - [POST] Update Supplier primary contact phone  https://api.aroflo.com/
+  - [POST] Mark Supplier as processed.  https://api.aroflo.com/
+[FOLDER] Inventory
+  [FOLDER] JOIN stocklevels
+    - [GET] Get Inventory with stocklevels for businessunits only  https://api.aroflo.com/{{urlVarString}}
+    - [POST] Update stocklevel for Inventory item  https://api.aroflo.com/
+  - [GET] Get Inventory  https://api.aroflo.com/{{urlVarString}}
+  - [POST] Create inventory item  https://api.aroflo.com/
+[FOLDER] InventoryCategories
+  - [GET] Get InventoryCategories  https://api.aroflo.com/{{urlVarString}}
+[FOLDER]  InventoryStockLevels
+  - [GET] Get InventoryStockLevels  https://api.aroflo.com/{{urlVarString}}
+  - [GET] Get InventoryStockLevels for BU Stock  https://api.aroflo.com/{{urlVarString}}
+[FOLDER] CustomHolders
+  - [GET] Get CustomHolders  https://api.aroflo.com/{{urlVarString}}
+[FOLDER] InventoryLists
+  - [GET] Get InventoryLists  https://api.aroflo.com/{{urlVarString}}
+  - [GET] Get Assemblies  https://api.aroflo.com/{{urlVarString}}
+  - [GET] Get Items for an Assembly  https://api.aroflo.com/{{urlVarString}}
+[FOLDER] PurchaseOrders
+  [FOLDER] JOIN lineitems
+    - [GET] Approved PurchaseOrders with lineitems  https://api.aroflo.com/{{urlVarString}}
+  [FOLDER] JOIN trackingcentres
+    - [GET] Approved PurchaseOrders with LineItems and TrackingCentres  https://api.aroflo.com/{{urlVarString}}
+  [FOLDER] JOIN task
+    - [GET] Approved PurchaseOrders with Task  https://api.aroflo.com/{{urlVarString}}
+  [FOLDER] JOIN project
+    - [GET] Approved PurchaseOrders with Project  https://api.aroflo.com/{{urlVarString}}
+  [FOLDER] JOIN documentsandphotos
+    - [GET] Approved PurchaseOrders with Documents  https://api.aroflo.com/{{urlVarString}}
+  - [GET] Approved PurchaseOrders  https://api.aroflo.com/{{urlVarString}}
+  - [POST] Update Processed PurchaseOrders  https://api.aroflo.com/
+  - [GET] Pending PurchaseOrders with items and Task information  https://api.aroflo.com/{{urlVarString}}
+[FOLDER] Bills
+  [FOLDER] JOIN lineitems
+    - [GET] Approved Bills with LineItems  https://api.aroflo.com/{{urlVarString}}
+  [FOLDER] JOIN trackingcentres
+    - [GET] Approved Bills with LineItems and TrackingCentres  https://api.aroflo.com/{{urlVarString}}
+  - [GET] Approved Bills  https://api.aroflo.com/{{urlVarString}}
+  - [POST] Update Processed Bills  https://api.aroflo.com/
+  - [POST] Insert Bill  https://api.aroflo.com/
+[FOLDER] BillLineItems
+  - [GET] GET BillLineItems for BillID  https://api.aroflo.com/{{urlVarString}}
+  - [POST] Insert BillLineItem  https://api.aroflo.com/
+  - [POST] Update existing BillLineItem  https://api.aroflo.com/
+[FOLDER] WorkOrders
+  [FOLDER] JOIN documentsandphotos
+    - [GET] Get WorkOrders with documentsandphotos  https://api.aroflo.com/{{urlVarString}}
+  [FOLDER] JOIN notes
+    - [GET] Get WorkOrders with notes  https://api.aroflo.com/{{urlVarString}}
+  [FOLDER] JOIN lineitems
+    - [GET] Get WorkOrders with lineitems  https://api.aroflo.com/{{urlVarString}}
+  [FOLDER] JOIN tasks
+    - [GET] Get WorkOrders with tasks  https://api.aroflo.com/{{urlVarString}}
+  [FOLDER] JOIN bills
+    - [GET] Get WorkOrders with bills  https://api.aroflo.com/{{urlVarString}}
+  - [GET] Get WorkOrders  https://api.aroflo.com/{{urlVarString}}
+[FOLDER] WorkOrderLineItems
+  - [GET] Get WorkOrderLineItems  https://api.aroflo.com/{{urlVarString}}
+  - [GET] Get specific WorkOrderLineItems by lineid  https://api.aroflo.com/{{urlVarString}}
+[FOLDER] Assets
+  [FOLDER] JOIN location
+    - [GET] Get Assets with Location  https://api.aroflo.com/{{urlVarString}}
+  [FOLDER] JOIN customfields
+    - [GET] Get Assets with Customfields  https://api.aroflo.com/{{urlVarString}}
+  [FOLDER] JOIN notes
+    - [GET] Get Assets with Notes  https://api.aroflo.com/{{urlVarString}}
+  [FOLDER] JOIN documentsandphotos
+    - [GET] Get Assets with documentsandphotos  https://api.aroflo.com/{{urlVarString}}
+  - [GET] Get Assets  https://api.aroflo.com/{{urlVarString}}
+  - [POST] Create Asset  https://api.aroflo.com/
+  - [POST] Update an Asset  https://api.aroflo.com/
+[FOLDER] AssetCategories
+  - [GET] Get AssetsCategories  https://api.aroflo.com/{{urlVarString}}
+[FOLDER] MessageBoard
+  - [GET] Get MessageBoard  https://api.aroflo.com/{{urlVarString}}
+[FOLDER] Substatus
+  - [GET] Get Task Substatus  https://api.aroflo.com/{{urlVarString}}
+[FOLDER] DocumentsAndPhotos
+  - [GET] Get DocumentsAndPhotos  https://api.aroflo.com/{{urlVarString}}
+  - [GET] Get DocumentsAndPhotos from Category  https://api.aroflo.com/{{urlVarString}}
+[FOLDER] Schedules
+  - [GET] Get Schedules  https://api.aroflo.com/{{urlVarString}}
+  - [GET] Get Schedules for groupid  https://api.aroflo.com/{{urlVarString}}
+  - [GET] Get Schedules for scheduletotype  https://api.aroflo.com/{{urlVarString}}
+  - [GET] Get Schedules for scheduledtoid  https://api.aroflo.com/{{urlVarString}}
+  - [GET] Get Schedules for startdate  https://api.aroflo.com/{{urlVarString}}
+  - [GET] Get Schedules for startdatetime  https://api.aroflo.com/{{urlVarString}}
+  - [GET] Get Schedules for taskid  https://api.aroflo.com/{{urlVarString}}
+  - [POST] Create Schedule  https://api.aroflo.com/
+[FOLDER] Projects
+  - [GET] Get Projects  https://api.aroflo.com/{{urlVarString}}
+[FOLDER] Stages
+  - [GET] Get Stages  https://api.aroflo.com/{{urlVarString}}
+[FOLDER] MessageTemplates
+  - [GET] Get Message Templates  https://api.aroflo.com/{{urlVarString}}
+  - [POST] Create MessageTemplate  https://api.aroflo.com/
+[FOLDER] TrackingCentres
+  - [GET] Get TrackingCentres  https://api.aroflo.com/{{urlVarString}}
