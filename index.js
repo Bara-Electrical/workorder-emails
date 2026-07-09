@@ -309,8 +309,8 @@ async function appendToPinnedNoteSection(taskId, section, text) {
       const isPlaceholder = lineText.replace(/&nbsp;/gi, "").trim() === "-";
 
       const newLine = isPlaceholder
-        ? `- ${escapeHtml(text)}`
-        : `${lineText}<br />\n- ${escapeHtml(text)}`;
+        ? escapeHtml(text)
+        : `${lineText}<br />\n${escapeHtml(text)}`;
 
       return `${head}${newLine}${trailingTags}${closeTag}`;
     }
@@ -809,7 +809,13 @@ async function createArofloJob(result, rawEmail, pdfAttachment = null, emailMeta
     }
     const detail = `SiteContact/SitePhone are capped at ${SITE_FIELD_LIMIT} characters by Aroflo — full list: "${result["tenant-name"] || ""}" / "${result["tenant-contact"] || ""}"`;
     console.warn("[job]", detail);
-    warnings.push({ tag: "Tenant details truncated", detail });
+    // Only alert when there's genuinely nothing to fall back on (a single tenant's
+    // name/phone alone exceeds the limit and got hard-truncated). The normal
+    // multi-tenant overflow case is captured cleanly in the pinned scheduling note
+    // below, so it isn't an issue worth an alert email/tag.
+    if (tenantOverflowLines.length === 0) {
+      warnings.push({ tag: "Tenant details truncated", detail });
+    }
   }
 
   const location = await findOrUpdateLocation(
@@ -1601,6 +1607,12 @@ Return ONLY valid JSON with these exact keys:
   // Ignore $0 expenditure limits
   if (parsed["expenditure-limit"] && /^\$?\s*0+(\.0+)?\s*$/.test(parsed["expenditure-limit"].trim())) {
     parsed["expenditure-limit"] = null;
+  }
+
+  // Tapi appends a "-1" revision suffix to its order numbers that isn't part of the
+  // real work order number — strip it for Tapi-sourced work orders.
+  if (parsed["order-number"] && /tapihq\.com/i.test(message.from?.emailAddress?.address || "")) {
+    parsed["order-number"] = parsed["order-number"].replace(/-1$/, "");
   }
 
   // Australian mobile numbers are 10 digits starting with 0 — restore a leading 0 the
