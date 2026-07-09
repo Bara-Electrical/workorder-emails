@@ -357,11 +357,14 @@ let clientCacheLastLoaded = null;
 async function loadClientCache() {
   // where=clientid!=0 forces Aroflo to return the full client list.
   // Without a WHERE clause the API silently limits to recently active clients only.
+  // archived=false excludes archived clients so findClient() can never match one
+  // (e.g. an archived "Rentwest Solutions" shadowing the active "Rentwest").
   const WHERE = encodeURIComponent("and|clientid|!=|0");
+  const WHERE_ACTIVE = encodeURIComponent("and|archived|=|false");
   let page = 1, loaded = 0;
   try {
     while (true) {
-      const zone = await arofloGet(`zone=clients&where=${WHERE}&page=${page}`);
+      const zone = await arofloGet(`zone=clients&where=${WHERE}&where=${WHERE_ACTIVE}&page=${page}`);
       const raw  = zone?.clients;
       if (!raw) break;
       const arr  = toArray(raw);
@@ -455,7 +458,9 @@ async function findClient(realEstateName) {
   // Cache not loaded yet — fall back to API
   for (const name of candidates) {
     const zone = await arofloGet(
-      "zone=clients&where=" + encodeURIComponent(`and|clientname|=|${name}`) + "&page=1"
+      "zone=clients&where=" + encodeURIComponent(`and|clientname|=|${name}`) +
+      "&where=" + encodeURIComponent("and|archived|=|false") +
+      "&page=1"
     );
     const arr = toArray(zone.clients);
     if (arr.length > 0) return arr[0];
@@ -783,7 +788,7 @@ async function createArofloJob(result, rawEmail, pdfAttachment = null, emailMeta
       if (!client) {
         // Client not in cache (may be a supplier/subcontractor type) — try live Aroflo API
         console.log(`[job] Cache miss for "${domainName}" — trying live Aroflo API lookup`);
-        const zone = await arofloGet(`zone=clients&where=${encodeURIComponent(`and|clientname|=|${domainName}`)}&page=1`);
+        const zone = await arofloGet(`zone=clients&where=${encodeURIComponent(`and|clientname|=|${domainName}`)}&where=${encodeURIComponent("and|archived|=|false")}&page=1`);
         client = toArray(zone?.clients)[0] || null;
       }
       clientFoundVia = `email domain (${domainName})`;
