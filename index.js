@@ -1394,6 +1394,19 @@ function findLinkedPhotoLinks(rawHtml) {
   return links;
 }
 
+// Tapi's work-order page (tapi.app/issue/...) is server-rendered HTML — real site photos
+// sit as plain <img> tags pointing at signed S3 URLs under its media bucket's
+// uploads/assets/ path. The same page also has the Tapi logo and the PM's own "management
+// logo", but neither lives in that bucket path, so matching on it excludes both without
+// needing to touch the surrounding markup/alt text (fragile — could change independently
+// of the actual photo markup). Each photo also appears twice (gallery + print section)
+// with byte-identical signed URLs, so dedupe by the raw src.
+function findTapiPhotoLinks(html) {
+  const matches = [...html.matchAll(/<img\s[^>]*src="([^"]*tapi-production-media\/uploads\/assets\/[^"]*)"/gi)];
+  const unique  = [...new Set(matches.map(m => m[1].replace(/&amp;/g, "&")))];
+  return unique;
+}
+
 // A reply-only message (e.g. "we'll do points 1 and 2, PM will sort a contractor for
 // point 3") often has no work order PDF/link of its own — the original work order lives
 // on an earlier message in the same conversation. Search the rest of the thread for it
@@ -1441,6 +1454,7 @@ async function processMessage(message, mailbox = WORKORDERS_EMAIL, onStatus = nu
   let   textForAI     = emailBodyText;
   let   pdfAttachment = null;
   let   pdfImages     = [];
+  let   tapiPhotos    = [];
 
   function withEmailBody(primary) {
     return `--- WORK ORDER CONTENT (prefer this) ---\n${primary}\n\n--- EMAIL BODY (use for anything not found above) ---\n${emailBodyText}`;
@@ -1465,6 +1479,26 @@ async function processMessage(message, mailbox = WORKORDERS_EMAIL, onStatus = nu
         const html     = await response.text();
         const linkText = cleanHtml(html).slice(0, 50000);
         if (linkText.length > 200) textForAI = withEmailBody(linkText);
+
+        const tapiPhotoLinks = findTapiPhotoLinks(html);
+        if (tapiPhotoLinks.length > 0) {
+          tapiPhotos = (await Promise.all(
+            tapiPhotoLinks.map(async (href, i) => {
+              try {
+                const photoRes = await fetch(href, { headers: { "User-Agent": "Mozilla/5.0" } });
+                const photoContentType = photoRes.headers.get("content-type") || "";
+                if (!photoContentType.startsWith("image/")) return null;
+                const buffer = await photoRes.arrayBuffer();
+                const urlName = decodeURIComponent(href.split("/").pop().split("?")[0] || "");
+                console.log("[email] Tapi issue photo downloaded:", urlName);
+                return { name: urlName || `Tapi-photo-${i + 1}.png`, data: new Uint8Array(buffer), contentType: photoContentType };
+              } catch (err) {
+                console.warn("[email] Failed to download Tapi issue photo:", err.message);
+                return null;
+              }
+            })
+          )).filter(Boolean);
+        }
       }
     } catch (err) {
       console.error("[email] Link fetch error:", err.message);
@@ -1664,7 +1698,7 @@ Return ONLY valid JSON with these exact keys:
       })
   )).filter(Boolean);
 
-  const imageAttachments = [...mimeImageAttachments, ...linkedPhotos, ...pdfImages];
+  const imageAttachments = [...mimeImageAttachments, ...linkedPhotos, ...pdfImages, ...tapiPhotos];
 
   return { result: parsed, rawEmail: rawBody, pdfAttachment, imageAttachments, emailMeta };
 }
