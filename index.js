@@ -1056,6 +1056,11 @@ async function createArofloJob(result, rawEmail, pdfAttachment = null, emailMeta
 // e.g. 640x329) — skip it so the gallery isn't cluttered with agency branding.
 const MIN_PDF_IMAGE_AREA = 40000;
 
+// Company/agency logos are banner-shaped (much wider than tall, or vice versa for a
+// sidebar strip) — a real site photo from a phone camera sits close to 4:3/3:4. Anything
+// past this ratio is treated as branding rather than a photo, regardless of pixel area.
+const MAX_PDF_IMAGE_ASPECT_RATIO = 2.5;
+
 const PNG_CRC_TABLE = (() => {
   const table = new Uint32Array(256);
   for (let n = 0; n < 256; n++) {
@@ -1146,6 +1151,7 @@ async function parsePDF(data) {
         const img = await waitForPdfImage(page.objs, objId);
         if (!img?.width || !img?.height) continue;
         if (img.width * img.height < MIN_PDF_IMAGE_AREA) continue;
+        if (Math.max(img.width, img.height) / Math.min(img.width, img.height) > MAX_PDF_IMAGE_ASPECT_RATIO) continue;
         const channels = img.kind === 3 ? 4 : img.kind === 2 ? 3 : 1;
         photoCount++;
         images.push({
@@ -1214,7 +1220,7 @@ async function emailHtmlForNote(html, oneDriveUrl = null, emailMeta = null) {
   cleaned = await decodeWrappedLinks(cleaned);
 
   const cell = (label, value) =>
-    `<tr><td style="color:#888888;font-size:12px;font-weight:bold;padding:1px 12px 1px 0;white-space:nowrap;vertical-align:top">${label}</td><td style="color:#444444;font-size:12px;padding:1px 0">${value}</td></tr>`;
+    `<tr><td style="border:none;color:#888888;font-size:12px;font-weight:bold;padding:1px 12px 1px 0;white-space:nowrap;vertical-align:top">${label}</td><td style="border:none;color:#444444;font-size:12px;padding:1px 0">${value}</td></tr>`;
 
   const metaRows = [
     emailMeta?.from    ? cell("From:",       escapeHtml(emailMeta.from))    : "",
@@ -1223,7 +1229,7 @@ async function emailHtmlForNote(html, oneDriveUrl = null, emailMeta = null) {
     oneDriveUrl        ? cell("Attachment:", `<a href="${oneDriveUrl}" style="color:#1a6bbf" target="_blank">View Work Order PDF</a>`) : "",
   ].filter(Boolean).join("");
 
-  const titleRow = `<tr><td colspan="2" style="font-size:16px;font-weight:bold;color:#444444;padding:0 0 5px 0">Work Order</td></tr>`;
+  const titleRow = `<tr><td colspan="2" style="border:none;font-size:16px;font-weight:bold;color:#444444;padding:0 0 5px 0">Work Order</td></tr>`;
   const metaHtml = `<table style="border-collapse:collapse;margin:0 0 12px 0">${titleRow}${metaRows}</table>`;
 
   return `${metaHtml}<hr style="border:none;border-top:1px solid #dddddd;margin:0 0 14px 0"><div>${cleaned}</div>`;
