@@ -1487,12 +1487,22 @@ async function processMessage(message, mailbox = WORKORDERS_EMAIL, onStatus = nu
             tapiPhotoLinks.map(async (href, i) => {
               try {
                 const photoRes = await fetch(href, { headers: { "User-Agent": "Mozilla/5.0" } });
-                const photoContentType = photoRes.headers.get("content-type") || "";
-                if (!photoContentType.startsWith("image/")) return null;
-                const buffer = await photoRes.arrayBuffer();
                 const urlName = decodeURIComponent(href.split("/").pop().split("?")[0] || "");
+                // Tapi's S3 bucket serves these as application/octet-stream regardless of the
+                // real image type, so the response header can't be trusted — fall back to the
+                // URL's own file extension, which is always present on real photo assets.
+                const headerContentType = photoRes.headers.get("content-type") || "";
+                const ext = (urlName.match(/\.(jpe?g|png|gif|webp|bmp)$/i) || [])[1]?.toLowerCase();
+                const contentType = headerContentType.startsWith("image/")
+                  ? headerContentType
+                  : ext ? `image/${ext === "jpg" ? "jpeg" : ext}` : null;
+                if (!photoRes.ok || !contentType) {
+                  console.warn(`[email] Tapi issue photo skipped — status: ${photoRes.status} content-type: ${headerContentType} url: ${urlName}`);
+                  return null;
+                }
+                const buffer = await photoRes.arrayBuffer();
                 console.log("[email] Tapi issue photo downloaded:", urlName);
-                return { name: urlName || `Tapi-photo-${i + 1}.png`, data: new Uint8Array(buffer), contentType: photoContentType };
+                return { name: urlName || `Tapi-photo-${i + 1}.png`, data: new Uint8Array(buffer), contentType };
               } catch (err) {
                 console.warn("[email] Failed to download Tapi issue photo:", err.message);
                 return null;
