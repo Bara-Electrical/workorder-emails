@@ -1481,6 +1481,7 @@ async function processMessage(message, mailbox = WORKORDERS_EMAIL, onStatus = nu
         if (linkText.length > 200) textForAI = withEmailBody(linkText);
 
         const tapiPhotoLinks = findTapiPhotoLinks(html);
+        console.log(`[email] Work-order link fetched — status: ${response.status} url: ${response.url} page length: ${html.length} tapi photos matched: ${tapiPhotoLinks.length}`);
         if (tapiPhotoLinks.length > 0) {
           tapiPhotos = (await Promise.all(
             tapiPhotoLinks.map(async (href, i) => {
