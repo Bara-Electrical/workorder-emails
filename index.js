@@ -1912,13 +1912,21 @@ async function pollInbox(mailbox) {
   const data = await res.json();
   if (!res.ok) throw new Error(`Graph API error ${res.status}: ${JSON.stringify(data?.error || data)}`);
 
-  // Newest first — when a thread has multiple untagged messages, this ensures the
-  // most recent one (which quotes everything underneath it) is the one processed
-  // and posted to Aroflo; the earlier ones get caught as duplicates by the thread
-  // check below since the newest is tagged first.
-  const messages = (data.value || [])
-    .filter(m => !m.categories.some(c => c.startsWith("Job created")))
-    .sort((a, b) => new Date(b.receivedDateTime) - new Date(a.receivedDateTime));
+  // Threads (jobs) are processed oldest-first, per admin's request, so job creation
+  // follows the order work orders actually came in. But within a single thread that has
+  // multiple untagged messages, the newest one is still tried first — it quotes everything
+  // underneath it, so it's the most complete version of the work order; the earlier ones
+  // get caught as duplicates by the thread check below since the newest is tagged first.
+  const byConversation = new Map();
+  for (const m of data.value || []) {
+    if (m.categories.some(c => c.startsWith("Job created"))) continue;
+    const key = m.conversationId || m.id;
+    if (!byConversation.has(key)) byConversation.set(key, []);
+    byConversation.get(key).push(m);
+  }
+  const messages = [...byConversation.values()]
+    .sort((a, b) => Math.min(...a.map(m => new Date(m.receivedDateTime))) - Math.min(...b.map(m => new Date(m.receivedDateTime))))
+    .flatMap(group => group.sort((a, b) => new Date(b.receivedDateTime) - new Date(a.receivedDateTime)));
   console.log(`[poll] (${mailbox}): ${messages.length} email(s) found`);
 
   for (const message of messages) {
