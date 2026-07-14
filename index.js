@@ -722,7 +722,7 @@ function extractKeyCollectionLine(taskDescription) {
   return line || null;
 }
 
-function buildDescription(result) {
+function buildDescription(result, photoLinkHtml = null) {
   const parts = [];
   const spacer = `<p>&nbsp;</p>`;
   const lockboxDetails = extractLockboxDetails(result["access-details"]);
@@ -739,8 +739,10 @@ function buildDescription(result) {
     );
   }
 
-  const hasHighlights = result["expenditure-limit"] || lockboxDetails;
+  const hasHighlights = result["expenditure-limit"] || lockboxDetails || photoLinkHtml;
   if (hasHighlights) parts.push(spacer);
+
+  if (photoLinkHtml) parts.push(photoLinkHtml);
 
   if (result["expenditure-limit"]) {
     parts.push(`<p><span style="background:#cce5ff;font-weight:bold">Expenditure Limit: ${escapeHtml(result["expenditure-limit"])}</span></p>`);
@@ -918,14 +920,12 @@ async function createArofloJob(result, rawEmail, pdfAttachment = null, emailMeta
       }
     }
     if (imageAttachments.length > 0) {
-      const driveId = await getSharepointDriveId();
       const photoResults = await Promise.all(
         imageAttachments.map(async img => {
           try {
             const item = await uploadPhotoToOneDrive(jobNumber, img.name, img.data, img.contentType);
-            const thumbnailUrl = await getThumbnailUrl(driveId, item.id).catch(() => null);
             console.log("[sharepoint] Photo uploaded:", img.name);
-            return { name: img.name, webUrl: item.webUrl, thumbnailUrl };
+            return { name: img.name, webUrl: item.webUrl };
           } catch (err) {
             console.warn("[sharepoint] Photo upload failed:", img.name, err.message);
             warnings.push({ tag: "Photo upload failed", detail: `${img.name}: ${err.message}` });
@@ -1010,21 +1010,27 @@ async function createArofloJob(result, rawEmail, pdfAttachment = null, emailMeta
       }
     }
 
-    const photoGalleryHtml = photos.length > 0 ? buildPhotoGalleryNote(photos) : null;
+    // The photo folder link can only be known once photos are uploaded (which needs the
+    // jobNumber from creation), so it can't go in the description set at task creation —
+    // fold it into this same follow-up update instead of a separate note, which techs
+    // were prone to scroll past.
+    const photoLinkHtml = photos.length > 0
+      ? `<p><a href="${buildFolderUrl(photos[0].webUrl)}" target="_blank" rel="noopener noreferrer">View ${photos.length} job photo${photos.length === 1 ? "" : "s"}</a></p>`
+      : null;
 
     const notesXml = [
       noteHtml             ? `<note><content>${cdata(noteHtml)}</content></note>`             : "",
-      photoGalleryHtml     ? `<note><content>${cdata(photoGalleryHtml)}</content></note>`      : "",
       additionalTenantNote ? `<note><content>${cdata(additionalTenantNote)}</content></note>` : "",
       vacantAccessNote     ? `<note><content>${cdata(vacantAccessNote)}</content></note>`     : "",
     ].join("");
 
-    if (notesXml || substatusId) {
+    if (notesXml || substatusId || photoLinkHtml) {
       const updateXml =
 `<tasks>
   <task>
     <taskid>${confirmedTaskId}</taskid>
     ${substatusId ? `<status>not started</status><substatus><substatusid>${substatusId}</substatusid></substatus>` : ""}
+    ${photoLinkHtml ? `<description>${cdata(buildDescription(result, photoLinkHtml))}</description>` : ""}
     ${notesXml ? `<notes>${notesXml}</notes>` : ""}
   </task>
 </tasks>`;
@@ -1032,13 +1038,15 @@ async function createArofloJob(result, rawEmail, pdfAttachment = null, emailMeta
         const upZone = await arofloPost("zone=tasks&postxml=" + encodeURIComponent(updateXml));
         const upPr   = upZone.postresults;
         if (Number(upPr?.updatetotal ?? 0) > 0) {
-          console.log("[job] Task update applied — note:", !!noteHtml, "additional tenant note:", !!additionalTenantNote, "vacant access note:", !!vacantAccessNote, "substatus:", substatusId || "n/a");
+          console.log("[job] Task update applied — note:", !!noteHtml, "additional tenant note:", !!additionalTenantNote, "vacant access note:", !!vacantAccessNote, "photo link:", !!photoLinkHtml, "substatus:", substatusId || "n/a");
         } else {
           if (noteHtml) warnings.push({ tag: "Note not posted", detail: "Combined task update did not apply" });
+          if (photoLinkHtml) warnings.push({ tag: "Photo link not added", detail: "Combined task update did not apply — description missing the job photo link" });
           if (substatusId) warnings.push({ tag: "Substatus failed", detail: "Combined task update did not apply — job may need manual scheduling status update" });
         }
       } catch (err) {
         if (noteHtml) warnings.push({ tag: "Note not posted", detail: `Email note not posted to job: ${err.message}` });
+        if (photoLinkHtml) warnings.push({ tag: "Photo link not added", detail: `Description not updated with photo link: ${err.message}` });
         if (substatusId) warnings.push({ tag: "Substatus failed", detail: `Substatus not applied: ${err.message}` });
       }
     }
@@ -1169,6 +1177,45 @@ async function parsePDF(data) {
   return { text, images };
 }
 
+// Final pass over every candidate photo (from the PDF, email attachments, Tapi, and
+// linked photos) to drop anything that isn't an actual site/job photo — e.g. a square
+// company logo, which passes the PDF size/aspect-ratio heuristics above, or a signature
+// graphic that arrived as a regular (non-inline) attachment because the message was
+// forwarded/replied to. Batched into a single request to keep cost and latency low —
+// each image is a fraction of a cent at gpt-5-mini rates. Fails open (keeps everything)
+// so a classifier hiccup never drops a real photo, matching how individual photo
+// download failures elsewhere are just logged rather than blocking the job.
+async function filterRealPhotos(images) {
+  if (images.length === 0) return images;
+  try {
+    const content = [
+      {
+        type: "input_text",
+        text: `Each numbered image below was pulled from a tradesperson work order email/PDF. Some are genuine photos of a property/site/job; others are non-photo graphics — company/agency logos, letterhead banners, signature icons, phone/email icons, QR codes, dividers, or scanned text. Return JSON {"real_photo_numbers": [..]} listing ONLY the numbers (1-${images.length}) of images that are real photographs of a physical property or job site.`,
+      },
+      ...images.flatMap((img, i) => [
+        { type: "input_text", text: `Image ${i + 1}:` },
+        { type: "input_image", image_url: `data:${img.contentType};base64,${Buffer.from(img.data).toString("base64")}`, detail: "low" },
+      ]),
+    ];
+
+    const response = await openai.responses.create({
+      model: "gpt-5-mini",
+      text: { format: { type: "json_object" } },
+      input: [{ role: "user", content }],
+    });
+
+    const { real_photo_numbers } = JSON.parse(response.output_text);
+    const keep = new Set(Array.isArray(real_photo_numbers) ? real_photo_numbers : []);
+    const filtered = images.filter((_, i) => keep.has(i + 1));
+    console.log(`[photos] AI photo filter: ${images.length} candidate(s) -> ${filtered.length} real photo(s)`);
+    return filtered;
+  } catch (err) {
+    console.warn("[photos] AI photo filter failed, keeping all candidates:", err.message);
+    return images;
+  }
+}
+
 function cleanHtml(html) {
   return html
     .replace(/<script[\s\S]*?<\/script>/gi, "")
@@ -1244,19 +1291,6 @@ function buildFolderUrl(webUrl) {
   return u.origin + u.pathname.slice(0, u.pathname.lastIndexOf("/"));
 }
 
-// Small clickable thumbnail grid, posted as its own note. Every thumbnail links to the same
-// job photo folder — opening it gives SharePoint's native gallery view where the tech can
-// click through all of the job's photos with arrow navigation.
-function buildPhotoGalleryNote(photos) {
-  const folderUrl = buildFolderUrl(photos[0].webUrl);
-  const thumbs = photos.map(p =>
-    `<a href="${folderUrl}" target="_blank"><img src="${p.thumbnailUrl || p.webUrl}" alt="${escapeHtml(p.name)}" style="width:110px;height:110px;object-fit:cover;margin:0 8px 8px 0;border-radius:4px;border:1px solid #dddddd" /></a>`
-  ).join("");
-
-  const titleRow = `Photos (${photos.length})`;
-  return `<div style="font-size:14px;font-weight:bold;color:#444444;margin:0 0 8px 0">${titleRow}</div><div>${thumbs}</div>`;
-}
-
 // Cached drive ID for the Bara Electrical Services SharePoint document library
 let sharepointDriveId = null;
 
@@ -1289,17 +1323,6 @@ async function uploadPhotoToOneDrive(jobNumber, filename, contentBytes, contentT
     .map(s => encodeURIComponent(s)).join("/");
   const uploadData = await putSharepointFile(itemPath, contentBytes, contentType);
   return { id: uploadData.id, webUrl: uploadData.webUrl };
-}
-
-// Thumbnail image URL for a driveItem, to embed as a small clickable preview in the note.
-// These Graph-issued URLs are short-lived (not the permanent webUrl) — fine for a tech
-// checking the job soon after creation, but the thumbnail image itself can go stale later
-// even though the click-through link keeps working.
-async function getThumbnailUrl(driveId, itemId) {
-  const res = await graphFetch(`/drives/${driveId}/items/${itemId}/thumbnails`);
-  if (!res.ok) return null;
-  const data = await res.json();
-  return data.value?.[0]?.medium?.url || data.value?.[0]?.large?.url || null;
 }
 
 async function putSharepointFile(itemPath, contentBytes, contentType) {
@@ -1690,9 +1713,14 @@ Return ONLY valid JSON with these exact keys:
     subject: message.subject || null,
   };
 
-  // Download image attachments in parallel
+  // Download image attachments in parallel. isInline attachments are signature graphics
+  // (logos, phone/email icons) referenced via cid: in the HTML body, not real photos a
+  // tech/PM attached — skip them. This is a cheap pre-filter; the AI photo check below
+  // catches anything that slips through it (e.g. a signature image that lost its inline
+  // flag after being forwarded/replied to).
   const mimeImageAttachments = (await Promise.all(
     attachments
+      .filter(a => !a.isInline)
       .filter(a => !/inky/i.test(a.name || ""))
       .filter(a => /\.(jpe?g|png|gif|bmp|webp)$/i.test(a.name || "") || (a.contentType || "").startsWith("image/"))
       .map(async a => {
@@ -1709,7 +1737,7 @@ Return ONLY valid JSON with these exact keys:
       })
   )).filter(Boolean);
 
-  const imageAttachments = [...mimeImageAttachments, ...linkedPhotos, ...pdfImages, ...tapiPhotos];
+  const imageAttachments = await filterRealPhotos([...mimeImageAttachments, ...linkedPhotos, ...pdfImages, ...tapiPhotos]);
 
   return { result: parsed, rawEmail: rawBody, pdfAttachment, imageAttachments, emailMeta };
 }
@@ -1818,7 +1846,7 @@ async function pollInbox(mailbox) {
     `/users/${mailbox}/mailFolders/inbox/messages` +
     `?$filter=${filter}` +
     `&$select=id,subject,body,categories,from,toRecipients,conversationId,receivedDateTime` +
-    `&$expand=attachments($select=id,name,contentType,size)` +
+    `&$expand=attachments($select=id,name,contentType,size,isInline)` +
     `&$top=10`
   );
   const data = await res.json();
