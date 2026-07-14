@@ -1466,6 +1466,51 @@ async function findThreadWorkOrderPdf(mailbox, conversationId, excludeMessageId)
   }
 }
 
+// Only the newest untagged message in a thread is ever processed (see pollInbox) — so a
+// photo attached to an earlier reply (e.g. the original work order, before someone sent a
+// quick follow-up that ended up being the message that actually triggered job creation)
+// would otherwise never be seen at all. Unlike the PDF search above this isn't a fallback
+// (the newest message can have its own small inline images while the real site photos sit
+// on an earlier message), so results are merged with the current message's own attachments
+// rather than short-circuited on the first hit.
+async function findThreadImageAttachments(mailbox, conversationId, excludeMessageId) {
+  try {
+    const res = await graphFetch(
+      `/users/${mailbox}/messages?$filter=${encodeURIComponent(`conversationId eq '${conversationId}'`)}` +
+      `&$select=id,receivedDateTime,hasAttachments&$top=25`
+    );
+    const data = await res.json();
+    if (!res.ok) return [];
+    const others = (data.value || []).filter(m => m.id !== excludeMessageId && m.hasAttachments);
+
+    const images = [];
+    for (const m of others) {
+      const attRes  = await graphFetch(`/users/${mailbox}/messages/${m.id}/attachments?$select=id,name,contentType,size`);
+      const attData = await attRes.json();
+      if (!attRes.ok) continue;
+      const candidates = (attData.value || [])
+        .filter(a => !/inky/i.test(a.name || ""))
+        .filter(a => /\.(jpe?g|png|gif|bmp|webp)$/i.test(a.name || "") || (a.contentType || "").startsWith("image/"));
+
+      for (const a of candidates) {
+        try {
+          const attachRes  = await graphFetch(`/users/${mailbox}/messages/${m.id}/attachments/${a.id}`);
+          const attachData = await attachRes.json();
+          const bytes = Uint8Array.from(atob(attachData.contentBytes), c => c.charCodeAt(0));
+          console.log("[email] Thread image attachment downloaded:", a.name);
+          images.push({ name: a.name, data: bytes, contentType: a.contentType || "image/jpeg" });
+        } catch (err) {
+          console.warn("[email] Failed to download thread image attachment:", a.name, err.message);
+        }
+      }
+    }
+    return images;
+  } catch (err) {
+    console.warn("[email] Thread-wide image search failed:", err.message);
+    return [];
+  }
+}
+
 // ================================================================
 // EMAIL PROCESSING
 // ================================================================
@@ -1713,14 +1758,12 @@ Return ONLY valid JSON with these exact keys:
     subject: message.subject || null,
   };
 
-  // Download image attachments in parallel. isInline attachments are signature graphics
-  // (logos, phone/email icons) referenced via cid: in the HTML body, not real photos a
-  // tech/PM attached — skip them. This is a cheap pre-filter; the AI photo check below
-  // catches anything that slips through it (e.g. a signature image that lost its inline
-  // flag after being forwarded/replied to).
+  // Download image attachments in parallel. Deliberately not pre-filtering on isInline
+  // here — a pasted-in-body photo (common from Outlook mobile/web) gets marked inline
+  // exactly the same way a signature logo does, so that flag can't reliably distinguish
+  // them. The AI photo check below looks at the actual image content instead.
   const mimeImageAttachments = (await Promise.all(
     attachments
-      .filter(a => !a.isInline)
       .filter(a => !/inky/i.test(a.name || ""))
       .filter(a => /\.(jpe?g|png|gif|bmp|webp)$/i.test(a.name || "") || (a.contentType || "").startsWith("image/"))
       .map(async a => {
@@ -1737,7 +1780,23 @@ Return ONLY valid JSON with these exact keys:
       })
   )).filter(Boolean);
 
-  const imageAttachments = await filterRealPhotos([...mimeImageAttachments, ...linkedPhotos, ...pdfImages, ...tapiPhotos]);
+  const threadImages = message.conversationId
+    ? await findThreadImageAttachments(mailbox, message.conversationId, message.id)
+    : [];
+
+  // The same signature icon/photo can legitimately appear on multiple messages in a
+  // thread (e.g. forwarded, or present in every reply's quoted history) — dedupe by
+  // name+size before spending an AI call classifying the same image twice.
+  const seenImages = new Set();
+  const candidateImages = [...mimeImageAttachments, ...threadImages, ...linkedPhotos, ...pdfImages, ...tapiPhotos]
+    .filter(img => {
+      const key = `${img.name}:${img.data.length}`;
+      if (seenImages.has(key)) return false;
+      seenImages.add(key);
+      return true;
+    });
+
+  const imageAttachments = await filterRealPhotos(candidateImages);
 
   return { result: parsed, rawEmail: rawBody, pdfAttachment, imageAttachments, emailMeta };
 }
@@ -1846,7 +1905,7 @@ async function pollInbox(mailbox) {
     `/users/${mailbox}/mailFolders/inbox/messages` +
     `?$filter=${filter}` +
     `&$select=id,subject,body,categories,from,toRecipients,conversationId,receivedDateTime` +
-    `&$expand=attachments($select=id,name,contentType,size,isInline)` +
+    `&$expand=attachments($select=id,name,contentType,size)` +
     `&$top=10`
   );
   const data = await res.json();
