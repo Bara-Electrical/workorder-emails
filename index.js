@@ -1014,8 +1014,9 @@ async function createArofloJob(result, rawEmail, pdfAttachment = null, emailMeta
     // jobNumber from creation), so it can't go in the description set at task creation —
     // fold it into this same follow-up update instead of a separate note, which techs
     // were prone to scroll past.
+    const photoLinkText = `VIEW ${photos.length} JOB PHOTO${photos.length === 1 ? "" : "S"}`;
     const photoLinkHtml = photos.length > 0
-      ? `<p><a href="${buildFolderUrl(photos[0].webUrl)}" target="_blank" rel="noopener noreferrer">View ${photos.length} job photo${photos.length === 1 ? "" : "s"}</a></p>`
+      ? `<p><span style="background:plum;font-weight:bold"><a href="${buildFolderUrl(photos[0].webUrl)}" target="_blank" rel="noopener noreferrer">${photoLinkText}</a></span></p>`
       : null;
 
     const notesXml = [
