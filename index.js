@@ -1539,11 +1539,11 @@ async function processMessage(message, mailbox = WORKORDERS_EMAIL, onStatus = nu
       if (contentType.includes("pdf")) {
         const buffer  = await response.arrayBuffer();
         const data    = new Uint8Array(buffer);
+        const urlName = decodeURIComponent(response.url.split("/").pop().split("?")[0] || "");
+        pdfAttachment = { name: urlName.toLowerCase().endsWith(".pdf") ? urlName : "WorkOrder.pdf", data: new Uint8Array(data) }; // copy before pdfjs detaches the buffer
         const { text: pdfText, images } = await parsePDF(data);
         textForAI = withEmailBody(pdfText.replace(/\s+/g, " ").trim());
         pdfImages = images;
-        const urlName = decodeURIComponent(response.url.split("/").pop().split("?")[0] || "");
-        pdfAttachment = { name: urlName.toLowerCase().endsWith(".pdf") ? urlName : "WorkOrder.pdf", data };
       } else {
         const html     = await response.text();
         const linkText = cleanHtml(html).slice(0, 50000);
