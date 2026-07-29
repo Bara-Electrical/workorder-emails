@@ -613,7 +613,10 @@ async function findOrUpdateLocation(clientId, locations, address, tenantName, te
   const location = active.find(l => {
     if (!l.locationname?.toLowerCase().includes(streetPart)) return false;
     const storedUnit = l.locationname?.match(/^(\d+)\//)?.[1] || null;
-    if (incomingUnit && storedUnit && incomingUnit !== storedUnit) return false;
+    // If either side specifies a unit number, require an exact match — a location
+    // stored without a unit prefix (e.g. created before the property was known to be
+    // multi-unit) must not silently absorb every unit at that street number.
+    if ((incomingUnit || storedUnit) && incomingUnit !== storedUnit) return false;
     if (incomingSuburb && l.suburb && incomingSuburb.toLowerCase() !== l.suburb.toLowerCase()) return false;
     return true;
   });
