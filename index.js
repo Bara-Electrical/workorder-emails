@@ -57,6 +57,8 @@ const CREATING_JOB_CATEGORY     = "Creating Job";
 const WORKORDERS_EMAIL          = "workorders@baraelectrical.com.au";
 const BRANDON_EMAIL             = "brandon.roberts@baraelectrical.com.au";
 const POLL_INTERVAL_MS          = 5 * 60 * 1000;
+const CLIENT_CACHE_TZ           = "Australia/Perth";
+const CLIENT_CACHE_REFRESH_HOUR = 3; // local hour in CLIENT_CACHE_TZ to refresh the client cache
 
 // All transient status categories — stripped when transitioning to next stage
 const STATUS_CATEGORIES = [
@@ -380,6 +382,33 @@ async function loadClientCache() {
   } catch (err) {
     console.error("[client] Failed to load cache — fuzzy matching unavailable:", err.message);
   }
+}
+
+// Milliseconds from now until the next CLIENT_CACHE_REFRESH_HOUR in CLIENT_CACHE_TZ.
+function msUntilNextClientCacheRefresh() {
+  const now = new Date();
+  // Read the wall-clock time it currently is in CLIENT_CACHE_TZ.
+  const parts = new Intl.DateTimeFormat("en-US", {
+    timeZone: CLIENT_CACHE_TZ,
+    hour: "2-digit", minute: "2-digit", second: "2-digit", hour12: false,
+  }).formatToParts(now).reduce((acc, p) => { acc[p.type] = p.value; return acc; }, {});
+  const secondsSinceLocalMidnight =
+    parseInt(parts.hour) * 3600 + parseInt(parts.minute) * 60 + parseInt(parts.second);
+  const targetSeconds = CLIENT_CACHE_REFRESH_HOUR * 3600;
+  let diffSeconds = targetSeconds - secondsSinceLocalMidnight;
+  if (diffSeconds <= 0) diffSeconds += 24 * 3600;
+  return diffSeconds * 1000;
+}
+
+// Refreshes the client cache once a day at CLIENT_CACHE_REFRESH_HOUR (CLIENT_CACHE_TZ),
+// then reschedules itself — avoids drift from a plain 24h setInterval.
+function scheduleClientCacheRefresh() {
+  const delay = msUntilNextClientCacheRefresh();
+  console.log(`[client] Next cache refresh in ${Math.round(delay / 60000)} min (${CLIENT_CACHE_REFRESH_HOUR}am ${CLIENT_CACHE_TZ})`);
+  setTimeout(async () => {
+    await loadClientCache();
+    scheduleClientCacheRefresh();
+  }, delay);
 }
 
 // Fetch a client's locations and contacts in a single call (join=locations,contacts)
@@ -2078,6 +2107,7 @@ app.listen(process.env.PORT || 3000, async () => {
   // in the inbox at deploy time gets processed against an empty cache and
   // falls back to a less reliable single-candidate live API lookup.
   await loadClientCache();
+  scheduleClientCacheRefresh();
   pollEmails();
   setInterval(pollEmails, POLL_INTERVAL_MS);
 });
