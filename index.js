@@ -359,6 +359,17 @@ const SUBSTATUS_MAP = {
   "Real Estate General Maintenance": "Iyc6LyYK", // Ready to schedule
 };
 
+// Admin applies one of these as an Outlook category to flag the job's scheduling
+// priority — overrides the task-type default in SUBSTATUS_MAP above. Matched
+// case-insensitively against message.categories. IDs sourced from live Aroflo
+// Substatuses zone on 2026-08-03; checked active (non-archived) and "not started".
+const SUBSTATUS_TAG_MAP = {
+  "urgent - aircon":               "Iyc6UywK", // URGENT (Air Con)
+  "urgent":                        "Iyc6UyMK", // 3 URGENT
+  "asap + eta":                    "IycqSycK", // ASAP + ETA
+  "ready to schedule (specialised)": "Iyc6LyUK", // Ready to schedule (Specialised)
+};
+
 // In-memory client cache: lowercase clientname → client object.
 // Populated at startup and updated via the /aroflo-webhook endpoint.
 const clientCache = new Map();
@@ -834,7 +845,9 @@ async function createArofloJob(result, rawEmail, pdfAttachment = null, emailMeta
   if (!result.address) throw new Error("No address found in work order");
 
   const taskTypeId  = TASK_TYPE_MAP[result["task-type"]];
-  const substatusId = SUBSTATUS_MAP[result["task-type"]] || "Iyc6LyYK"; // default: Ready to schedule
+  // An email-level scheduling-priority tag (Urgent/Urgent - Aircon/ASAP + ETA/Ready to
+  // schedule (Specialised)) overrides the task-type default.
+  const substatusId = emailMeta?.substatusTagId || SUBSTATUS_MAP[result["task-type"]] || "Iyc6LyYK"; // default: Ready to schedule
   if (!taskTypeId) {
     const detail = `Unknown task type: "${result["task-type"]}" — task created without a task type`;
     console.warn("[job]", detail);
@@ -907,9 +920,16 @@ async function createArofloJob(result, rawEmail, pdfAttachment = null, emailMeta
     warnings.push({ tag: "PM not in Aroflo", detail });
   }
 
+  // Urgent/Urgent - Aircon tags need next-day attention, ASAP + ETA gives techs a couple
+  // of days — otherwise fall back to the standard 7-day due date.
+  const URGENT_SUBSTATUS_IDS = ["Iyc6UyMK", "Iyc6UywK"]; // 3 URGENT, URGENT (Air Con)
+  const ASAP_SUBSTATUS_ID    = "IycqSycK";                // ASAP + ETA
+  const dueDateOffsetDays = URGENT_SUBSTATUS_IDS.includes(substatusId) ? 1
+    : substatusId === ASAP_SUBSTATUS_ID ? 2
+    : 7;
   const dueDate = (() => {
     const d = new Date();
-    d.setDate(d.getDate() + 7);
+    d.setDate(d.getDate() + dueDateOffsetDays);
     return `${d.getFullYear()}/${String(d.getMonth() + 1).padStart(2, "0")}/${String(d.getDate()).padStart(2, "0")}`;
   })();
 
@@ -1819,11 +1839,17 @@ Return ONLY valid JSON with these exact keys:
 
   const airconUnitTags = (message.categories || []).filter(c => AIRCON_UNIT_TYPE_CATEGORIES.includes(c));
 
+  // First matching tag wins (checked in SUBSTATUS_TAG_MAP's priority order) if an admin
+  // has applied more than one scheduling-priority category to the same email.
+  const categoriesLower = new Set((message.categories || []).map(c => c.trim().toLowerCase()));
+  const substatusTagId = Object.entries(SUBSTATUS_TAG_MAP).find(([tag]) => categoriesLower.has(tag))?.[1] || null;
+
   const emailMeta = {
     from:    message.from?.emailAddress?.address || null,
     to:      (message.toRecipients || []).map(r => r.emailAddress?.address).filter(Boolean).join(", ") || null,
     subject: message.subject || null,
     airconUnitType: airconUnitTags.join(", ") || null,
+    substatusTagId,
   };
 
   // Download image attachments in parallel. Deliberately not pre-filtering on isInline
