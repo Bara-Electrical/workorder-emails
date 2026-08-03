@@ -39,6 +39,9 @@ const CLIENT_NAME_MAP = {
   "acton belle property south perth & victoria park": "Acton | Belle Property South Perth and Victoria Park",
   "leifield": "Leifield Real Estate",
   "leifield - wa": "Leifield Real Estate",
+  // Work orders almost always omit the branch — default to the residential branch
+  // (Commercial is a separate Aroflo client and needs to be named explicitly).
+  "lj hooker victoria park": "LJ Hooker Victoria Park - Belmont",
 };
 
 // Sender email domain → Aroflo client name (fallback when AI can't extract name from compound domains)
@@ -342,6 +345,11 @@ const TASK_TYPE_MAP = {
   "Real Estate General Maintenance": "JCYqWyVQICAgCg==", // Real-Estate General Maintenance
 };
 
+// Admin applies one of these as an Outlook category on the work order email to record
+// what aircon unit(s) are on site — surfaced in the task description for aircon jobs
+// since AC1/ACEC1 only cover up to 3x wall splits/1x evap/1x ducted before extra charges apply.
+const AIRCON_UNIT_TYPE_CATEGORIES = ["Split System", "Split System x2", "Split System x3", "Split System x4", "Ducted", "Evap"];
+
 const SUBSTATUS_MAP = {
   "EC1":                            "IyQ6SyYK", // Ready to schedule PPM1
   "AC1":                            "IyQ6SyYK", // Ready to schedule PPM1
@@ -589,18 +597,35 @@ function fitTenantFields(tenantName, tenantContact, maxLen = SITE_FIELD_LIMIT) {
   const total  = Math.max(names.length, phones.length);
   const fitsWithin = (items, count) => items.slice(0, count).join(", ").length <= maxLen;
 
-  let keptCount = total;
-  while (keptCount > 0 &&
-         ((names.length  && !fitsWithin(names, keptCount)) ||
-          (phones.length && !fitsWithin(phones, keptCount)))) {
-    keptCount--;
+  const fitCount = (items) => {
+    let count = total;
+    while (count > 0 && items.length && !fitsWithin(items, count)) count--;
+    return count;
+  };
+  const countFor = (nameList) => Math.min(
+    names.length  ? fitCount(nameList) : total,
+    phones.length ? fitCount(phones)   : total
+  );
+
+  let keptCount = countFor(names);
+  let keptNames = names;
+
+  // Full names don't fit everyone — try first names only before overflowing anyone to
+  // the scheduling note. Usually enough to keep all tenants in the SiteContact field.
+  if (keptCount < total && names.length) {
+    const firstNames = names.map(n => n.split(/\s+/)[0]);
+    const firstNameCount = countFor(firstNames);
+    if (firstNameCount > keptCount) {
+      keptCount = firstNameCount;
+      keptNames = firstNames;
+    }
   }
 
-  // Single tenant longer than the limit on its own — hard-truncate rather than drop it entirely.
+  // Single tenant still longer than the limit on their own — hard-truncate rather than drop it entirely.
   if (keptCount === 0 && total > 0) {
     return {
-      keptName:     names[0]  ? names[0].slice(0, maxLen)  : null,
-      keptPhone:    phones[0] ? phones[0].slice(0, maxLen) : null,
+      keptName:     keptNames[0] ? keptNames[0].slice(0, maxLen) : null,
+      keptPhone:    phones[0]    ? phones[0].slice(0, maxLen)    : null,
       overflowName:  names.slice(1),
       overflowPhone: phones.slice(1),
       truncated: true,
@@ -608,8 +633,8 @@ function fitTenantFields(tenantName, tenantContact, maxLen = SITE_FIELD_LIMIT) {
   }
 
   return {
-    keptName:      names.slice(0, keptCount).join(", ")  || null,
-    keptPhone:      phones.slice(0, keptCount).join(", ") || null,
+    keptName:      keptNames.slice(0, keptCount).join(", ") || null,
+    keptPhone:      phones.slice(0, keptCount).join(", ")   || null,
     overflowName:   names.slice(keptCount),
     overflowPhone:  phones.slice(keptCount),
     truncated: keptCount < total,
@@ -754,7 +779,7 @@ function extractKeyCollectionLine(taskDescription) {
   return line || null;
 }
 
-function buildDescription(result, photoLinkHtml = null) {
+function buildDescription(result, photoLinkHtml = null, airconUnitType = null) {
   const parts = [];
   const spacer = `<p>&nbsp;</p>`;
   const lockboxDetails = extractLockboxDetails(result["access-details"]);
@@ -787,6 +812,13 @@ function buildDescription(result, photoLinkHtml = null) {
   // Fall back to task-type if AI forgot to set package (e.g. task-type is EC1 but package is null)
   const pkg = (result["package"] && result["package"] !== "null" ? result["package"] : null)
     ?? (PACKAGE_TEMPLATES[result["task-type"]] ? result["task-type"] : null);
+
+  const isAirconJob = ["AC1", "AC2", "ACEC1"].includes(pkg) || result["task-type"] === "Real Estate Aircon Maintenance";
+  if (airconUnitType && isAirconJob) {
+    parts.push(spacer);
+    parts.push(`<p><span style="background:#ffe0b3;font-weight:bold">Unit Type: ${escapeHtml(airconUnitType)}</span></p>`);
+  }
+
   if (pkg && PACKAGE_TEMPLATES[pkg]) {
     parts.push(spacer);
     parts.push(PACKAGE_TEMPLATES[pkg]);
@@ -899,7 +931,7 @@ async function createArofloJob(result, rawEmail, pdfAttachment = null, emailMeta
     ${location ? `<location><locationid>${location.locationid}</locationid></location>` : ""}
     ${result.address && !location  ? `<sitename>${cdata(result.address)}</sitename>`          : ""}
     <taskname>${cdata(taskName)}</taskname>
-    <description>${cdata(buildDescription(result))}</description>
+    <description>${cdata(buildDescription(result, null, emailMeta?.airconUnitType))}</description>
     <duedate>${dueDate}</duedate>
     ${result["order-number"] ? `<custon>${cdata(result["order-number"])}</custon>` : ""}
     ${(result["account-to"] || realEstate) ? `<customfields><customfield><name><![CDATA[ Account To: ]]></name><type><![CDATA[ text ]]></type><value>${cdata(result["account-to"] || realEstate)}</value></customfield></customfields>` : ""}
@@ -1063,7 +1095,7 @@ async function createArofloJob(result, rawEmail, pdfAttachment = null, emailMeta
   <task>
     <taskid>${confirmedTaskId}</taskid>
     ${substatusId ? `<status>not started</status><substatus><substatusid>${substatusId}</substatusid></substatus>` : ""}
-    ${photoLinkHtml ? `<description>${cdata(buildDescription(result, photoLinkHtml))}</description>` : ""}
+    ${photoLinkHtml ? `<description>${cdata(buildDescription(result, photoLinkHtml, emailMeta?.airconUnitType))}</description>` : ""}
     ${notesXml ? `<notes>${notesXml}</notes>` : ""}
   </task>
 </tasks>`;
@@ -1785,10 +1817,13 @@ Return ONLY valid JSON with these exact keys:
       .join(", ");
   }
 
+  const airconUnitTags = (message.categories || []).filter(c => AIRCON_UNIT_TYPE_CATEGORIES.includes(c));
+
   const emailMeta = {
     from:    message.from?.emailAddress?.address || null,
     to:      (message.toRecipients || []).map(r => r.emailAddress?.address).filter(Boolean).join(", ") || null,
     subject: message.subject || null,
+    airconUnitType: airconUnitTags.join(", ") || null,
   };
 
   // Download image attachments in parallel. Deliberately not pre-filtering on isInline
