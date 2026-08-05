@@ -364,7 +364,7 @@ const SUBSTATUS_MAP = {
 // case-insensitively against message.categories. IDs sourced from live Aroflo
 // Substatuses zone on 2026-08-03; checked active (non-archived) and "not started".
 const SUBSTATUS_TAG_MAP = {
-  "urgent - aircon":               "Iyc6UywK", // URGENT (Air Con)
+  "urgent - air con":               "Iyc6UywK", // URGENT (Air Con)
   "urgent":                        "Iyc6UyMK", // 3 URGENT
   "asap + eta":                    "IycqSycK", // ASAP + ETA
   "ready to schedule (specialised)": "Iyc6LyUK", // Ready to schedule (Specialised)
@@ -845,7 +845,7 @@ async function createArofloJob(result, rawEmail, pdfAttachment = null, emailMeta
   if (!result.address) throw new Error("No address found in work order");
 
   const taskTypeId  = TASK_TYPE_MAP[result["task-type"]];
-  // An email-level scheduling-priority tag (Urgent/Urgent - Aircon/ASAP + ETA/Ready to
+  // An email-level scheduling-priority tag (Urgent/Urgent - Air Con/ASAP + ETA/Ready to
   // schedule (Specialised)) overrides the task-type default.
   const substatusId = emailMeta?.substatusTagId || SUBSTATUS_MAP[result["task-type"]] || "Iyc6LyYK"; // default: Ready to schedule
   if (!taskTypeId) {
