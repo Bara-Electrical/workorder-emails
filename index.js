@@ -362,12 +362,13 @@ const SUBSTATUS_MAP = {
 // Admin applies one of these as an Outlook category to flag the job's scheduling
 // priority — overrides the task-type default in SUBSTATUS_MAP above. Matched
 // case-insensitively against message.categories. IDs sourced from live Aroflo
-// Substatuses zone on 2026-08-03; checked active (non-archived) and "not started".
+// Substatuses zone on 2026-08-06; checked active (non-archived) and "not started".
 const SUBSTATUS_TAG_MAP = {
   "urgent - air con":               "Iyc6UywK", // URGENT (Air Con)
   "urgent":                        "Iyc6UyMK", // 3 URGENT
   "asap + eta":                    "IycqSycK", // ASAP + ETA
   "ready to schedule (specialised)": "Iyc6LyUK", // Ready to schedule (Specialised)
+  "hold date":                     "Iyc6LyIK", // Ready to schedule (Hold date)
 };
 
 // In-memory client cache: lowercase clientname → client object.
@@ -1738,7 +1739,7 @@ CRITICAL RULES:
 - real-estate must always be a company or agency name — never a URL or domain. If the source contains something like "aussieproperty.com.au", convert it to a readable name (e.g. "Aussie Property") by stripping the domain extension and formatting as a proper name. If you cannot find it directly, look for it in account-to after the c/o. The sender's email address is provided at the top of the input — use the domain as an additional hint to identify real-estate if the company name is not clearly stated in the content (e.g. "noreply@raywhite.com.au" → "Ray White").
 - order-number is the job/work order number.
 - address is required — if it isn't clearly stated in the body/PDF content, check the email subject line (provided at the top of the input) since it often contains the property address.
-- task-description must be a concise electrician job summary. If anything is listed as conditional or requires approval (e.g. "deluxe clean if approved", "AC2 if required"), include that in the description too. If the work order lists multiple numbered items and a later reply in the thread says only some of them are electrical (with the rest going to another contractor), the description must restate what those electrical items actually are (not just "points 1 and 2") — copy the item text itself, not just its number, since the reader won't have the original numbered list in front of them. Also note briefly that the remaining item(s) are being handled separately/by another contractor, without going into detail on who.
+- task-description must be a concise electrician job summary. Report the issue(s) exactly as stated in the work order — do NOT prescribe a diagnosis, root cause, or repair procedure that isn't explicitly written in the work order. For example, if the work order says "AC not working on heat cycle, error code indicates a gas leak", the description must report that symptom/error code as-is — do not add instructions like "locate and repair leak" or "recharge refrigerant" unless the work order itself explicitly says to do that repair. Inventing a repair scope beyond what was reported can commit the company to unapproved cost. If anything is listed as conditional or requires approval (e.g. "deluxe clean if approved", "AC2 if required"), include that in the description too. If the work order lists multiple numbered items and a later reply in the thread says only some of them are electrical (with the rest going to another contractor), the description must restate what those electrical items actually are (not just "points 1 and 2") — copy the item text itself, not just its number, since the reader won't have the original numbered list in front of them. Also note briefly that the remaining item(s) are being handled separately/by another contractor, without going into detail on who.
 - If the job involves two or more distinct tasks/items (e.g. a numbered list in the work order, or several unrelated jobs mentioned in the email), put each one on its own line in task-description, separated by a single newline character ("\n") — one line per item, written as a short standalone instruction. This is rendered as a bulleted list for the technician, so do not add your own numbering, dashes, or bullet characters. If there is genuinely only one task, write it as a single line with no newline.
 - Do NOT include instructions to contact the tenant or PM for access in task-description. Contacting the tenant for access is the default assumption for every job and must not be stated.
 - Key numbers in access-details are reference numbers for our existing key management system — we already hold these keys. Do NOT include any instruction to collect, pick up, or obtain keys in task-description based solely on a key number being listed in access-details.
