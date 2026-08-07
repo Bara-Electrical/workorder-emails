@@ -2164,6 +2164,11 @@ async function pollInbox(mailbox) {
       if (err.message.startsWith("Client not found")) {
         await setJobStatus(mailbox, message.id, currentCategories, CLIENT_NOT_FOUND_CATEGORY);
         console.log("[poll] Tagged as client not found:", message.subject);
+        await sendAlertEmail(
+          `Action required — client not found: "${message.subject}"`,
+          `<p style="font-family:sans-serif;font-size:14px">Couldn't match this email to an Aroflo client.</p><p style="font-family:sans-serif;font-size:14px">${escapeHtml(err.message)}</p><p style="font-family:sans-serif;font-size:12px;color:#888">Add a mapping in CLIENT_NAME_MAP or EMAIL_DOMAIN_MAP, then remove the "Client not found" category on the email to retry.</p>`,
+          "client not found"
+        );
       } else if (err.message.startsWith("No address found")) {
         await setJobStatus(mailbox, message.id, currentCategories, NO_ADDRESS_CATEGORY);
         console.log("[poll] Tagged as no address:", message.subject);
