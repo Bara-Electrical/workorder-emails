@@ -1132,20 +1132,49 @@ async function createArofloJob(result, rawEmail, pdfAttachment = null, emailMeta
     ${notesXml ? `<notes>${notesXml}</notes>` : ""}
   </task>
 </tasks>`;
-      try {
-        const upZone = await arofloPost("zone=tasks&postxml=" + encodeURIComponent(updateXml));
-        const upPr   = upZone.postresults;
-        if (Number(upPr?.updatetotal ?? 0) > 0) {
-          console.log("[job] Task update applied — note:", !!noteHtml, "additional tenant note:", !!additionalTenantNote, "vacant access note:", !!vacantAccessNote, "photo link:", !!photoLinkHtml, "substatus:", substatusId || "n/a");
-        } else {
-          if (noteHtml) warnings.push({ tag: "Note not posted", detail: "Combined task update did not apply" });
-          if (photoLinkHtml) warnings.push({ tag: "Photo link not added", detail: "Combined task update did not apply — description missing the job photo link" });
-          if (substatusId) warnings.push({ tag: "Substatus failed", detail: "Combined task update did not apply — job may need manual scheduling status update" });
+      // A freshly-inserted task can briefly return updatetotal:0 with no error (Aroflo
+      // accepts the request but hasn't caught up to the new taskid yet) — same class of
+      // silent no-op as the zone=locations quirk noted above. Retry once after a short
+      // delay before giving up, and log the actual Aroflo response either way so a
+      // real failure (vs. a timing blip) is diagnosable from the logs/alert email.
+      let applied = false;
+      let lastUpPr = null;
+      let lastErr  = null;
+      for (let attempt = 1; attempt <= 2 && !applied; attempt++) {
+        try {
+          const upZone = await arofloPost("zone=tasks&postxml=" + encodeURIComponent(updateXml));
+          lastUpPr = upZone.postresults;
+          if (Number(lastUpPr?.updatetotal ?? 0) > 0) {
+            applied = true;
+          } else if (attempt < 2) {
+            console.warn(`[job] Combined task update returned updatetotal:0 (attempt ${attempt}/2) — retrying in 1500ms. Response:`, JSON.stringify(lastUpPr));
+            await new Promise(r => setTimeout(r, 1500));
+          }
+        } catch (err) {
+          lastErr = err;
+          if (attempt < 2) {
+            console.warn(`[job] Combined task update threw (attempt ${attempt}/2) — retrying in 1500ms:`, err.message);
+            await new Promise(r => setTimeout(r, 1500));
+          }
         }
-      } catch (err) {
-        if (noteHtml) warnings.push({ tag: "Note not posted", detail: `Email note not posted to job: ${err.message}` });
-        if (photoLinkHtml) warnings.push({ tag: "Photo link not added", detail: `Description not updated with photo link: ${err.message}` });
-        if (substatusId) warnings.push({ tag: "Substatus failed", detail: `Substatus not applied: ${err.message}` });
+      }
+
+      if (applied) {
+        console.log("[job] Task update applied — note:", !!noteHtml, "additional tenant note:", !!additionalTenantNote, "vacant access note:", !!vacantAccessNote, "photo link:", !!photoLinkHtml, "substatus:", substatusId || "n/a");
+      } else if (lastErr) {
+        console.warn("[job] Combined task update failed after retry:", lastErr.message);
+        if (noteHtml) warnings.push({ tag: "Note not posted", detail: `Email note not posted to job: ${lastErr.message}` });
+        if (photoLinkHtml) warnings.push({ tag: "Photo link not added", detail: `Description not updated with photo link: ${lastErr.message}` });
+        if (substatusId) warnings.push({ tag: "Substatus failed", detail: `Substatus not applied: ${lastErr.message}` });
+      } else {
+        const errArr  = toArray(lastUpPr?.errors);
+        const detail  = errArr.length
+          ? errArr.map(e => e.detail || e.message || JSON.stringify(e)).join("; ")
+          : `Combined task update did not apply after retry — Aroflo response: ${JSON.stringify(lastUpPr)}`;
+        console.warn("[job] Combined task update did not apply after retry:", detail);
+        if (noteHtml) warnings.push({ tag: "Note not posted", detail });
+        if (photoLinkHtml) warnings.push({ tag: "Photo link not added", detail });
+        if (substatusId) warnings.push({ tag: "Substatus failed", detail });
       }
     }
   }
@@ -1363,6 +1392,25 @@ async function emailHtmlForNote(html, oneDriveUrl = null, emailMeta = null) {
   cleaned = cleaned.replace(/[\s\S]*?<a\b[^>]*name="(?:x_)?ipw-end-\d+"[^>]*><\/a>(?:\s*<\/\w+>)*/i, "");
 
   cleaned = await decodeWrappedLinks(cleaned);
+
+  // Aroflo's postxml note content has a size limit that isn't consistent across content —
+  // bisection against the live API found one email breaking as low as ~11,800 characters
+  // and another surviving to ~14,600, both failing with the same generic "Internal IMSAPI
+  // Error" and no size-specific message. A long "RE:" reply with deep quoted-thread history
+  // easily exceeds either, so cap conservatively below the lowest observed break point,
+  // with margin left for the metaHtml wrapper added below.
+  const MAX_CLEANED_LENGTH = 10000;
+  if (cleaned.length > MAX_CLEANED_LENGTH) {
+    // A blind character cut can land mid-tag/mid-attribute (e.g. `<td valign="top" sty`),
+    // and that malformed fragment — not the length itself — is what Aroflo's API actually
+    // chokes on (confirmed empirically: the same content posts fine when cut on a tag
+    // boundary, but throws "Internal IMSAPI Error" when cut mid-attribute). Back up to the
+    // last complete ">" so nothing is left half-open.
+    let cut = cleaned.lastIndexOf(">", MAX_CLEANED_LENGTH);
+    if (cut === -1 || cut < MAX_CLEANED_LENGTH * 0.5) cut = MAX_CLEANED_LENGTH - 1;
+    cleaned = cleaned.slice(0, cut + 1) +
+      `<p style="color:#af0e00"><em>[Note truncated — email was too long to post in full. See the original email or attached PDF for the complete work order.]</em></p>`;
+  }
 
   const cell = (label, value) =>
     `<tr><td style="border:none;color:#888888;font-size:12px;font-weight:bold;padding:1px 12px 1px 0;white-space:nowrap;vertical-align:top">${label}</td><td style="border:none;color:#444444;font-size:12px;padding:1px 0">${value}</td></tr>`;
@@ -1741,7 +1789,7 @@ CRITICAL RULES:
 - tenant-name and tenant-contact come from the Tenant Details section, OR any section labelled "Contact for job access" or similar, OR an inline mention anywhere in the description/notes such as "contact tenant emma for access 0414152246" or "contact new tenant lance - 0421516195" (extract "Emma"/"Lance" as tenant-name and the number as tenant-contact). Always scan the full description/instructions text for a phrase like "contact tenant <name>", "contact new tenant <name>", or "tenant <name> on <number>" even if there is no dedicated tenant section. An inline "contact (new) tenant <name>" instruction ALWAYS takes priority over a generic vacant/moving-out signal elsewhere in the document — a specific named contact for access means someone must actually be contacted, regardless of the property's formal vacancy status, so extract that person as tenant-name/tenant-contact rather than defaulting to "Vacant". Never use the Owner Details / Owner section as tenant-name, tenant-contact, or tenant-email — the owner is not the tenant, even if the PM states tenant details were not provided. Only set tenant-name to "Vacant" when there is truly no named contact anywhere (including inline) AND the property is explicitly stated as vacant — in that case also ensure access-details captures any lockbox or key collection info. If no tenant is listed and the property is NOT stated as vacant, leave tenant-name null. Never use access details, lockbox info, or key numbers as the tenant name. If multiple tenants are listed, include ALL of them separated by commas — do not drop any.
 - If the email states the tenant is vacating or moving out and the move-out date is within 7 days of today, AND no replacement/new tenant contact is given anywhere, treat the property as vacant: set tenant-name to "Vacant", set tenant-contact to null, and include in task-description that keys should be collected after the move-out date (e.g. "Collect keys after 3/7"). If a new/incoming tenant contact IS given, use that person instead of "Vacant" — see the rule above.
 - access-details is ONLY physical access codes/numbers — key numbers, lockbox codes, gate codes, swipe card numbers. e.g. "Key: 1234", "Lockbox code: 56", "Gate code: 789". Do NOT include contact instructions, tenant names, safety instructions, or anything that is not a physical code or number.
-- expenditure-limit is the dollar amount only — e.g. "$330". Strip any conditions, notes, or extra text after the amount. If the expenditure limit is $0 or zero, return null.
+- expenditure-limit is the dollar amount only — e.g. "$330". Strip any conditions, notes, or extra text after the amount. If the expenditure limit is $0 or zero, return null. If the thread contains more than one dollar amount for the same job — e.g. an old/automated work order quoting an outdated price, followed by a Bara Electrical reply (from workorders@baraelectrical.com.au) stating the correct current price, followed by the PM agreeing to proceed — use the CORRECTED price Bara Electrical quoted, not the original/outdated one from the work order. Only the original work order's stale price should ever be discarded this way; if there's no such correction in the thread, use the amount as stated.
 - confidence is a float 0.0–1.0 rating how confident you are in the overall extraction. 1.0 = all fields clearly present, 0.0 = guessing most fields.
 - notes is any concerns, ambiguities, or flags worth mentioning — e.g. missing fields, conflicting info, unusual job details. Leave null if nothing to flag.
 - tenant-contact must contain phone numbers ONLY — no names, no labels, just the numbers. Only use a number if it is explicitly and unambiguously tied to the tenant (e.g. appears in a Tenant section, is labelled "Tenant Phone"/"Tenant Mobile"/"Contact Number", or immediately follows an inline "contact tenant <name>" style phrase). If you are unsure whether a number belongs to the tenant, leave tenant-contact null. If there are multiple confirmed tenant numbers, separate with commas. Prefer mobile over home numbers. Australian numbers always start with 0 (e.g. 0412 345 678) — always include the leading 0.
@@ -2008,11 +2056,18 @@ async function pollInbox(mailbox) {
     ` and not categories/any(c:c eq '${CREATING_JOB_CATEGORY}')`
   );
 
+  // $orderby=receivedDateTime asc is required here, not just a nicety — without it Graph's
+  // default order is newest-first, so when more than $top=10 messages are eligible at once
+  // (e.g. a bulk work-order import), the oldest ones get bumped out of the window by newer
+  // arrivals on every single poll cycle and are never processed at all (confirmed live:
+  // three work orders from a 2026-08-06 batch sat untouched for 3+ hours this way, silently
+  // starved out rather than failing loudly). Oldest-first guarantees the backlog drains.
   const res  = await graphFetch(
     `/users/${mailbox}/mailFolders/inbox/messages` +
     `?$filter=${filter}` +
     `&$select=id,subject,body,categories,from,toRecipients,conversationId,receivedDateTime` +
     `&$expand=attachments($select=id,name,contentType,size)` +
+    `&$orderby=receivedDateTime asc` +
     `&$top=10`
   );
   const data = await res.json();
