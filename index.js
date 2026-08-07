@@ -291,33 +291,45 @@ async function appendToPinnedNoteSection(taskId, section, text) {
   );
   if (!pinnedNote) throw new Error(`Pinned admin/scheduling note not found on task ${taskId}`);
 
-  // Match the section's whole <p>...</p> block; non-greedy so it stops at the first
-  // closing </p> after the heading rather than swallowing the rest of the note.
-  const sectionRe = new RegExp(`(<p>[\\s\\S]*?${label.replace(/\s+/g, "\\s*")}:[\\s\\S]*?)(</p>)`, "i");
+  // Staff often add a new <p> per edit rather than a <br> inside one, so a section can span
+  // several separate <p> blocks. It always ends at the next <hr /> divider, or — if for some
+  // reason there's no <hr /> — right above whatever heading comes next (matched within a
+  // single <p>, so it can't skip past intervening paragraphs), or at the end of the note if
+  // nothing follows at all. Appending must happen at that true end, not inside whichever <p>
+  // happens to contain the heading, or a later manually-added <p> ends up sitting below the
+  // new line even though it comes first in the document.
+  const labelPattern = label.replace(/\s+/g, "\\s*");
+  const sectionRe = new RegExp(
+    `(<p>[\\s\\S]*?${labelPattern}:[\\s\\S]*?)(<hr\\s*\\/?>|(?=<p[^>]*>(?:(?!<\\/p>)[\\s\\S])*NOTE:)|$)`,
+    "i"
+  );
   if (!sectionRe.test(pinnedNote.content)) {
     throw new Error(`Could not locate "${label}" section inside pinned note on task ${taskId}`);
   }
   const updatedContent = pinnedNote.content.replace(
     sectionRe,
-    (_match, before, closeTag) => {
-      // Split off the content after the last <br> (the current last line of the
-      // section) plus any trailing closing tags (e.g. INVOICING NOTE's wrapping
-      // </span>), so a bare "-" placeholder line can be replaced in place instead
-      // of appending a new line below it.
-      const brMatches = [...before.matchAll(/<br\s*\/?>/gi)];
-      const lastBr = brMatches[brMatches.length - 1];
-      const head = lastBr ? before.slice(0, lastBr.index + lastBr[0].length) : before;
-      const tail = lastBr ? before.slice(lastBr.index + lastBr[0].length) : "";
+    (_match, sectionHtml, boundary) => {
+      // Find the section's last <p>...</p> block (its true last line) so a bare "-"
+      // placeholder paragraph gets replaced in place instead of leaving a redundant
+      // placeholder above the new line.
+      const pMatches = [...sectionHtml.matchAll(/<p[^>]*>([\s\S]*?)<\/p>/gi)];
+      const lastP = pMatches[pMatches.length - 1];
+      if (!lastP) return `${sectionHtml}\n<p>${escapeHtml(text)}</p>${boundary}`;
 
-      const trailingTags = tail.match(/(?:<\/[a-z]+>\s*)*$/i)?.[0] || "";
-      const lineText = tail.slice(0, tail.length - trailingTags.length);
-      const isPlaceholder = lineText.replace(/&nbsp;/gi, "").trim() === "-";
+      const innerLines = lastP[1].split(/<br\s*\/?>/i);
+      const lastLine = innerLines[innerLines.length - 1];
+      const isPlaceholder = lastLine.replace(/&nbsp;/gi, "").trim() === "-";
 
-      const newLine = isPlaceholder
-        ? escapeHtml(text)
-        : `${lineText}<br />\n${escapeHtml(text)}`;
+      let newLastP;
+      if (isPlaceholder) {
+        innerLines[innerLines.length - 1] = escapeHtml(text);
+        newLastP = `<p>${innerLines.join("<br />\n")}</p>`;
+      } else {
+        // Directly under the last note, no blank line in between.
+        newLastP = `${lastP[0]}\n<p>${escapeHtml(text)}</p>`;
+      }
 
-      return `${head}${newLine}${trailingTags}${closeTag}`;
+      return sectionHtml.slice(0, lastP.index) + newLastP + sectionHtml.slice(lastP.index + lastP[0].length) + boundary;
     }
   );
 
