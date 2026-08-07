@@ -39,6 +39,7 @@ const CLIENT_NAME_MAP = {
   "acton belle property south perth & victoria park": "Acton | Belle Property South Perth and Victoria Park",
   "leifield": "Leifield Real Estate",
   "leifield - wa": "Leifield Real Estate",
+  "professionals armadale": "Professionals Armadale Real Estate WA",
   // Work orders almost always omit the branch — default to the residential branch
   // (Commercial is a separate Aroflo client and needs to be named explicitly).
   "lj hooker victoria park": "LJ Hooker Victoria Park - Belmont",
