@@ -477,11 +477,14 @@ async function findLocationsAndContacts(clientId) {
   }
 }
 
-// Match a PM contact by name from an already-fetched contacts array.
+// Match a PM contact by name from an already-fetched contacts array. Archived contacts are
+// excluded — Aroflo rejects task creation with "Contact UserID is invalid" for an archived
+// contact's userid, so matching one is worse than not matching at all (falls back to the
+// "PM not in Aroflo" warning path instead of failing the whole job).
 function matchContact(contacts, pmName) {
   if (!pmName) return null;
   const nameLower = pmName.toLowerCase();
-  return contacts.find(c => `${c.givennames} ${c.surname}`.toLowerCase().includes(nameLower)) || null;
+  return contacts.find(c => c.archived !== "true" && `${c.givennames} ${c.surname}`.toLowerCase().includes(nameLower)) || null;
 }
 
 // Candidate names to try when matching a client, from most to least specific:
@@ -947,7 +950,7 @@ async function createArofloJob(result, rawEmail, pdfAttachment = null, emailMeta
 
   const pmContact = matchContact(contacts, result["property-manager"]);
   if (pmContact) {
-    console.log("[job] PM contact:", pmContact.contactid, pmContact.contactname);
+    console.log("[job] PM contact:", pmContact.userid, `${pmContact.givennames} ${pmContact.surname}`);
   } else if (result["property-manager"]) {
     const detail = `PM contact not found in Aroflo: "${result["property-manager"]}"`;
     console.warn("[job]", detail);
