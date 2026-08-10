@@ -51,6 +51,15 @@ const EMAIL_DOMAIN_MAP = {
   "platinumelectricians.com.au": "Platinum Electricians",
 };
 
+// Rental Management Australia operates multiple branches sharing the same sender domain and
+// AI-extracted name ("Rental Management Australia (WA)") — Aroflo has a separate client per
+// branch, so disambiguate using the branch office address printed in the work order itself
+// (e.g. "C/O Rental Management Australia (WA) 17 Drake St, Osborne Park WA 6017").
+const RMA_BRANCH_MAP = {
+  "osborne park": "RMA - Osborne Park",
+  "port kennedy": "RMA - Port Kennedy",
+};
+
 const TRIGGER_CATEGORY          = "Bara AI";
 const PROCESSING_CATEGORY       = "Processing";
 const FAILED_CATEGORY           = "Failed";
@@ -869,7 +878,17 @@ async function createArofloJob(result, rawEmail, pdfAttachment = null, emailMeta
     warnings.push({ tag: "Unknown task type", detail });
   }
 
-  const realEstate = CLIENT_NAME_MAP[result["real-estate"]?.toLowerCase()] || result["real-estate"];
+  let realEstate = CLIENT_NAME_MAP[result["real-estate"]?.toLowerCase()] || result["real-estate"];
+  if (/rental management australia/i.test(realEstate || "")) {
+    const haystack = String(rawEmail || "").toLowerCase();
+    const branch = Object.keys(RMA_BRANCH_MAP).find(suburb => haystack.includes(suburb));
+    if (branch) {
+      realEstate = RMA_BRANCH_MAP[branch];
+      console.log(`[job] RMA branch resolved via "${branch}" → "${realEstate}"`);
+    } else {
+      console.warn(`[job] RMA branch address not found in work order — cannot disambiguate Osborne Park vs Port Kennedy`);
+    }
+  }
   console.log(`[job] Client lookup — AI extracted real-estate: "${result["real-estate"]}", resolved to: "${realEstate}", from: "${emailMeta?.from}"`);
   let client = await findClient(realEstate);
   let clientFoundVia = "name";
