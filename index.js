@@ -41,6 +41,8 @@ const CLIENT_NAME_MAP = {
   "leifield - wa": "Leifield Real Estate",
   "professionals armadale": "Professionals Armadale Real Estate WA",
   "professionals armadale r/e wa": "Professionals Armadale Real Estate WA",
+  "professionals: the wright team": "Professionals TWT Realty - The Wright Team",
+  "hky bullsbrook": "HKY Real Estate Bullsbrook",
   // Work orders almost always omit the branch — default to the residential branch
   // (Commercial is a separate Aroflo client and needs to be named explicitly).
   "lj hooker victoria park": "LJ Hooker Victoria Park - Belmont",
