@@ -42,6 +42,7 @@ const CLIENT_NAME_MAP = {
   "professionals armadale": "Professionals Armadale Real Estate WA",
   "professionals armadale r/e wa": "Professionals Armadale Real Estate WA",
   "professionals: the wright team": "Professionals TWT Realty - The Wright Team",
+  "professionals the wright team": "Professionals TWT Realty - The Wright Team",
   "hky bullsbrook": "HKY Real Estate Bullsbrook",
   "colman & magiatis real estate": "Colman Magiatis Real Estate",
   // Work orders almost always omit the branch — default to the residential branch
