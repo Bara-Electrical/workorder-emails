@@ -1421,6 +1421,20 @@ async function emailHtmlForNote(html, oneDriveUrl = null, emailMeta = null) {
 
   cleaned = await decodeWrappedLinks(cleaned);
 
+  // Templated work-order emails (Tapi etc.) carry heavy inline styling/layout attributes —
+  // often 3-4x the size of the actual visible content. Stripping that presentational cruft
+  // (not the text or links) keeps normal emails safely under the length cap below instead of
+  // being truncated wholesale, which was cutting off the actionable work-order link itself
+  // when it fell past the cut point.
+  cleaned = cleaned
+    .replace(/<!--\[if[\s\S]*?<!\[endif\]-->/gi, "")
+    .replace(/<!--[\s\S]*?-->/g, "")
+    .replace(/\s+style="[^"]*"/gi, "")
+    .replace(/\s+class="[^"]*"/gi, "")
+    .replace(/\s+(?:width|height|cellpadding|cellspacing|border|align|valign|bgcolor)="[^"]*"/gi, "")
+    .replace(/>\s+</g, "><")
+    .trim();
+
   // Aroflo's postxml note content has a size limit that isn't consistent across content —
   // bisection against the live API found one email breaking as low as ~11,800 characters
   // and another surviving to ~14,600, both failing with the same generic "Internal IMSAPI
