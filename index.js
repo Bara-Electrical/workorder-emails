@@ -978,7 +978,7 @@ async function createArofloJob(result, rawEmail, pdfAttachment = null, emailMeta
   const taskName = [taskStreet, taskSuburb]
     .filter(Boolean)
     .join(" ")
-    .replace(/,?\s*(?:NSW|VIC|QLD|SA|WA|TAS|ACT|NT)\b\s*\d{0,4}\s*$/i, "")
+    .replace(/,?\s*\b(?:NSW|VIC|QLD|SA|WA|TAS|ACT|NT)\b\s*\d{0,4}\s*$/i, "")
     .trim();
 
   const xml =
