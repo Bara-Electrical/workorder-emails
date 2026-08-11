@@ -1421,39 +1421,6 @@ async function emailHtmlForNote(html, oneDriveUrl = null, emailMeta = null) {
 
   cleaned = await decodeWrappedLinks(cleaned);
 
-  // Templated work-order emails (Tapi etc.) carry heavy inline styling/layout attributes —
-  // often 3-4x the size of the actual visible content. Stripping that presentational cruft
-  // (not the text or links) keeps normal emails safely under the length cap below instead of
-  // being truncated wholesale, which was cutting off the actionable work-order link itself
-  // when it fell past the cut point.
-  cleaned = cleaned
-    .replace(/<!--\[if[\s\S]*?<!\[endif\]-->/gi, "")
-    .replace(/<!--[\s\S]*?-->/g, "")
-    .replace(/\s+style="[^"]*"/gi, "")
-    .replace(/\s+class="[^"]*"/gi, "")
-    .replace(/\s+(?:width|height|cellpadding|cellspacing|border|align|valign|bgcolor)="[^"]*"/gi, "")
-    .replace(/>\s+</g, "><")
-    .trim();
-
-  // Aroflo's postxml note content has a size limit that isn't consistent across content —
-  // bisection against the live API found one email breaking as low as ~11,800 characters
-  // and another surviving to ~14,600, both failing with the same generic "Internal IMSAPI
-  // Error" and no size-specific message. A long "RE:" reply with deep quoted-thread history
-  // easily exceeds either, so cap conservatively below the lowest observed break point,
-  // with margin left for the metaHtml wrapper added below.
-  const MAX_CLEANED_LENGTH = 10000;
-  if (cleaned.length > MAX_CLEANED_LENGTH) {
-    // A blind character cut can land mid-tag/mid-attribute (e.g. `<td valign="top" sty`),
-    // and that malformed fragment — not the length itself — is what Aroflo's API actually
-    // chokes on (confirmed empirically: the same content posts fine when cut on a tag
-    // boundary, but throws "Internal IMSAPI Error" when cut mid-attribute). Back up to the
-    // last complete ">" so nothing is left half-open.
-    let cut = cleaned.lastIndexOf(">", MAX_CLEANED_LENGTH);
-    if (cut === -1 || cut < MAX_CLEANED_LENGTH * 0.5) cut = MAX_CLEANED_LENGTH - 1;
-    cleaned = cleaned.slice(0, cut + 1) +
-      `<p style="color:#af0e00"><em>[Note truncated — email was too long to post in full. See the original email or attached PDF for the complete work order.]</em></p>`;
-  }
-
   const cell = (label, value) =>
     `<tr><td style="border:none;color:#888888;font-size:12px;font-weight:bold;padding:1px 12px 1px 0;white-space:nowrap;vertical-align:top">${label}</td><td style="border:none;color:#444444;font-size:12px;padding:1px 0">${value}</td></tr>`;
 
