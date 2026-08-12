@@ -74,7 +74,7 @@ const SENDING_TO_AI_CATEGORY    = "Sending to AI";
 const CREATING_JOB_CATEGORY     = "Creating Job";
 const WORKORDERS_EMAIL          = "workorders@baraelectrical.com.au";
 const BRANDON_EMAIL             = "brandon.roberts@baraelectrical.com.au";
-const POLL_INTERVAL_MS          = 5 * 60 * 1000;
+const POLL_INTERVAL_MS          = 2.5 * 60 * 1000;
 const CLIENT_CACHE_TZ           = "Australia/Perth";
 const CLIENT_CACHE_REFRESH_HOUR = 3; // local hour in CLIENT_CACHE_TZ to refresh the client cache
 
@@ -2083,10 +2083,12 @@ async function pollInbox(mailbox) {
   if (!res.ok) throw new Error(`Graph API error ${res.status}: ${JSON.stringify(data?.error || data)}`);
 
   // Threads (jobs) are processed oldest-first, per admin's request, so job creation
-  // follows the order work orders actually came in. But within a single thread that has
-  // multiple untagged messages, the newest one is still tried first — it quotes everything
-  // underneath it, so it's the most complete version of the work order; the earlier ones
-  // get caught as duplicates by the thread check below since the newest is tagged first.
+  // follows the order work orders actually came in. Job creation is per-conversation, not
+  // per-email — within a single thread that has multiple untagged messages, only the newest
+  // is ever turned into a job (it quotes everything underneath it, so it's the most complete
+  // version of the work order); the rest are dropped from the candidate list entirely and
+  // get swept up by tagWholeConversation once the newest one creates a job (or, if it fails,
+  // picked up individually on a later poll).
   const byConversation = new Map();
   for (const m of data.value || []) {
     if (m.categories.some(c => c.startsWith("Job created"))) continue;
@@ -2096,9 +2098,12 @@ async function pollInbox(mailbox) {
   }
   const messages = [...byConversation.values()]
     .sort((a, b) => Math.min(...a.map(m => new Date(m.receivedDateTime))) - Math.min(...b.map(m => new Date(m.receivedDateTime))))
-    .flatMap(group => group.sort((a, b) => new Date(b.receivedDateTime) - new Date(a.receivedDateTime)));
-  console.log(`[poll] (${mailbox}): ${messages.length} email(s) found`);
+    .map(group => group.sort((a, b) => new Date(b.receivedDateTime) - new Date(a.receivedDateTime))[0]);
+  console.log(`[poll] (${mailbox}): ${messages.length} conversation(s) found`);
 
+  // Phase 1 (cheap, sequential): drop replies to already-completed threads, and mark the
+  // rest as "Reading" up front. Order doesn't matter here — it's just Graph metadata calls.
+  const candidates = [];
   for (const message of messages) {
     const siblingTag = message.conversationId
       ? await findJobTagInThread(mailbox, message.conversationId, message.id)
@@ -2112,17 +2117,55 @@ async function pollInbox(mailbox) {
       await tagWholeConversation(mailbox, message.conversationId, null, siblingTag);
       continue;
     }
-
-    let currentCategories = await setJobStatus(mailbox, message.id, message.categories, READING_EMAIL_CATEGORY);
+    const currentCategories = await setJobStatus(mailbox, message.id, message.categories, READING_EMAIL_CATEGORY);
     console.log("[poll] Reading:", message.subject);
+    candidates.push({ message, currentCategories });
+  }
+
+  // Phase 2 (expensive, parallel): AI extraction and attachment/link fetching have no shared
+  // state between messages, so run them concurrently rather than one at a time — this is
+  // where most of the wall-clock time goes, not the Aroflo job creation below.
+  const extracted = await Promise.allSettled(candidates.map(async ({ message, currentCategories }) => {
+    const onStatus = async (status) => {
+      currentCategories = await setJobStatus(mailbox, message.id, currentCategories, status);
+    };
+    const processed = await processMessage(message, mailbox, onStatus);
+    return { ...processed, currentCategories: () => currentCategories };
+  }));
+
+  // Phase 3 (sequential): Aroflo job creation stays one-at-a-time, in the original
+  // oldest-conversation-first order, to keep job numbers following arrival order and to
+  // avoid bursting past Aroflo's rate limit (documented at 3 requests/sec).
+  for (let i = 0; i < candidates.length; i++) {
+    const { message } = candidates[i];
+    const outcome = extracted[i];
+
+    if (outcome.status === "rejected") {
+      const err = outcome.reason;
+      console.error("[poll] Error processing message:", message.subject, err.message);
+      if (err.message.startsWith("Client not found")) {
+        await setJobStatus(mailbox, message.id, message.categories, CLIENT_NOT_FOUND_CATEGORY);
+        console.log("[poll] Tagged as client not found:", message.subject);
+        await sendAlertEmail(
+          `Action required — client not found: "${message.subject}"`,
+          `<p style="font-family:sans-serif;font-size:14px">Couldn't match this email to an Aroflo client.</p><p style="font-family:sans-serif;font-size:14px">${escapeHtml(err.message)}</p><p style="font-family:sans-serif;font-size:12px;color:#888">Add a mapping in CLIENT_NAME_MAP or EMAIL_DOMAIN_MAP, then remove the "Client not found" category on the email to retry.</p>`,
+          "client not found"
+        );
+      } else if (err.message.startsWith("No address found")) {
+        await setJobStatus(mailbox, message.id, message.categories, NO_ADDRESS_CATEGORY);
+        console.log("[poll] Tagged as no address:", message.subject);
+      } else {
+        // Tag as "Failed" — remove it in Outlook to retry
+        await setJobStatus(mailbox, message.id, message.categories, FAILED_CATEGORY);
+        console.log("[poll] Tagged as failed:", message.subject);
+      }
+      continue;
+    }
+
+    const { result, rawEmail, pdfAttachment, imageAttachments, emailMeta, currentCategories: getCategories } = outcome.value;
+    let currentCategories = getCategories();
 
     try {
-      const onStatus = async (status) => {
-        currentCategories = await setJobStatus(mailbox, message.id, currentCategories, status);
-      };
-
-      const { result, rawEmail, pdfAttachment, imageAttachments, emailMeta } = await processMessage(message, mailbox, onStatus);
-
       // Pre-job validation warnings — checked before Aroflo job creation
       const preWarnings = [];
       if (!result["property-manager"]) {
@@ -2132,7 +2175,7 @@ async function pollInbox(mailbox) {
         preWarnings.push({ tag: "No tenant info", detail: "No tenant name or contact in the work order, and property not stated as vacant" });
       }
 
-      await onStatus(CREATING_JOB_CATEGORY);
+      currentCategories = await setJobStatus(mailbox, message.id, currentCategories, CREATING_JOB_CATEGORY);
       const { jobNumber, warnings: jobWarnings } = await createArofloJob(result, rawEmail, pdfAttachment, emailMeta, imageAttachments);
       logAiOutput(result, message.subject).catch(err => console.warn("[airtable] logAiOutput:", err.message));
       logActivity("Job created", jobNumber).catch(err => console.warn("[airtable] logActivity:", err.message));
@@ -2152,7 +2195,6 @@ async function pollInbox(mailbox) {
         method: "PATCH",
         body: JSON.stringify({ categories: finalCategories }),
       });
-      currentCategories = finalCategories;
       tagWholeConversation(mailbox, message.conversationId, message.id, jobTag)
         .catch(err => console.warn("[poll] tagWholeConversation:", err.message));
 
