@@ -826,6 +826,15 @@ function buildDescription(result, photoLinkHtml = null, airconUnitType = null) {
   const spacer = `<p>&nbsp;</p>`;
   const lockboxDetails = extractLockboxDetails(result["access-details"]);
 
+  // Fall back to task-type if AI forgot to set package (e.g. task-type is EC1 but package is null)
+  const pkg = (result["package"] && result["package"] !== "null" ? result["package"] : null)
+    ?? (PACKAGE_TEMPLATES[result["task-type"]] ? result["task-type"] : null);
+  const isAirconJob = ["AC1", "AC2", "ACEC1"].includes(pkg) || result["task-type"] === "Real Estate Aircon Maintenance";
+  if (airconUnitType && isAirconJob) {
+    parts.push(`<p><span style="background:#ffe0b3;font-weight:bold">Unit Type: ${escapeHtml(airconUnitType)}</span></p>`);
+    parts.push(spacer);
+  }
+
   const desc = result["task-description"] || result["task-type"];
   if (desc) {
     // Multiple distinct items are separated by "\n" (see prompt) — render as a bulleted
@@ -849,16 +858,6 @@ function buildDescription(result, photoLinkHtml = null, airconUnitType = null) {
 
   if (lockboxDetails) {
     parts.push(`<p><span style="background:#ccffcc;font-weight:bold">Access Details: ${escapeHtml(lockboxDetails)}</span></p>`);
-  }
-
-  // Fall back to task-type if AI forgot to set package (e.g. task-type is EC1 but package is null)
-  const pkg = (result["package"] && result["package"] !== "null" ? result["package"] : null)
-    ?? (PACKAGE_TEMPLATES[result["task-type"]] ? result["task-type"] : null);
-
-  const isAirconJob = ["AC1", "AC2", "ACEC1"].includes(pkg) || result["task-type"] === "Real Estate Aircon Maintenance";
-  if (airconUnitType && isAirconJob) {
-    parts.push(spacer);
-    parts.push(`<p><span style="background:#ffe0b3;font-weight:bold">Unit Type: ${escapeHtml(airconUnitType)}</span></p>`);
   }
 
   if (pkg && PACKAGE_TEMPLATES[pkg]) {
