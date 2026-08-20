@@ -1134,6 +1134,31 @@ async function createArofloJob(result, rawEmail, pdfAttachment = null, emailMeta
       }
     }
 
+    // A tenant's vacate date matters for booking (e.g. don't schedule access through them
+    // past their move-out), but only while it's close enough to be relevant — surface it in
+    // the scheduling note the same way as vacant-access info, and only within a 2-month
+    // window so a stale/far-off date on a recurring compliance job doesn't clutter every note.
+    let vacateDateNote = null;
+    const vacateDate = result["tenant-vacate-date"] ? new Date(result["tenant-vacate-date"]) : null;
+    if (vacateDate && !isNaN(vacateDate)) {
+      const twoMonthsOut = new Date();
+      twoMonthsOut.setMonth(twoMonthsOut.getMonth() + 2);
+      if (vacateDate >= new Date(new Date().toDateString()) && vacateDate <= twoMonthsOut) {
+        const vacateDateFormatted = vacateDate.toLocaleDateString("en-AU", { day: "2-digit", month: "2-digit", year: "numeric" });
+        const line = `Tenant vacating ${vacateDateFormatted}`;
+        try {
+          await appendToPinnedNoteSection(confirmedTaskId, "scheduling", `${dateStamp} ${line} - ${AI_NOTE_INITIALS}`);
+        } catch (err) {
+          console.warn("[job] Could not append vacate date to scheduling note:", err.message);
+          vacateDateNote = escapeHtml(line);
+          warnings.push({
+            tag: "Vacate date not added to scheduling note",
+            detail: `Pinned scheduling note not editable — posted as a separate note instead: ${line}`,
+          });
+        }
+      }
+    }
+
     // The photo folder link can only be known once photos are uploaded (which needs the
     // jobNumber from creation), so it can't go in the description set at task creation —
     // fold it into this same follow-up update instead of a separate note, which techs
@@ -1147,6 +1172,7 @@ async function createArofloJob(result, rawEmail, pdfAttachment = null, emailMeta
       noteHtml             ? `<note><content>${cdata(noteHtml)}</content></note>`             : "",
       additionalTenantNote ? `<note><content>${cdata(additionalTenantNote)}</content></note>` : "",
       vacantAccessNote     ? `<note><content>${cdata(vacantAccessNote)}</content></note>`     : "",
+      vacateDateNote       ? `<note><content>${cdata(vacateDateNote)}</content></note>`       : "",
     ].join("");
 
     if (notesXml || substatusId || photoLinkHtml) {
@@ -1187,7 +1213,7 @@ async function createArofloJob(result, rawEmail, pdfAttachment = null, emailMeta
       }
 
       if (applied) {
-        console.log("[job] Task update applied — note:", !!noteHtml, "additional tenant note:", !!additionalTenantNote, "vacant access note:", !!vacantAccessNote, "photo link:", !!photoLinkHtml, "substatus:", substatusId || "n/a");
+        console.log("[job] Task update applied — note:", !!noteHtml, "additional tenant note:", !!additionalTenantNote, "vacant access note:", !!vacantAccessNote, "vacate date note:", !!vacateDateNote, "photo link:", !!photoLinkHtml, "substatus:", substatusId || "n/a");
       } else if (lastErr) {
         console.warn("[job] Combined task update failed after retry:", lastErr.message);
         if (noteHtml) warnings.push({ tag: "Note not posted", detail: `Email note not posted to job: ${lastErr.message}` });
@@ -1794,8 +1820,8 @@ async function processMessage(message, mailbox = WORKORDERS_EMAIL, onStatus = nu
     instructions: `You are a work order extraction system for an electrical company in Australia. Today's date is ${new Date().toLocaleDateString("en-AU", { day: "2-digit", month: "2-digit", year: "numeric" })}.
 
 CRITICAL RULES:
-- tenant-name and tenant-contact come from the Tenant Details section, OR any section labelled "Contact for job access" or similar, OR an inline mention anywhere in the description/notes such as "contact tenant emma for access 0414152246" or "contact new tenant lance - 0421516195" (extract "Emma"/"Lance" as tenant-name and the number as tenant-contact). Always scan the full description/instructions text for a phrase like "contact tenant <name>", "contact new tenant <name>", or "tenant <name> on <number>" even if there is no dedicated tenant section. An inline "contact (new) tenant <name>" instruction ALWAYS takes priority over a generic vacant/moving-out signal elsewhere in the document — a specific named contact for access means someone must actually be contacted, regardless of the property's formal vacancy status, so extract that person as tenant-name/tenant-contact rather than defaulting to "Vacant". Never use the Owner Details / Owner section as tenant-name, tenant-contact, or tenant-email — the owner is not the tenant, even if the PM states tenant details were not provided. Only set tenant-name to "Vacant" when there is truly no named contact anywhere (including inline) AND the property is explicitly stated as vacant — in that case also ensure access-details captures any lockbox or key collection info. If no tenant is listed and the property is NOT stated as vacant, leave tenant-name null. Never use access details, lockbox info, or key numbers as the tenant name. If multiple tenants are listed, include ALL of them separated by commas — do not drop any.
-- If the email states the tenant is vacating or moving out and the move-out date is within 7 days of today, AND no replacement/new tenant contact is given anywhere, treat the property as vacant: set tenant-name to "Vacant", set tenant-contact to null, and include in task-description that keys should be collected after the move-out date (e.g. "Collect keys after 3/7"). If a new/incoming tenant contact IS given, use that person instead of "Vacant" — see the rule above.
+- tenant-name and tenant-contact come from the Tenant Details section, OR any section labelled "Contact for job access" or similar, OR an inline mention anywhere in the description/notes such as "contact tenant emma for access 0414152246" or "contact new tenant lance - 0421516195" (extract "Emma"/"Lance" as tenant-name and the number as tenant-contact). Always scan the full description/instructions text for a phrase like "contact tenant <name>", "contact new tenant <name>", or "tenant <name> on <number>" even if there is no dedicated tenant section. An inline "contact (new) tenant <name>" instruction ALWAYS takes priority over a generic vacant/moving-out signal elsewhere in the document — a specific named contact for access means someone must actually be contacted, regardless of the property's formal vacancy status, so extract that person as tenant-name/tenant-contact rather than defaulting to "Vacant". Never use the Owner Details / Owner section as tenant-name, tenant-contact, or tenant-email — the owner is not the tenant, even if the PM states tenant details were not provided. Only set tenant-name to "Vacant" when there is truly no named contact anywhere (including inline) AND the property is explicitly stated as vacant — in that case also ensure access-details captures any lockbox or key collection info. If no tenant is listed and the property is NOT stated as vacant, leave tenant-name null. Never use access details, lockbox info, or key numbers as the tenant name. If multiple tenants are listed, include ALL of them separated by commas — do not drop any. A tenant who is vacating/moving out soon is still a real, currently-in-residence tenant — always extract their actual name/contact as normal (see tenant-vacate-date below for how to flag the move-out date); do NOT set tenant-name to "Vacant" just because a vacate date is listed for them.
+- tenant-vacate-date is the date a current tenant is vacating/moving out, if one is explicitly stated anywhere (e.g. a "Vacate Date" column against a tenant, or text saying a tenant is moving out on a date). Format as YYYY-MM-DD. If multiple tenants have different vacate dates, use the earliest one. Leave null if no vacate date is mentioned. This is independent of tenant-name/tenant-contact, which are always extracted normally per the rule above regardless of this field.
 - access-details is ONLY physical access codes/numbers — key numbers, lockbox codes, gate codes, swipe card numbers. e.g. "Key: 1234", "Lockbox code: 56", "Gate code: 789". Do NOT include contact instructions, tenant names, safety instructions, or anything that is not a physical code or number.
 - expenditure-limit is the dollar amount only — e.g. "$330". Strip any conditions, notes, or extra text after the amount. If the expenditure limit is $0 or zero, return null. If the thread contains more than one dollar amount for the same job — e.g. an old/automated work order quoting an outdated price, followed by a Bara Electrical reply (from workorders@baraelectrical.com.au) stating the correct current price, followed by the PM agreeing to proceed — use the CORRECTED price Bara Electrical quoted, not the original/outdated one from the work order. Only the original work order's stale price should ever be discarded this way; if there's no such correction in the thread, use the amount as stated.
 - confidence is a float 0.0–1.0 rating how confident you are in the overall extraction. 1.0 = all fields clearly present, 0.0 = guessing most fields.
@@ -1831,6 +1857,7 @@ Return ONLY valid JSON with these exact keys:
   "tenant-name": "",
   "tenant-contact": "",
   "tenant-email": "",
+  "tenant-vacate-date": "",
   "address": "",
   "task-description": "",
   "real-estate": "",
