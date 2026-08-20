@@ -1145,7 +1145,7 @@ async function createArofloJob(result, rawEmail, pdfAttachment = null, emailMeta
       twoMonthsOut.setMonth(twoMonthsOut.getMonth() + 2);
       if (vacateDate >= new Date(new Date().toDateString()) && vacateDate <= twoMonthsOut) {
         const vacateDateFormatted = vacateDate.toLocaleDateString("en-AU", { day: "2-digit", month: "2-digit", year: "numeric" });
-        const line = `Tenant vacating ${vacateDateFormatted}`;
+        const line = `${result["tenant-name"] || "Tenant"} vacating ${vacateDateFormatted}`;
         try {
           await appendToPinnedNoteSection(confirmedTaskId, "scheduling", `${dateStamp} ${line} - ${AI_NOTE_INITIALS}`);
         } catch (err) {
