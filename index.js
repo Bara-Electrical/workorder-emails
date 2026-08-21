@@ -45,6 +45,7 @@ const CLIENT_NAME_MAP = {
   "professionals the wright team": "Professionals TWT Realty - The Wright Team",
   "hky bullsbrook": "HKY Real Estate Bullsbrook",
   "colman & magiatis real estate": "Colman Magiatis Real Estate",
+  "david crash": "Crash Realty",
   // Work orders almost always omit the branch — default to the residential branch
   // (Commercial is a separate Aroflo client and needs to be named explicitly).
   "lj hooker victoria park": "LJ Hooker Victoria Park - Belmont",
