@@ -1015,18 +1015,36 @@ async function createArofloJob(result, rawEmail, pdfAttachment = null, emailMeta
   const taskId   = task?.taskid;
 
   // jobnumber isn't in the insert response — fetch it. Also use the fetched taskId
-  // for note posting since it's confirmed to work with this format.
+  // for note posting since it's confirmed to work with this format. A freshly-inserted
+  // task can briefly return no match here (Aroflo hasn't caught up to the new taskid
+  // yet — same class of timing blip noted elsewhere), so retry once before giving up.
+  // Never fall back to the raw taskId as the job number — it's an opaque internal ID
+  // (e.g. "JiQqVydRLEctCg==") that looks nothing like a real job number and was
+  // previously ending up in the "Job created - X" tag, silently wrong.
   let jobNumber = "(see Aroflo)";
   let confirmedTaskId = taskId;
   if (taskId) {
-    try {
-      const fetched = await arofloGet("zone=tasks&where=" + encodeURIComponent(`and|taskid|=|${taskId}`) + "&page=1");
-      const arr = toArray(fetched.tasks);
-      jobNumber = arr[0]?.jobnumber || taskId;
-      confirmedTaskId = arr[0]?.taskid || taskId;
-    } catch (err) {
-      console.warn("[job] Could not fetch job number:", err.message);
-      jobNumber = taskId;
+    for (let attempt = 1; attempt <= 2 && jobNumber === "(see Aroflo)"; attempt++) {
+      try {
+        const fetched = await arofloGet("zone=tasks&where=" + encodeURIComponent(`and|taskid|=|${taskId}`) + "&page=1");
+        const arr = toArray(fetched.tasks);
+        if (arr[0]?.jobnumber) {
+          jobNumber = arr[0].jobnumber;
+          confirmedTaskId = arr[0].taskid || taskId;
+        } else if (attempt < 2) {
+          console.warn(`[job] Job number not yet available for task ${taskId} (attempt ${attempt}/2) — retrying in 1500ms`);
+          await new Promise(r => setTimeout(r, 1500));
+        }
+      } catch (err) {
+        console.warn(`[job] Could not fetch job number (attempt ${attempt}/2):`, err.message);
+        if (attempt < 2) await new Promise(r => setTimeout(r, 1500));
+      }
+    }
+    if (jobNumber === "(see Aroflo)") {
+      warnings.push({
+        tag: "Job number not confirmed",
+        detail: `Task ${taskId} was created but its job number couldn't be fetched from Aroflo — check the task directly.`,
+      });
     }
   }
   console.log("[job] Aroflo job created — job number:", jobNumber, "taskId:", confirmedTaskId);
