@@ -549,16 +549,30 @@ async function findClient(realEstateName) {
   return null;
 }
 
+// Full state names are rarer than abbreviations in work orders but do appear (e.g. some
+// PropertyTree exports write "Yanchep, Western Australia 6035" instead of "Yanchep, WA
+// 6035") — without recognising them the whole "Western Australia 6035" tail fell through
+// into suburb unparsed, inflating anything built from it (e.g. the task name) well past
+// Aroflo's field limits.
+const STATE_NAMES = {
+  "new south wales": "NSW", "victoria": "VIC", "queensland": "QLD",
+  "south australia": "SA", "western australia": "WA", "tasmania": "TAS",
+  "australian capital territory": "ACT", "northern territory": "NT",
+};
+const STATE_PATTERN = `NSW|VIC|QLD|SA|WA|TAS|ACT|NT|${Object.keys(STATE_NAMES).join("|")}`;
+
 function parseAustralianAddress(address) {
   const parts = address.split(",").map(p => p.trim());
   const street = parts[0] || "";
   const rest   = parts.slice(1).join(", ").trim();
   // Optional comma before state handles "Perth, WA 6000" and "Perth WA 6000".
-  // Explicit state list handles title-cased abbreviations like "Wa" or "Nsw".
-  const match  = rest.match(/^(.*?),?\s+(NSW|VIC|QLD|SA|WA|TAS|ACT|NT)(?:[,\s]+(\d{4}))?$/i);
-  return match
-    ? { street, suburb: match[1].trim(), state: match[2].toUpperCase(), postcode: match[3] || "" }
-    : { street, suburb: rest, state: "", postcode: "" };
+  // Explicit state list handles title-cased abbreviations like "Wa" or "Nsw", and full
+  // state names like "Western Australia".
+  const match  = rest.match(new RegExp(`^(.*?),?\\s+(${STATE_PATTERN})(?:[,\\s]+(\\d{4}))?$`, "i"));
+  if (!match) return { street, suburb: rest, state: "", postcode: "" };
+  const stateRaw = match[2].toLowerCase();
+  const state = STATE_NAMES[stateRaw] || match[2].toUpperCase();
+  return { street, suburb: match[1].trim(), state, postcode: match[3] || "" };
 }
 
 async function geocodeAddress(address) {
@@ -975,11 +989,22 @@ async function createArofloJob(result, rawEmail, pdfAttachment = null, emailMeta
   })();
 
   const { street: taskStreet, suburb: taskSuburb } = parseAustralianAddress(result.address || "");
-  const taskName = [taskStreet, taskSuburb]
+  const fullTaskName = [taskStreet, taskSuburb]
     .filter(Boolean)
     .join(" ")
     .replace(/,?\s*\b(?:NSW|VIC|QLD|SA|WA|TAS|ACT|NT)\b\s*\d{0,4}\s*$/i, "")
     .trim();
+  // Aroflo hard-rejects task creation outright over this (confirmed live: "TaskName has
+  // exceed the 50 character limit"), so this must never be allowed through unclipped —
+  // unlike the SiteContact/SitePhone truncation below, a taskname overflow fails the whole
+  // job rather than just degrading one field.
+  const TASK_NAME_LIMIT = 50;
+  const taskName = fullTaskName.length > TASK_NAME_LIMIT ? fullTaskName.slice(0, TASK_NAME_LIMIT).trim() : fullTaskName;
+  if (taskName !== fullTaskName) {
+    const detail = `Task name truncated to fit Aroflo's ${TASK_NAME_LIMIT}-character limit — full address: "${result.address || ""}"`;
+    console.warn("[job]", detail);
+    warnings.push({ tag: "Task name truncated", detail });
+  }
 
   const xml =
 `<tasks>
