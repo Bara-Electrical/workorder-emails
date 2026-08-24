@@ -48,6 +48,7 @@ const CLIENT_NAME_MAP = {
   "david crash": "Crash Realty",
   "dilleen realty pty ltd": "D R Property Management",
   "mj & co": "Jones & Co Property MJ & Co",
+  "mj and co": "Jones & Co Property MJ & Co",
   // Work orders almost always omit the branch — default to the residential branch
   // (Commercial is a separate Aroflo client and needs to be named explicitly).
   "lj hooker victoria park": "LJ Hooker Victoria Park - Belmont",
