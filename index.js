@@ -43,6 +43,10 @@ const CLIENT_NAME_MAP = {
   "professionals armadale r/e wa": "Professionals Armadale Real Estate WA",
   "professionals: the wright team": "Professionals TWT Realty - The Wright Team",
   "professionals the wright team": "Professionals TWT Realty - The Wright Team",
+  // Aroflo has a duplicate "Professionals TWT Realty - The Wright Team" client plus a
+  // separate "...- Balga" branch, so the short form alone is ambiguous to the fuzzy
+  // starts-with matcher — map it directly instead of letting it fall through to that.
+  "professionals twt realty": "Professionals TWT Realty - The Wright Team",
   "hky bullsbrook": "HKY Real Estate Bullsbrook",
   "colman & magiatis real estate": "Colman Magiatis Real Estate",
   "david crash": "Crash Realty",
