@@ -729,13 +729,25 @@ async function findOrUpdateLocation(clientId, locations, address, tenantName, te
   // two different suburbs for a large client, so require the suburb to agree too
   // whenever both are known — otherwise a job (and the tenant's details) could get
   // silently attached to the wrong property.
+  // Leading street number, e.g. "7" from "7 sharman street" — used below to stop a plain
+  // substring match from confusing two different street numbers on the same street.
+  const leadingNumber = (s) => s.match(/^(\d+[a-z]?)\b/i)?.[1]?.toLowerCase() || null;
+  const incomingStreetNumber = leadingNumber(streetPart);
+
   const location = active.find(l => {
-    if (!l.locationname?.toLowerCase().includes(streetPart)) return false;
+    const locNameLower = l.locationname?.toLowerCase() || "";
+    if (!locNameLower.includes(streetPart)) return false;
     const storedUnit = l.locationname?.match(/^(\d+)\//)?.[1] || null;
     // If either side specifies a unit number, require an exact match — a location
     // stored without a unit prefix (e.g. created before the property was known to be
     // multi-unit) must not silently absorb every unit at that street number.
     if ((incomingUnit || storedUnit) && incomingUnit !== storedUnit) return false;
+    // A plain substring check on its own would match "7 Sharman Street" against an
+    // existing "67 Sharman Street" (confirmed live: job 106712 got silently attached to
+    // the wrong property this way) — require the leading street number to agree exactly
+    // whenever both sides have one.
+    const candidateStreetNumber = leadingNumber(locNameLower.replace(/^\d+\//, ""));
+    if (incomingStreetNumber && candidateStreetNumber && incomingStreetNumber !== candidateStreetNumber) return false;
     if (incomingSuburb && l.suburb && incomingSuburb.toLowerCase() !== l.suburb.toLowerCase()) return false;
     return true;
   });
