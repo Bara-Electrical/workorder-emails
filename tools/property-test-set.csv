@@ -1,0 +1,36 @@
+# Ground-truth test set for tools/property-lookup-test.js
+# Format: "address",expected_evap,expected_storeys
+#
+# Labels come from Bara's own completed job descriptions, where a tech recorded the
+# unit type and/or storey count on site — the closest thing to truth we have.
+#
+# Caveat on the "no" rows: absence of evidence. They are properties where past jobs
+# mention split systems and never once mention an evap, which is suggestive but not
+# proof — a house can have both. Treat a false positive on a "no" row as weaker
+# evidence of a model error than a false negative on a "yes" row.
+#
+# Rooming/share houses (RM1, Rm6 style addresses) are deliberately excluded: one roof
+# serves several tenancies, so a per-property answer is meaningless there.
+
+"379B Shorehaven Boulevard, Alkimos WA 6038",yes,2
+"41C Norman Street, Innaloo WA 6018",yes,2
+"187A Watts Road, Wilson WA 6107",yes,2
+"110C Rutland Avenue, Lathlain WA 6100",yes,2
+"13 Devenish Way, Leeming WA 6149",yes,2
+"3 Cable Cove, Mosman Park WA 6012",yes,2
+"23B Stannard Street, Bentley WA 6102",yes,2
+"60 East Road, Pearsall WA 6065",yes,1
+"61 Brixton Street, Beckenham WA 6107",yes,1
+"14 King Street, Gosnells WA 6110",yes,1
+"15 Hester Way, Greenwood WA 6024",yes,1
+"21 Lynton Street, Mount Hawthorn WA 6016",yes,1
+"3 Bruce Court, Leeming WA 6149",yes,1
+"15 Greenough Way, Gosnells WA 6110",yes,1
+"3 Amber Way, Thornlie WA 6108",yes,1
+"2 Compton Place, Kewdale WA 6105",yes,1
+"36 Verna Street, Gosnells WA 6110",no,1
+"76 Verna Street, Gosnells WA 6110",no,1
+"200 Subiaco Road, Subiaco WA 6008",no,1
+"11 Yarran Street, Armadale WA 6112",no,1
+"3 Richards Place, Cannington WA 6107",no,1
+"12A Coronation Street, Doubleview WA 6018",no,2
