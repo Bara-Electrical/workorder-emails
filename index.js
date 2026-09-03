@@ -406,7 +406,25 @@ const SUBSTATUS_TAG_MAP = {
 // In-memory client cache: lowercase clientname → client object.
 // Populated at startup and updated via the /aroflo-webhook endpoint.
 const clientCache = new Map();
+// Secondary index: clientname with all punctuation and spacing removed → the clients
+// sharing that form. Bridges how an agency writes its own name on a work order versus how
+// it was typed into Aroflo — "Rightly Realestate" against the Aroflo client
+// "Rightly.Realestate", which matched neither exactly nor via the starts-with pass because
+// the dot sits exactly where the space is. Values are arrays because a few Aroflo clients
+// differ only by punctuation or a double space (duplicate owner records like
+// "Robin  Wright"/"Robin Wright", and "S Class"/"S-Class Property Group"); those stay
+// unmatched rather than being guessed at.
+const clientCacheNormalised = new Map();
 let clientCacheLastLoaded = null;
+
+// Strips everything that isn't a letter or digit, so punctuation and spacing stop being
+// load-bearing. Deliberately used only for whole-name equality, never for the starts-with
+// fuzzy pass: collapsing separators turns junk single-name Aroflo records ("cam .",
+// "emma .", "scott .") into prefixes of every real client sharing that first name, which
+// would make currently-working matches ambiguous.
+function normaliseClientName(name) {
+  return name.toLowerCase().replace(/[^a-z0-9]/g, "");
+}
 
 async function loadClientCache() {
   // where=clientid!=0 forces Aroflo to return the full client list.
@@ -428,6 +446,15 @@ async function loadClientCache() {
       const max     = parseInt(zone.maxpageresults ?? 500);
       if (current < max) break;
       page++;
+    }
+    // Rebuilt from scratch rather than appended to, so a daily refresh can't stack repeat
+    // copies of the same client under one key and make every name look ambiguous.
+    clientCacheNormalised.clear();
+    for (const c of clientCache.values()) {
+      const key = normaliseClientName(c.clientname);
+      if (!key) continue;
+      const bucket = clientCacheNormalised.get(key);
+      if (bucket) bucket.push(c); else clientCacheNormalised.set(key, [c]);
     }
     clientCacheLastLoaded = new Date().toISOString();
     console.log(`[client] Cache loaded: ${clientCache.size} unique clients across ${page} page(s)`);
@@ -521,6 +548,23 @@ async function findClient(realEstateName) {
     for (const name of candidates) {
       const hit = clientCache.get(name.toLowerCase());
       if (hit) return hit;
+    }
+
+    // Punctuation/spacing-insensitive exact match, tried before the starts-with pass so a
+    // whole-name hit always beats a prefix one. Only accepted when a single client carries
+    // that form — the duplicate owner records noted on clientCacheNormalised are reported
+    // as ambiguous instead, matching how the fuzzy pass handles the same situation.
+    for (const name of candidates) {
+      const bucket = clientCacheNormalised.get(normaliseClientName(name));
+      if (bucket?.length === 1) {
+        if (bucket[0].clientname.toLowerCase() !== name.toLowerCase()) {
+          console.log(`[client] Normalised match: "${realEstateName}" → "${bucket[0].clientname}"`);
+        }
+        return bucket[0];
+      }
+      if (bucket?.length > 1) {
+        console.warn(`[client] Ambiguous normalised name "${realEstateName}" — ${bucket.length} cache matches: ${bucket.map(c => c.clientname).join(", ")}`);
+      }
     }
 
     // Bidirectional starts-with fuzzy match — handles "Driven Property Group Pty Ltd" → "Driven Property Group"
