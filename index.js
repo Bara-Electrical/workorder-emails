@@ -54,6 +54,12 @@ const CLIENT_NAME_MAP = {
   "mj & co": "Jones & Co Property MJ & Co",
   "mj and co": "Jones & Co Property MJ & Co",
   "sevenfold property - wa": "Sevenfold Property Management",
+  // Aroflo prefixes this agency's card with its initials, which no matching tier can
+  // bridge from the name on the work order: the leading "SDRE" defeats the exact and
+  // normalised lookups, and neither name is a prefix of the other for the starts-with
+  // pass. An explicit alias is the only safe route — inferring across an unmatched
+  // leading token is what previously mis-booked work order 3378 onto a private card.
+  "steven davis real estate": "SDRE Steven Davis Real Estate",
   // Work orders almost always omit the branch — default to the residential branch
   // (Commercial is a separate Aroflo client and needs to be named explicitly).
   "lj hooker victoria park": "LJ Hooker Victoria Park - Belmont",

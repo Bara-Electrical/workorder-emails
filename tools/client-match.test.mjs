@@ -29,6 +29,7 @@ function grab(startMarker, endMarker) {
 }
 
 const extracted = [
+  grab("const CLIENT_NAME_MAP = {", "\n};\n") + "\n};\n",
   grab("function normaliseClientName(name)", "\n}\n") + "\n}\n",
   grab("function clientNameForms(realEstateName)", "\n}\n") + "\n}\n",
   grab("function clientNameCandidates(realEstateName)", "\n}\n") + "\n}\n",
@@ -45,7 +46,7 @@ const clientCacheNormalised = new Map();
 const toArray = x => (Array.isArray(x) ? x : [x]);
 const arofloGet = async () => ({ clients: [] });
 ${extracted}
-export { findClient, clientCache, clientCacheNormalised, normaliseClientName };
+export { findClient, clientCache, clientCacheNormalised, normaliseClientName, CLIENT_NAME_MAP };
 `;
 const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "client-match-"));
 const tmp = path.join(tmpDir, "extracted.mjs");
@@ -104,10 +105,12 @@ const CASES = [
   ["S Class Property Group",        "S Class Property Group"],
   // Genuinely ambiguous — must stay unmatched rather than pick one of the two.
   ["SClass Property Group",         null],
-  // Work order 3378. The agency's real card is "SDRE Steven Davis Real Estate", which no
-  // tier can reach from "Steven Davis Real Estate" — so the correct result is NO match,
-  // surfaced as "Client not found" for an admin. It must never fall back to the junk
-  // single-name card "Steven  ." via the derived first-word candidate "Steven".
+  // Work order 3378. No matching tier can reach "SDRE Steven Davis Real Estate" from the
+  // name on the work order — the leading initials defeat all three — so findClient ALONE
+  // must return nothing. Critically it must never fall back to the junk single-name card
+  // "Steven  ." via the derived first-word candidate "Steven", which is the regression this
+  // guards. In production CLIENT_NAME_MAP bridges the gap before findClient is called; that
+  // path is covered by MAPPED_CASES below.
   ["Steven Davis Real Estate",      null],
   ["Scott Palmer Realty",           null],
   ["Regina Property Group",         null],
@@ -115,15 +118,32 @@ const CASES = [
   ["Steven",                        "Steven  ."],
 ];
 
+// CLIENT_NAME_MAP is applied to the AI's extracted name BEFORE findClient sees it (see
+// createArofloJob). Its keys must be lowercase to be found, so a mis-cased or padded key
+// is silently dead — these cases exercise the map and the matcher together, as production
+// does, rather than trusting the map by eye.
+const MAPPED_CASES = [
+  ["Steven Davis Real Estate", "SDRE Steven Davis Real Estate"],
+  ["steven davis real estate", "SDRE Steven Davis Real Estate"],
+  ["STEVEN DAVIS REAL ESTATE", "SDRE Steven Davis Real Estate"],
+];
+
 let pass = 0;
 const failures = [];
+for (const [input, expected] of MAPPED_CASES) {
+  const mapped = m.CLIENT_NAME_MAP[input.toLowerCase()] || input;
+  const got = (await m.findClient(mapped))?.clientname ?? null;
+  if (got === expected) pass++;
+  else failures.push(`  ${JSON.stringify(input)} (via CLIENT_NAME_MAP)\n    expected: ${expected}\n    got:      ${got}`);
+}
+
 for (const [input, expected] of CASES) {
   const got = (await m.findClient(input))?.clientname ?? null;
   if (got === expected) pass++;
   else failures.push(`  ${JSON.stringify(input)}\n    expected: ${expected}\n    got:      ${got}`);
 }
 
-console.log(`findClient: ${pass}/${CASES.length} passed`);
+console.log(`findClient: ${pass}/${CASES.length + MAPPED_CASES.length} passed`);
 if (failures.length) {
   console.error(`\n${failures.length} failure(s):\n${failures.join("\n")}`);
   process.exit(1);
