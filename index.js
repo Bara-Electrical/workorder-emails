@@ -530,10 +530,21 @@ function matchContact(contacts, pmName) {
 // Candidate names to try when matching a client, from most to least specific:
 // the raw name, the part before a "|"/"," separator, that with Pty/Ltd/etc stripped,
 // and just its first word — deduped in order.
-function clientNameCandidates(realEstateName) {
+// The WHOLE-NAME forms of a client name, most to least specific: the raw name, the part
+// before a "|"/"," separator, and that with Pty/Ltd/etc stripped — deduped in order.
+// Deliberately excludes the first-word fallback clientNameCandidates adds below: these are
+// the only forms safe to compare with punctuation and spacing stripped (see findClient).
+function clientNameForms(realEstateName) {
   const baseName     = realEstateName.split(/[|,]/)[0].trim();
   const strippedName = baseName.replace(/\s+(?:Pty\.?\s*)?(?:Ltd\.?|Limited|Inc\.?|LLC)\.?$/i, "").trim();
-  return [realEstateName, baseName, strippedName, baseName.split(" ")[0]]
+  return [realEstateName, baseName, strippedName].filter((v, i, a) => v && a.indexOf(v) === i);
+}
+
+// Candidate names to try when matching a client, from most to least specific: the
+// whole-name forms above, then just the first word of the base name — deduped in order.
+function clientNameCandidates(realEstateName) {
+  const baseName = realEstateName.split(/[|,]/)[0].trim();
+  return [...clientNameForms(realEstateName), baseName.split(" ")[0]]
     .filter((v, i, a) => v && a.indexOf(v) === i);
 }
 
@@ -558,7 +569,13 @@ async function findClient(realEstateName) {
     // whole-name hit always beats a prefix one. Only accepted when a single client carries
     // that form — the duplicate owner records noted on clientCacheNormalised are reported
     // as ambiguous instead, matching how the fuzzy pass handles the same situation.
-    for (const name of candidates) {
+    // Whole-name forms ONLY, never the first-word fallback in `candidates`. Stripping
+    // punctuation off a bare first name collides with Aroflo's junk single-name client
+    // cards: "Steven  ." normalises to "steven", so work order 3378 ("Steven Davis Real
+    // Estate", whose real card is "SDRE Steven Davis Real Estate") matched on the derived
+    // candidate "Steven" and booked the job against a private client card. A first word is
+    // a prefix, and prefixes belong to the starts-with pass below, which compares raw text.
+    for (const name of clientNameForms(realEstateName)) {
       const bucket = clientCacheNormalised.get(normaliseClientName(name));
       if (bucket?.length === 1) {
         if (bucket[0].clientname.toLowerCase() !== name.toLowerCase()) {

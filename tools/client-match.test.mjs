@@ -30,6 +30,7 @@ function grab(startMarker, endMarker) {
 
 const extracted = [
   grab("function normaliseClientName(name)", "\n}\n") + "\n}\n",
+  grab("function clientNameForms(realEstateName)", "\n}\n") + "\n}\n",
   grab("function clientNameCandidates(realEstateName)", "\n}\n") + "\n}\n",
   grab("async function findClient(realEstateName)", "\n// Full state names"),
 ].join("\n");
@@ -68,6 +69,8 @@ const CLIENTS = [
   "S Class Property Group", "S-Class Property Group",
   "cam .", "Cameron Burchell", "Cameron  Best", // junk single-name records
   "emma .", "Emma Smith",
+  "Steven  .", "SDRE Steven Davis Real Estate", // work order 3378: junk card vs real agency
+  "Scott .", "Regina .",
   "Pro Property Group Real Estate", "ProProperty Group",
 ];
 
@@ -101,6 +104,15 @@ const CASES = [
   ["S Class Property Group",        "S Class Property Group"],
   // Genuinely ambiguous — must stay unmatched rather than pick one of the two.
   ["SClass Property Group",         null],
+  // Work order 3378. The agency's real card is "SDRE Steven Davis Real Estate", which no
+  // tier can reach from "Steven Davis Real Estate" — so the correct result is NO match,
+  // surfaced as "Client not found" for an admin. It must never fall back to the junk
+  // single-name card "Steven  ." via the derived first-word candidate "Steven".
+  ["Steven Davis Real Estate",      null],
+  ["Scott Palmer Realty",           null],
+  ["Regina Property Group",         null],
+  // A genuinely single-word agency name is still a whole name, so it may normalise-match.
+  ["Steven",                        "Steven  ."],
 ];
 
 let pass = 0;
