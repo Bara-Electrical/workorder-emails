@@ -72,6 +72,8 @@ const CLIENTS = [
   "emma .", "Emma Smith",
   "Steven  .", "SDRE Steven Davis Real Estate", // work order 3378: junk card vs real agency
   "Scott .", "Regina .",
+  "M Property", "M Property Management", "CC Property Advisory", // legal vs trading name
+  "First National Swans Residential", "Oscar D'Souza Real Estate",
   "Pro Property Group Real Estate", "ProProperty Group",
 ];
 
@@ -126,6 +128,20 @@ const MAPPED_CASES = [
   ["Steven Davis Real Estate", "SDRE Steven Davis Real Estate"],
   ["steven davis real estate", "SDRE Steven Davis Real Estate"],
   ["STEVEN DAVIS REAL ESTATE", "SDRE Steven Davis Real Estate"],
+  // Client-not-found alerts of 8 Sep 2026.
+  ["M Property Management Pty Ltd T/A CC Property Advisory Australia", "CC Property Advisory"],
+  ["Drivengroup", "Driven Property Group"],
+  ["Driven Group", "Driven Property Group"],
+  ["First National Real Estate Swans Residential", "First National Swans Residential"],
+];
+
+// Without its alias the legal name is genuinely ambiguous — it starts-with matches both
+// "M Property" and "M Property Management" — so findClient alone must decline rather than
+// pick one. This asserts the alias is doing the work, not a lucky fuzzy hit.
+const UNMAPPED_MUST_DECLINE = [
+  "M Property Management Pty Ltd T/A CC Property Advisory Australia",
+  "Drivengroup",
+  "First National Real Estate Swans Residential",
 ];
 
 let pass = 0;
@@ -143,7 +159,13 @@ for (const [input, expected] of CASES) {
   else failures.push(`  ${JSON.stringify(input)}\n    expected: ${expected}\n    got:      ${got}`);
 }
 
-console.log(`findClient: ${pass}/${CASES.length + MAPPED_CASES.length} passed`);
+for (const input of UNMAPPED_MUST_DECLINE) {
+  const got = (await m.findClient(input))?.clientname ?? null;
+  if (got === null) pass++;
+  else failures.push(`  ${JSON.stringify(input)} (unmapped)\n    expected: null\n    got:      ${got}`);
+}
+
+console.log(`findClient: ${pass}/${CASES.length + MAPPED_CASES.length + UNMAPPED_MUST_DECLINE.length} passed`);
 if (failures.length) {
   console.error(`\n${failures.length} failure(s):\n${failures.join("\n")}`);
   process.exit(1);
