@@ -1977,7 +1977,7 @@ CRITICAL RULES:
 - tenant-contact must contain phone numbers ONLY — no names, no labels, just the numbers. Only use a number if it is explicitly and unambiguously tied to the tenant (e.g. appears in a Tenant section, is labelled "Tenant Phone"/"Tenant Mobile"/"Contact Number", or immediately follows an inline "contact tenant <name>" style phrase). If you are unsure whether a number belongs to the tenant, leave tenant-contact null. If there are multiple confirmed tenant numbers, separate with commas. Prefer mobile over home numbers. Australian numbers always start with 0 (e.g. 0412 345 678) — always include the leading 0.
 - tenant-email is the tenant's email address. Only include if explicitly labelled as the tenant's email. Leave null if not present or uncertain.
 - property-manager comes from the Property Manager section, OR from an Agency Details section where the manager is listed (e.g. "Manager: Jane Smith"). If there is no dedicated Property Manager/Agency Details section, use whoever issued/sent the work order instead — e.g. an "Issued by NAME" line, or an email sign-off ("Regards, NAME") — since that person is the PM contact even without a labelled section. Use the person's name only, not the agency name.
-- account-to must include ALL owners exactly as written, always in the format: owners c/o real estate.
+- account-to: when the work order names the owner(s), include ALL of them exactly as written, in the format "owners c/o real estate". When it does NOT name an owner, account-to is just the real-estate name on its own — no "c/o", and never a placeholder standing in for the missing name. Writing "Owners c/o Smith Realty", "Owner c/o ...", or "The Owner c/o ..." when no owner was actually given is wrong; the answer there is simply "Smith Realty".
 - real-estate must always be a company or agency name — never a URL or domain. If the source contains something like "aussieproperty.com.au", convert it to a readable name (e.g. "Aussie Property") by stripping the domain extension and formatting as a proper name. If you cannot find it directly, look for it in account-to after the c/o. The sender's email address is provided at the top of the input — use the domain as an additional hint to identify real-estate if the company name is not clearly stated in the content (e.g. "noreply@raywhite.com.au" → "Ray White").
 - order-number is the job/work order number.
 - address is required — if it isn't clearly stated in the body/PDF content, check the email subject line (provided at the top of the input) since it often contains the property address.
@@ -2055,6 +2055,20 @@ Return ONLY valid JSON with these exact keys:
       .replace(/[-_.]/g, " ")
       .replace(/\b\w/g, c => c.toUpperCase())
       .trim();
+  }
+
+  // "owners c/o Smith Realty" with no actual owner named is just "Smith Realty" — the
+  // prompt asks for that directly, but this strips the placeholder deterministically so a
+  // model that reverts to the old habit can't put it on the invoice. Only a bare
+  // owner/owners word is treated as a placeholder; a real name before the "c/o" is kept.
+  if (parsed["account-to"]) {
+    const withoutPlaceholder = parsed["account-to"]
+      .replace(/^\s*(?:the\s+)?owners?(?:\s*\/\s*owners?)?\s*(?:c\s*\/\s*o|c\/-)\s*/i, "")
+      .trim();
+    if (withoutPlaceholder && withoutPlaceholder !== parsed["account-to"].trim()) {
+      console.log(`[job] account-to: dropped placeholder owner — "${parsed["account-to"]}" -> "${withoutPlaceholder}"`);
+      parsed["account-to"] = withoutPlaceholder;
+    }
   }
 
   // Ignore $0 expenditure limits
