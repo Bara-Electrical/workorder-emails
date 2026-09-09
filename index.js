@@ -60,6 +60,18 @@ const CLIENT_NAME_MAP = {
   // pass. An explicit alias is the only safe route — inferring across an unmatched
   // leading token is what previously mis-booked work order 3378 onto a private card.
   "steven davis real estate": "SDRE Steven Davis Real Estate",
+  // Tapi sends the full legal name. The trading half is the active card (5 jobs, most
+  // recent yesterday); the "M Property..." half is a different, near-dormant card. Without
+  // this the starts-with pass matched BOTH "M Property" and "M Property Management" and
+  // gave up as ambiguous, which is the right call for it to make — the legal name alone
+  // cannot tell them apart.
+  "m property management pty ltd t/a cc property advisory australia": "CC Property Advisory",
+  // Derived from the sender domain drivengroup.com.au, which loses "Property" — nothing in
+  // the matcher bridges that, and this is our highest-volume client.
+  "drivengroup": "Driven Property Group",
+  "driven group": "Driven Property Group",
+  // Tapi inserts "Real Estate" mid-name, so neither string is a prefix of the other.
+  "first national real estate swans residential": "First National Swans Residential",
   // Work orders almost always omit the branch — default to the residential branch
   // (Commercial is a separate Aroflo client and needs to be named explicitly).
   "lj hooker victoria park": "LJ Hooker Victoria Park - Belmont",
@@ -68,6 +80,11 @@ const CLIENT_NAME_MAP = {
 // Sender email domain → Aroflo client name (fallback when AI can't extract name from compound domains)
 const EMAIL_DOMAIN_MAP = {
   "platinumelectricians.com.au": "Platinum Electricians",
+  // This agency's work orders name the owner's conveyancer ("Bellerose Property
+  // Conveyancing") where the agency name normally sits, so the AI extracts a real company
+  // that simply isn't our client. A name alias would be wrong — the conveyancer varies by
+  // property — so fall back to the sending domain, which is always the agency.
+  "oscardsouza.com.au": "Oscar D'Souza Real Estate",
 };
 
 // Rental Management Australia operates multiple branches sharing the same sender domain and
