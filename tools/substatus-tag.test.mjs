@@ -37,6 +37,7 @@ const ID_NAMES = Object.fromEntries(
 const name = id => (id ? `${id} (${ID_NAMES[id] ?? "?"})` : "null");
 
 const WEATHER = "IydKLyIK";
+const AWAITING = "Iyc6LycK";
 const URGENT = "Iyc6UyMK";
 
 const CASES = [
@@ -52,6 +53,14 @@ const CASES = [
   [["Weather Dependent"],              WEATHER],
   // First match wins: urgent work stays urgent even when also weather dependent.
   [["Weather Dependant", "Urgent"],    URGENT],
+  // "Send To Awaiting Confirmation" — the category actually in use on workorders@.
+  [["Send To Awaiting Confirmation"],  AWAITING],
+  [["send to awaiting confirmation"],  AWAITING],
+  [["Bara AI", "Send To Awaiting Confirmation"], AWAITING],
+  // Urgent still wins over it, same as weather.
+  [["Send To Awaiting Confirmation", "Urgent"], URGENT],
+  // The retired "Waiting confirmation" category is deliberately unmapped.
+  [["Waiting confirmation"],           null],
   // Untagged and unknown tags fall through to the task-type default.
   [[],                                 null],
   [["Bara AI"],                        null],
