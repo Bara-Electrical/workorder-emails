@@ -27,6 +27,10 @@ function grab(startMarker, endMarker) {
 
 const sentinelSrc = grab("const THREAD_LOOKUP_FAILED = Symbol(", ";");
 const fnSrc = grab("async function findJobTagInThread(", "\n}\n");
+const tagFnSrc = grab("async function tagWholeConversation(", "\n}\n");
+// STATUS_CATEGORIES is built from the individual category constants, so take the whole
+// block through to the end of the array rather than the array alone.
+const statusCatsSrc = grab("const TRIGGER_CATEGORY", "];");
 
 // graphFetch is stubbed per-case so each Graph outcome can be exercised exactly as the
 // real function sees it.
@@ -41,6 +45,26 @@ function build(graphFetch) {
 const ok = (messages) => async () => ({ ok: true, status: 200, json: async () => ({ value: messages }) });
 const httpError = (status) => async () => ({ ok: false, status, json: async () => ({ error: { code: "InefficientFilter" } }) });
 const throws = () => async () => { throw new Error("socket hang up"); };
+
+// Runs the real tagWholeConversation over a stubbed mailbox, returning the categories it
+// PATCHed onto each message so the tagging rules can be asserted directly.
+async function tagAndCapture(messages, tag) {
+  const patched = {};
+  const graphFetch = async (url, opts) => {
+    if (!opts || opts.method !== "PATCH") {
+      return { ok: true, status: 200, json: async () => ({ value: messages }) };
+    }
+    patched[url.split("/messages/")[1]] = JSON.parse(opts.body).categories;
+    return { ok: true, status: 200, json: async () => ({}) };
+  };
+  const fn = new Function("graphFetch", "console", `
+    ${statusCatsSrc}
+    ${tagFnSrc}
+    return tagWholeConversation;
+  `)(graphFetch, { warn() {}, log() {} });
+  await fn("mb", "conv", null, tag);
+  return patched;
+}
 
 const CASES = [
   {
@@ -95,13 +119,65 @@ for (const c of CASES) {
   else failures.push(`  ${c.name}\n    got: ${String(result)}`);
 }
 
+// --- tagWholeConversation: what actually lands on each message ---
+const TAG_CASES = [
+  {
+    name: "the email that created the job keeps Job created, not downgraded to Existing job",
+    messages: [{ id: "orig", categories: ["Job created - 106941"] }],
+    tag: "Existing job - 106941",
+    expect: p => p.orig === undefined, // untouched
+  },
+  {
+    name: "a reply gets the Existing job tag",
+    messages: [{ id: "reply", categories: ["Bara AI"] }],
+    tag: "Existing job - 106941",
+    expect: p => JSON.stringify(p.reply) === JSON.stringify(["Bara AI", "Existing job - 106941"]),
+  },
+  {
+    name: "a stale Existing job tag is replaced, not duplicated",
+    messages: [{ id: "reply", categories: ["Existing job - 999"] }],
+    tag: "Existing job - 106941",
+    expect: p => JSON.stringify(p.reply) === JSON.stringify(["Existing job - 106941"]),
+  },
+  {
+    name: "transient status categories are cleared",
+    messages: [{ id: "reply", categories: ["Reading Email", "Bara AI"] }],
+    tag: "Existing job - 106941",
+    expect: p => JSON.stringify(p.reply) === JSON.stringify(["Bara AI", "Existing job - 106941"]),
+  },
+  {
+    name: "a Job created tag naming a DIFFERENT job survives (the 107496 evidence loss)",
+    messages: [{ id: "orig", categories: ["Job created - 106941"] }],
+    tag: "Job created - 107496",
+    expect: p => p.orig.includes("Job created - 106941") && p.orig.includes("Job created - 107496"),
+  },
+  {
+    name: "the incoming tag is never added twice",
+    messages: [{ id: "m", categories: ["Job created - 106941"] }],
+    tag: "Job created - 106941",
+    expect: p => p.m.filter(c => c === "Job created - 106941").length === 1,
+  },
+];
+
+for (const c of TAG_CASES) {
+  let patched;
+  try {
+    patched = await tagAndCapture(c.messages, c.tag);
+  } catch (err) {
+    failures.push(`  ${c.name}\n    threw: ${err.message}`);
+    continue;
+  }
+  if (c.expect(patched)) pass++;
+  else failures.push(`  ${c.name}\n    patched: ${JSON.stringify(patched)}`);
+}
+
 // The failure sentinel must never be a falsy value: the caller guards with `if (siblingTag)`
 // after the sentinel check, so a falsy sentinel would fall straight through to job creation.
 const { THREAD_LOOKUP_FAILED } = build(ok([]));
 if (THREAD_LOOKUP_FAILED) pass++;
 else failures.push("  THREAD_LOOKUP_FAILED is falsy — it would fall through to job creation");
 
-const total = CASES.length + 1;
+const total = CASES.length + TAG_CASES.length + 1;
 console.log(`thread dedup: ${pass}/${total} passed`);
 if (failures.length) {
   console.error(`\n${failures.length} failure(s):\n${failures.join("\n")}`);

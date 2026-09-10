@@ -2253,6 +2253,10 @@ async function tagWholeConversation(mailbox, conversationId, excludeMessageId, t
     if (!res.ok) return;
     for (const m of (data.value || [])) {
       if (m.id === excludeMessageId) continue;
+      // Never downgrade the message that actually created the job. Without this, stamping
+      // a thread with "Existing job - N" would relabel the original work order too, and
+      // the thread would no longer record which email created the job at all.
+      if (tag.startsWith("Existing job") && (m.categories || []).some(c => c.startsWith("Job created"))) continue;
       // A "Job created" tag naming a DIFFERENT job is kept rather than overwritten. It
       // used to be stripped, which meant a duplicate silently rewrote the thread to point
       // at itself: the 116 Crawford Street thread ended up reading "Job created - 107496"
@@ -2347,8 +2351,15 @@ async function pollInbox(mailbox) {
       // of the thread — re-stamp the sibling's tag across the whole conversation again
       // (including this message) rather than leaving it untagged, so it doesn't look like
       // Bara AI never saw it. No new job is created.
-      console.log(`[poll] Reply to already-processed thread (${siblingTag}) — restamping conversation:`, message.subject);
-      await tagWholeConversation(mailbox, message.conversationId, null, siblingTag);
+      // Stamp "Existing job - N", not the sibling's own "Job created - N": this message
+      // did not create anything, it attached to a job that already existed, and the tag
+      // should say so at a glance. Rewriting the prefix rather than parsing the number out
+      // keeps whatever job number format Aroflo used, and is a no-op when the sibling tag
+      // is already an "Existing job" one. tagWholeConversation leaves the message that
+      // actually created the job on its "Job created" tag.
+      const existingTag = siblingTag.replace(/^Job created\b/, "Existing job");
+      console.log(`[poll] Reply to already-processed thread (${siblingTag}) — tagging "${existingTag}":`, message.subject);
+      await tagWholeConversation(mailbox, message.conversationId, null, existingTag);
       continue;
     }
     const currentCategories = await setJobStatus(mailbox, message.id, message.categories, READING_EMAIL_CATEGORY);
