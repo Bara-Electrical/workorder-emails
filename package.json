@@ -8,7 +8,7 @@
   },
   "scripts": {
     "start": "node index.js",
-    "test": "node tools/client-match.test.mjs && node tools/account-to.test.mjs"
+    "test": "node tools/client-match.test.mjs && node tools/account-to.test.mjs && node tools/substatus-tag.test.mjs"
   },
   "dependencies": {
     "airtable": "^0.12.2",

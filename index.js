@@ -428,6 +428,14 @@ const SUBSTATUS_TAG_MAP = {
   "asap + eta":                    "IycqSycK", // ASAP + ETA
   "ready to schedule (specialised)": "Iyc6LyUK", // Ready to schedule (Specialised)
   "hold date":                     "Iyc6LyIK", // Ready to schedule (Hold date)
+  // Last on purpose: first match wins, so a job tagged both Urgent and Weather Dependant
+  // stays urgent. Aroflo spells its substatus "Weather dependent"; the Outlook category is
+  // "Weather Dependant" — both spellings are keyed so either tag works.
+  "weather dependant":             "IydKLyIK", // Weather dependent
+  "weather dependent":             "IydKLyIK", // Weather dependent
+  // The older "Waiting confirmation" category is deliberately NOT mapped — it fell out of
+  // use on 1 Sep 2026 and this tag replaced it.
+  "send to awaiting confirmation": "Iyc6LycK", // 3 Awaiting confirmation (Client)
 };
 
 // In-memory client cache: lowercase clientname → client object.
