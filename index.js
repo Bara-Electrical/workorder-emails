@@ -2207,19 +2207,36 @@ async function setJobStatus(mailbox, messageId, currentCategories, newStatus) {
 // Mailbox-wide, not Inbox-scoped — existing filing rules (e.g. "move mail from
 // this client into its own subfolder") can relocate a message out of Inbox
 // well before a later reply in the same thread gets processed.
+// Returned when the thread lookup itself failed, as distinct from "this thread has no job
+// yet". The two must never be conflated: Graph intermittently rejects the conversationId
+// $filter (its "InefficientFilter" response — see findThreadWorkOrderPdf), and treating
+// that as "no job" makes a reply to an already-processed thread create a SECOND job.
+// That is what produced job 107496, a duplicate of 106941, on a follow-up to the 116
+// Crawford Street thread eight days later: two sibling follow-ups in the same batch were
+// skipped correctly, so the thread state was fine — only this one lookup failed.
+const THREAD_LOOKUP_FAILED = Symbol("thread lookup failed");
+
 async function findJobTagInThread(mailbox, conversationId, excludeMessageId) {
   const filter = encodeURIComponent(`conversationId eq '${conversationId}'`);
-  const res = await graphFetch(
-    `/users/${mailbox}/messages?$filter=${filter}&$select=id,categories&$top=25`
-  );
-  const data = await res.json();
-  if (!res.ok) return null;
-  for (const m of (data.value || [])) {
-    if (m.id === excludeMessageId) continue;
-    const tag = (m.categories || []).find(c => c.startsWith("Job created") || c.startsWith("Existing job"));
-    if (tag) return tag;
+  try {
+    const res = await graphFetch(
+      `/users/${mailbox}/messages?$filter=${filter}&$select=id,categories&$top=25`
+    );
+    const data = await res.json();
+    if (!res.ok) {
+      console.warn(`[poll] Thread job-tag lookup failed (Graph ${res.status}):`, JSON.stringify(data?.error || data));
+      return THREAD_LOOKUP_FAILED;
+    }
+    for (const m of (data.value || [])) {
+      if (m.id === excludeMessageId) continue;
+      const tag = (m.categories || []).find(c => c.startsWith("Job created") || c.startsWith("Existing job"));
+      if (tag) return tag;
+    }
+    return null;
+  } catch (err) {
+    console.warn("[poll] Thread job-tag lookup threw:", err.message);
+    return THREAD_LOOKUP_FAILED;
   }
-  return null;
 }
 
 // Stamp the same job tag onto every other message already in the thread, so
@@ -2236,8 +2253,17 @@ async function tagWholeConversation(mailbox, conversationId, excludeMessageId, t
     if (!res.ok) return;
     for (const m of (data.value || [])) {
       if (m.id === excludeMessageId) continue;
+      // A "Job created" tag naming a DIFFERENT job is kept rather than overwritten. It
+      // used to be stripped, which meant a duplicate silently rewrote the thread to point
+      // at itself: the 116 Crawford Street thread ended up reading "Job created - 107496"
+      // with no trace of the original 106941 it duplicated. Keeping both leaves the
+      // evidence on the thread, and lets the next findJobTagInThread still see the
+      // original. "Existing job" tags are still replaced, and the incoming tag is filtered
+      // out first so it can't be added twice.
       const categories = [
-        ...(m.categories || []).filter(c => !STATUS_CATEGORIES.includes(c) && !c.startsWith("Job created") && !c.startsWith("Existing job")),
+        ...(m.categories || []).filter(c =>
+          !STATUS_CATEGORIES.includes(c) && !c.startsWith("Existing job") && c !== tag
+        ),
         tag,
       ];
       try {
@@ -2309,6 +2335,13 @@ async function pollInbox(mailbox) {
     const siblingTag = message.conversationId
       ? await findJobTagInThread(mailbox, message.conversationId, message.id)
       : null;
+    if (siblingTag === THREAD_LOOKUP_FAILED) {
+      // Can't tell whether this thread already has a job, so do nothing at all: leave the
+      // message untagged and let the next poll retry. A few minutes' delay is a far
+      // cheaper failure than a duplicate job somebody has to find and delete.
+      console.warn("[poll] Skipping until thread state is known:", message.subject);
+      continue;
+    }
     if (siblingTag) {
       // A later reply that arrived after the job-creation sweep already tagged the rest
       // of the thread — re-stamp the sibling's tag across the whole conversation again
