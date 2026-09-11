@@ -74,6 +74,7 @@ const CLIENTS = [
   "Scott .", "Regina .",
   "M Property", "M Property Management", "CC Property Advisory", // legal vs trading name
   "First National Swans Residential", "Oscar D'Souza Real Estate",
+  "@realty (WA)", "Acton | Belle Property Rockingham",
   "Pro Property Group Real Estate", "ProProperty Group",
 ];
 
@@ -133,6 +134,11 @@ const MAPPED_CASES = [
   ["Drivengroup", "Driven Property Group"],
   ["Driven Group", "Driven Property Group"],
   ["First National Real Estate Swans Residential", "First National Swans Residential"],
+  // Client-not-found alerts of 9-11 Sep 2026.
+  ["At Realty (WA)", "@realty (WA)"],
+  ["at realty wa", "@realty (WA)"],
+  ["Acton Belle Property Rockingham & Baldivis", "Acton | Belle Property Rockingham"],
+  ["Acton Belle Property Rockingham and Baldivis", "Acton | Belle Property Rockingham"],
 ];
 
 // Without its alias the legal name is genuinely ambiguous — it starts-with matches both
@@ -142,6 +148,8 @@ const UNMAPPED_MUST_DECLINE = [
   "M Property Management Pty Ltd T/A CC Property Advisory Australia",
   "Drivengroup",
   "First National Real Estate Swans Residential",
+  "At Realty (WA)",
+  "Acton Belle Property Rockingham & Baldivis",
 ];
 
 let pass = 0;

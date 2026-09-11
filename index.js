@@ -72,6 +72,15 @@ const CLIENT_NAME_MAP = {
   "driven group": "Driven Property Group",
   // Tapi inserts "Real Estate" mid-name, so neither string is a prefix of the other.
   "first national real estate swans residential": "First National Swans Residential",
+  // The agency trades as "@realty"; the AI reads the leading "@" as the word "At", so the
+  // extracted name never matches the Aroflo card however it is normalised.
+  "at realty (wa)": "@realty (WA)",
+  "at realty wa": "@realty (WA)",
+  "at realty": "@realty (WA)",
+  // Aroflo's card omits "& Baldivis" and separates the brand with a pipe, so neither name
+  // is a prefix of the other. Same shape as the South Perth entry above.
+  "acton belle property rockingham & baldivis": "Acton | Belle Property Rockingham",
+  "acton belle property rockingham and baldivis": "Acton | Belle Property Rockingham",
   // Work orders almost always omit the branch — default to the residential branch
   // (Commercial is a separate Aroflo client and needs to be named explicitly).
   "lj hooker victoria park": "LJ Hooker Victoria Park - Belmont",
