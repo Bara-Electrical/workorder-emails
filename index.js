@@ -7,6 +7,10 @@ import { deflateSync } from "node:zlib";
 import { PACKAGE_TEMPLATES } from "./templates.js";
 import Airtable from "airtable";
 import { createOfficeSession, ensureTaskEmail, findTaskIdByJobNumber, uploadTaskDocument } from "./aroflo-office.js";
+import {
+  GateHold, gateMode, gateApplies, propertyCheck, upsertGateRecord, pendingDecisions, siteLine,
+  NEEDS_DECISION_CATEGORY, STOPPED_CATEGORY, GATE_CONTINUE_CATEGORY,
+} from "./gate.js";
 
 const REQUIRED_ENV = [
   "OPENAI_API_KEY",
@@ -30,6 +34,12 @@ if (process.env.AIRTABLE_API_KEY && process.env.AIRTABLE_BASE_ID) {
 
 if (!process.env.ADMIN_API_KEY) {
   console.warn("[startup] ADMIN_API_KEY not set — /clients, /find-client, and /aroflo-webhook are open with no auth");
+}
+
+// Not required: the dashboard is best effort, and a missing pair just makes every property
+// check fail into its "Property check unavailable" warning — jobs are still created.
+if (!process.env.DASHBOARD_URL || !process.env.DASHBOARD_API_SECRET) {
+  console.warn("[startup] DASHBOARD_URL or DASHBOARD_API_SECRET not set — property checks and gate records disabled");
 }
 
 // Known sender name → Aroflo client name mappings
@@ -127,6 +137,10 @@ const STATUS_CATEGORIES = [
   SENDING_TO_AI_CATEGORY, CREATING_JOB_CATEGORY,
   CLIENT_NOT_FOUND_CATEGORY, NO_ADDRESS_CATEGORY,
 ];
+// The gate's categories are transient too. Added after the literal rather than inside it
+// because tools/thread-dedup.test.mjs evaluates the block above on its own, where an
+// imported name would be undefined.
+STATUS_CATEGORIES.push(NEEDS_DECISION_CATEGORY, STOPPED_CATEGORY, GATE_CONTINUE_CATEGORY);
 
 let pollRunning = false;
 
@@ -959,7 +973,7 @@ function extractKeyCollectionLine(taskDescription) {
   return line || null;
 }
 
-function buildDescription(result, airconUnitType = null) {
+function buildDescription(result, airconUnitType = null, site = "") {
   const parts = [];
   const spacer = `<p>&nbsp;</p>`;
   const lockboxDetails = extractLockboxDetails(result["access-details"]);
@@ -985,9 +999,14 @@ function buildDescription(result, airconUnitType = null) {
     );
   }
 
-  const hasHighlights = result["expenditure-limit"] || lockboxDetails;
+  const hasHighlights = result["expenditure-limit"] || lockboxDetails || site;
   if (hasHighlights) parts.push(spacer);
 
+  // What the dashboard knows is installed at the site (from compliance forms), so the tech
+  // knows what to expect before arriving. Empty when the dashboard has nothing on record.
+  if (site) {
+    parts.push(`<p><span style="background:#e0e0e0;font-weight:bold">${escapeHtml(site)}</span></p>`);
+  }
 
   if (result["expenditure-limit"]) {
     parts.push(`<p><span style="background:#cce5ff;font-weight:bold">Expenditure Limit: ${escapeHtml(result["expenditure-limit"])}</span></p>`);
@@ -1088,6 +1107,37 @@ async function createArofloJob(result, rawEmail, pdfAttachment = null, emailMeta
     warnings.push({ tag: "Location not linked", detail });
   }
 
+  // Ask the dashboard what it knows about this property: jobs there in the last 30 days
+  // (a second PM forwarding the same work order, a tenant re-reporting) and the aircon unit
+  // tally for the description. Without a linked location there is nothing to ask about.
+  // The check itself is best effort — an unreachable dashboard must never lose a work
+  // order — but a hold, once decided, is not: the throw below stops the task being made.
+  let checks = { recentJobs: [], aircon: {} };
+  if (location?.locationid) {
+    try {
+      checks = await propertyCheck(location.locationid);
+    } catch (err) {
+      const detail = `Dashboard property check failed — duplicate check and Site line skipped: ${err.message}`;
+      console.warn("[job]", detail);
+      warnings.push({ tag: "Property check unavailable", detail });
+    }
+  }
+  const gateRecord = {
+    messageId: emailMeta?.messageId, conversationId: emailMeta?.conversationId,
+    subject: emailMeta?.subject, fromAddress: emailMeta?.from,
+    aroFloLocationId: location?.locationid ?? null, checks, warnings,
+  };
+  if (emailMeta?.messageId) {
+    await upsertGateRecord({ ...gateRecord, status: "CHECKED" }).catch(err => console.warn("[gate] record CHECKED:", err.message));
+  }
+  if (gateApplies(gateMode(process.env), emailMeta?.categories) && checks.recentJobs?.length > 0) {
+    console.log(`[gate] Holding for decision — ${checks.recentJobs.length} recent job(s) at location ${location.locationid}:`, checks.recentJobs.map(j => j.jobNumber).join(", "));
+    if (emailMeta?.messageId) {
+      await upsertGateRecord({ ...gateRecord, status: "NEEDS_DECISION" }).catch(err => console.warn("[gate] record NEEDS_DECISION:", err.message));
+    }
+    throw new GateHold(checks);
+  }
+
   const pmContact = matchContact(contacts, result["property-manager"]);
   if (pmContact) {
     console.log("[job] PM contact:", pmContact.userid, `${pmContact.givennames} ${pmContact.surname}`);
@@ -1139,7 +1189,7 @@ async function createArofloJob(result, rawEmail, pdfAttachment = null, emailMeta
     ${location ? `<location><locationid>${location.locationid}</locationid></location>` : ""}
     ${result.address && !location  ? `<sitename>${cdata(result.address)}</sitename>`          : ""}
     <taskname>${cdata(taskName)}</taskname>
-    <description>${cdata(buildDescription(result, emailMeta?.airconUnitType))}</description>
+    <description>${cdata(buildDescription(result, emailMeta?.airconUnitType, siteLine(checks.aircon)))}</description>
     <duedate>${dueDate}</duedate>
     ${result["order-number"] ? `<custon>${cdata(result["order-number"])}</custon>` : ""}
     ${(result["account-to"] || realEstate) ? `<customfields><customfield><name><![CDATA[ Account To: ]]></name><type><![CDATA[ text ]]></type><value>${cdata(result["account-to"] || realEstate)}</value></customfield></customfields>` : ""}
@@ -2002,7 +2052,10 @@ Return ONLY valid JSON with these exact keys:
 
   const emailMeta = {
     messageId: message.id,
+    conversationId: message.conversationId || null,
     mailbox,
+    // The gate reads "Gate Test" / "Gate: Continue" off the email itself.
+    categories: message.categories || [],
     from:    message.from?.emailAddress?.address || null,
     to:      (message.toRecipients || []).map(r => r.emailAddress?.address).filter(Boolean).join(", ") || null,
     subject: message.subject || null,
@@ -2088,6 +2141,16 @@ async function setJobStatus(mailbox, messageId, currentCategories, newStatus) {
   return updated;
 }
 
+// Fire-and-forget: the failure is already tagged on the email and in the alert path; the
+// dashboard copy is only so the plugin can show it under the subject.
+function recordGateFailure(message, err) {
+  upsertGateRecord({
+    messageId: message.id, conversationId: message.conversationId || null,
+    subject: message.subject || null, fromAddress: message.from?.emailAddress?.address || null,
+    status: "FAILED", warnings: [{ tag: "Failed", detail: err.message }],
+  }).catch(e => console.warn("[gate] record FAILED:", e.message));
+}
+
 // Look for a sibling message already tagged "Job created - X" or "Existing job - X"
 // elsewhere in the same reply thread — replies to an already-processed work
 // order get their own "Bara AI" tag but shouldn't trigger their own job.
@@ -2171,13 +2234,51 @@ async function tagWholeConversation(mailbox, conversationId, excludeMessageId, t
   }
 }
 
+// Decisions made in the plugin reach the poller through the dashboard: a CONTINUED record
+// swaps the email's "Needs Decision" for "Gate: Continue", which puts it back in the
+// candidate query on this same tick with the gate disarmed; a STOPPED record swaps it for
+// "Stopped", which keeps it out for good. The dashboard already holds the final status for
+// both, so nothing is written back. Best effort: a failure here just delays the decision to
+// the next tick.
+async function applyGateDecisions(mailbox) {
+  for (const [status, category] of [["CONTINUED", GATE_CONTINUE_CATEGORY], ["STOPPED", STOPPED_CATEGORY]]) {
+    let records;
+    try {
+      records = await pendingDecisions(status);
+    } catch (err) {
+      console.warn(`[gate] Could not fetch ${status} decisions:`, err.message);
+      continue;
+    }
+    for (const record of records) {
+      try {
+        const res = await graphFetch(`/users/${mailbox}/messages/${record.messageId}?$select=id,categories`);
+        if (!res.ok) throw new Error(`Graph ${res.status}`);
+        const current = (await res.json()).categories || [];
+        // Re-reading the categories rather than trusting the poller's last write: an admin
+        // may have tagged the email while it sat waiting.
+        const categories = [...current.filter(c => c !== NEEDS_DECISION_CATEGORY && c !== category), category];
+        await graphFetch(`/users/${mailbox}/messages/${record.messageId}`, { method: "PATCH", body: JSON.stringify({ categories }) });
+        // Tell the dashboard the email is re-tagged, or this row comes back every tick.
+        await upsertGateRecord({ messageId: record.messageId, applied: true });
+        console.log(`[gate] ${status}: "${record.subject ?? record.messageId}" → "${category}"`);
+      } catch (err) {
+        console.warn(`[gate] Could not apply ${status} to ${record.messageId}:`, err.message);
+      }
+    }
+  }
+}
+
 async function pollInbox(mailbox) {
+  await applyGateDecisions(mailbox);
+
   const filter = encodeURIComponent(
     `categories/any(c:c eq '${TRIGGER_CATEGORY}')` +
     ` and not categories/any(c:c eq '${CLIENT_NOT_FOUND_CATEGORY}')` +
     ` and not categories/any(c:c eq '${NO_ADDRESS_CATEGORY}')` +
     ` and not categories/any(c:c eq '${PROCESSING_CATEGORY}')` +
     ` and not categories/any(c:c eq '${FAILED_CATEGORY}')` +
+    ` and not categories/any(c:c eq '${NEEDS_DECISION_CATEGORY}')` +
+    ` and not categories/any(c:c eq '${STOPPED_CATEGORY}')` +
     ` and not categories/any(c:c eq '${READING_EMAIL_CATEGORY}')` +
     ` and not categories/any(c:c eq '${SENDING_TO_AI_CATEGORY}')` +
     ` and not categories/any(c:c eq '${CREATING_JOB_CATEGORY}')`
@@ -2275,6 +2376,7 @@ async function pollInbox(mailbox) {
     if (outcome.status === "rejected") {
       const err = outcome.reason;
       console.error("[poll] Error processing message:", message.subject, err.message);
+      recordGateFailure(message, err);
       if (err.message.startsWith("Client not found")) {
         await setJobStatus(mailbox, message.id, message.categories, CLIENT_NOT_FOUND_CATEGORY);
         console.log("[poll] Tagged as client not found:", message.subject);
@@ -2312,6 +2414,8 @@ async function pollInbox(mailbox) {
       logAiOutput(result, message.subject).catch(err => console.warn("[airtable] logAiOutput:", err.message));
       logActivity("Job created", jobNumber).catch(err => console.warn("[airtable] logActivity:", err.message));
       const allWarnings = [...preWarnings, ...jobWarnings];
+      upsertGateRecord({ messageId: message.id, status: "CREATED", jobNumber, warnings: allWarnings })
+        .catch(err => console.warn("[gate] record CREATED:", err.message));
 
       // Always apply job tag to prevent re-processing; add a specific tag for each distinct
       // failure type (multiple failures of the same kind — e.g. several failed photo
@@ -2342,7 +2446,16 @@ async function pollInbox(mailbox) {
         console.log("[poll] Tagged as done:", message.subject);
       }
     } catch (err) {
+      if (err instanceof GateHold) {
+        // Not a failure: the email waits for Continue/Stop from the plugin. The dashboard
+        // record already says NEEDS_DECISION, and the plugin is where the office sees it,
+        // so no alert email.
+        await setJobStatus(mailbox, message.id, currentCategories, NEEDS_DECISION_CATEGORY);
+        console.log("[poll] Held for decision:", message.subject, "—", err.message);
+        continue;
+      }
       console.error("[poll] Error processing message:", message.subject, err.message);
+      recordGateFailure(message, err);
       if (err.message.startsWith("Client not found")) {
         await setJobStatus(mailbox, message.id, currentCategories, CLIENT_NOT_FOUND_CATEGORY);
         console.log("[poll] Tagged as client not found:", message.subject);
