@@ -6,11 +6,13 @@ import { createHmac } from "crypto";
 import { deflateSync } from "node:zlib";
 import { PACKAGE_TEMPLATES } from "./templates.js";
 import Airtable from "airtable";
+import { createOfficeSession, ensureTaskEmail, findTaskIdByJobNumber, uploadTaskDocument } from "./aroflo-office.js";
 
 const REQUIRED_ENV = [
   "OPENAI_API_KEY",
   "GRAPH_TENANT_ID", "GRAPH_CLIENT_ID", "GRAPH_CLIENT_SECRET",
   "UENCODED", "PENCODED", "ORGENCODED", "SECRET_KEY",
+  "AROFLO_V2_TOKEN", "AROFLO_OFFICE_USER", "AROFLO_OFFICE_PASS",
 ];
 for (const key of REQUIRED_ENV) {
   if (!process.env[key]) {
@@ -957,7 +959,7 @@ function extractKeyCollectionLine(taskDescription) {
   return line || null;
 }
 
-function buildDescription(result, photoLinkHtml = null, airconUnitType = null) {
+function buildDescription(result, airconUnitType = null) {
   const parts = [];
   const spacer = `<p>&nbsp;</p>`;
   const lockboxDetails = extractLockboxDetails(result["access-details"]);
@@ -983,10 +985,9 @@ function buildDescription(result, photoLinkHtml = null, airconUnitType = null) {
     );
   }
 
-  const hasHighlights = result["expenditure-limit"] || lockboxDetails || photoLinkHtml;
+  const hasHighlights = result["expenditure-limit"] || lockboxDetails;
   if (hasHighlights) parts.push(spacer);
 
-  if (photoLinkHtml) parts.push(photoLinkHtml);
 
   if (result["expenditure-limit"]) {
     parts.push(`<p><span style="background:#cce5ff;font-weight:bold">Expenditure Limit: ${escapeHtml(result["expenditure-limit"])}</span></p>`);
@@ -1138,7 +1139,7 @@ async function createArofloJob(result, rawEmail, pdfAttachment = null, emailMeta
     ${location ? `<location><locationid>${location.locationid}</locationid></location>` : ""}
     ${result.address && !location  ? `<sitename>${cdata(result.address)}</sitename>`          : ""}
     <taskname>${cdata(taskName)}</taskname>
-    <description>${cdata(buildDescription(result, null, emailMeta?.airconUnitType))}</description>
+    <description>${cdata(buildDescription(result, emailMeta?.airconUnitType))}</description>
     <duedate>${dueDate}</duedate>
     ${result["order-number"] ? `<custon>${cdata(result["order-number"])}</custon>` : ""}
     ${(result["account-to"] || realEstate) ? `<customfields><customfield><name><![CDATA[ Account To: ]]></name><type><![CDATA[ text ]]></type><value>${cdata(result["account-to"] || realEstate)}</value></customfield></customfields>` : ""}
@@ -1195,54 +1196,19 @@ async function createArofloJob(result, rawEmail, pdfAttachment = null, emailMeta
   }
   console.log("[job] Aroflo job created — job number:", jobNumber, "taskId:", confirmedTaskId);
 
-  // Upload PDF and any photo attachments to SharePoint
-  let oneDriveUrl = null;
-  const photos = [];
-  if (jobNumber !== "(see Aroflo)") {
-    if (pdfAttachment) {
-      try {
-        oneDriveUrl = await uploadWorkOrderToOneDrive(jobNumber, pdfAttachment.name, pdfAttachment.data);
-        console.log("[sharepoint] PDF uploaded:", oneDriveUrl);
-      } catch (err) {
-        console.warn("[sharepoint] PDF upload failed:", err.message);
-        warnings.push({ tag: "PDF upload failed", detail: err.message });
-      }
-    }
-    if (imageAttachments.length > 0) {
-      const photoResults = await Promise.all(
-        imageAttachments.map(async img => {
-          try {
-            const item = await uploadPhotoToOneDrive(jobNumber, img.name, img.data, img.contentType);
-            console.log("[sharepoint] Photo uploaded:", img.name);
-            return { name: img.name, webUrl: item.webUrl };
-          } catch (err) {
-            console.warn("[sharepoint] Photo upload failed:", img.name, err.message);
-            warnings.push({ tag: "Photo upload failed", detail: `${img.name}: ${err.message}` });
-            return null;
-          }
-        })
-      );
-      photos.push(...photoResults.filter(Boolean));
-    }
+  // Put the work order on the job the way AroFlo itself would: the original email is
+  // forwarded to the task's own inbound address (AroFlo files it, attachments and all, as
+  // an email on the job), and the PDF plus any real photos go to Documents & Photos via v2.
+  // The job already exists by now, so nothing here may throw — every failure is a warning
+  // on the alert email and the office fixes it by hand.
+  if (confirmedTaskId && jobNumber !== "(see Aroflo)") {
+    await attachWorkOrderToJob(jobNumber, pdfAttachment, imageAttachments, emailMeta, warnings);
   }
 
   // Post the original email as a note and set the substatus in one combined task
   // update (Aroflo doesn't apply substatus on create, so a follow-up write is
   // always needed — piggyback the note content on the same call).
   if (confirmedTaskId) {
-    let noteHtml = null;
-    if (rawEmail) {
-      try {
-        noteHtml = await emailHtmlForNote(rawEmail, oneDriveUrl, emailMeta);
-      } catch (err) {
-        const detail = `Email note not posted to job: ${err.message}`;
-        console.warn("[job]", detail);
-        warnings.push({ tag: "Note not posted", detail });
-      }
-    } else {
-      warnings.push({ tag: "Note not posted", detail: "No email content available — note not posted to job" });
-    }
-
     const today     = new Date();
     const dateStamp = `${today.getDate()}/${today.getMonth() + 1}`;
 
@@ -1324,29 +1290,18 @@ async function createArofloJob(result, rawEmail, pdfAttachment = null, emailMeta
       }
     }
 
-    // The photo folder link can only be known once photos are uploaded (which needs the
-    // jobNumber from creation), so it can't go in the description set at task creation —
-    // fold it into this same follow-up update instead of a separate note, which techs
-    // were prone to scroll past.
-    const photoLinkText = `VIEW ${photos.length} JOB PHOTO${photos.length === 1 ? "" : "S"}`;
-    const photoLinkHtml = photos.length > 0
-      ? `<p><span style="background:plum;font-weight:bold"><a href="${buildFolderUrl(photos[0].webUrl)}" target="_blank" rel="noopener noreferrer">${photoLinkText}</a></span></p>`
-      : null;
-
     const notesXml = [
-      noteHtml             ? `<note><content>${cdata(noteHtml)}</content></note>`             : "",
       additionalTenantNote ? `<note><content>${cdata(additionalTenantNote)}</content></note>` : "",
       vacantAccessNote     ? `<note><content>${cdata(vacantAccessNote)}</content></note>`     : "",
       vacateDateNote       ? `<note><content>${cdata(vacateDateNote)}</content></note>`       : "",
     ].join("");
 
-    if (notesXml || substatusId || photoLinkHtml) {
+    if (notesXml || substatusId) {
       const updateXml =
 `<tasks>
   <task>
     <taskid>${confirmedTaskId}</taskid>
     ${substatusId ? `<status>not started</status><substatus><substatusid>${substatusId}</substatusid></substatus>` : ""}
-    ${photoLinkHtml ? `<description>${cdata(buildDescription(result, photoLinkHtml, emailMeta?.airconUnitType))}</description>` : ""}
     ${notesXml ? `<notes>${notesXml}</notes>` : ""}
   </task>
 </tasks>`;
@@ -1378,11 +1333,9 @@ async function createArofloJob(result, rawEmail, pdfAttachment = null, emailMeta
       }
 
       if (applied) {
-        console.log("[job] Task update applied — note:", !!noteHtml, "additional tenant note:", !!additionalTenantNote, "vacant access note:", !!vacantAccessNote, "vacate date note:", !!vacateDateNote, "photo link:", !!photoLinkHtml, "substatus:", substatusId || "n/a");
+        console.log("[job] Task update applied — additional tenant note:", !!additionalTenantNote, "vacant access note:", !!vacantAccessNote, "vacate date note:", !!vacateDateNote, "substatus:", substatusId || "n/a");
       } else if (lastErr) {
         console.warn("[job] Combined task update failed after retry:", lastErr.message);
-        if (noteHtml) warnings.push({ tag: "Note not posted", detail: `Email note not posted to job: ${lastErr.message}` });
-        if (photoLinkHtml) warnings.push({ tag: "Photo link not added", detail: `Description not updated with photo link: ${lastErr.message}` });
         if (substatusId) warnings.push({ tag: "Substatus failed", detail: `Substatus not applied: ${lastErr.message}` });
       } else {
         const errArr  = toArray(lastUpPr?.errors);
@@ -1390,8 +1343,6 @@ async function createArofloJob(result, rawEmail, pdfAttachment = null, emailMeta
           ? errArr.map(e => e.detail || e.message || JSON.stringify(e)).join("; ")
           : `Combined task update did not apply after retry — Aroflo response: ${JSON.stringify(lastUpPr)}`;
         console.warn("[job] Combined task update did not apply after retry:", detail);
-        if (noteHtml) warnings.push({ tag: "Note not posted", detail });
-        if (photoLinkHtml) warnings.push({ tag: "Photo link not added", detail });
         if (substatusId) warnings.push({ tag: "Substatus failed", detail });
       }
     }
@@ -1570,128 +1521,52 @@ function cleanHtml(html) {
     .trim();
 }
 
-// Decode SafeLinks/Inky wrapped URLs. Inky requires following the redirect.
-async function decodeWrappedLinks(html) {
-  const matches = [...html.matchAll(/href="([^"]+)"/gi)];
-  const unique  = [...new Set(matches.map(m => m[1]))];
-  const map     = {};
+const officeSession = createOfficeSession();
 
-  await Promise.all(unique.map(async href => {
-    const decoded = href.replace(/&amp;/g, "&");
-    try {
-      if (/safelinks\.protection\.outlook\.com/i.test(decoded)) {
-        const url = new URL(decoded).searchParams.get("url");
-        if (url) map[href] = decodeURIComponent(url);
-      } else if (/shared\.outlook\.inky\.com/i.test(decoded)) {
-        const res = await fetch(decoded.includes("confirm=True") ? decoded : decoded + "&confirm=True", {
-          redirect: "follow",
-          headers: { "User-Agent": "Mozilla/5.0" },
-        });
-        map[href] = res.url;
-      }
-    } catch { /* leave as-is */ }
-  }));
-
-  return html.replace(/href="([^"]+)"/gi, (match, href) =>
-    map[href] ? `href="${map[href]}"` : match
-  );
-}
-
-// Strip scripts/styles/tracking pixels but keep HTML structure for display in Aroflo notes
-async function emailHtmlForNote(html, oneDriveUrl = null, emailMeta = null) {
-  let cleaned = html
-    .replace(/<script[\s\S]*?<\/script>/gi, "")
-    .replace(/<style[\s\S]*?<\/style>/gi, "")
-    .replace(/<img[^>]*>/gi, "")
-    .trim();
-
-  // Remove Inky security banner — strip from start of HTML up to and including the
-  // ipw-end anchor (raw email uses "ipw-end-*", Outlook renderer prefixes it "x_ipw-end-*")
-  cleaned = cleaned.replace(/[\s\S]*?<a\b[^>]*name="(?:x_)?ipw-end-\d+"[^>]*><\/a>(?:\s*<\/\w+>)*/i, "");
-
-  cleaned = await decodeWrappedLinks(cleaned);
-
-  const cell = (label, value) =>
-    `<tr><td style="border:none;color:#888888;font-size:12px;font-weight:bold;padding:1px 12px 1px 0;white-space:nowrap;vertical-align:top">${label}</td><td style="border:none;color:#444444;font-size:12px;padding:1px 0">${value}</td></tr>`;
-
-  const metaRows = [
-    emailMeta?.from    ? cell("From:",       escapeHtml(emailMeta.from))    : "",
-    emailMeta?.to      ? cell("To:",         escapeHtml(emailMeta.to))      : "",
-    emailMeta?.subject ? cell("Subject:",    escapeHtml(emailMeta.subject)) : "",
-    oneDriveUrl        ? cell("Attachment:", `<a href="${oneDriveUrl}" style="color:#1a6bbf" target="_blank">View Work Order PDF</a>`) : "",
-  ].filter(Boolean).join("");
-
-  const titleRow = `<tr><td colspan="2" style="border:none;font-size:16px;font-weight:bold;color:#444444;padding:0 0 5px 0">Work Order</td></tr>`;
-  const metaHtml = `<table style="border-collapse:collapse;margin:0 0 12px 0">${titleRow}${metaRows}</table>`;
-
-  return `${metaHtml}<hr style="border:none;border-top:1px solid #dddddd;margin:0 0 14px 0"><div>${cleaned}</div>`;
-}
-
-// A plain driveItem webUrl opens the file in isolation with no folder context — no gallery
-// navigation. Browsing to the parent folder and clicking a photo from there does give
-// SharePoint's native arrow navigation between sibling files (confirmed manually), so every
-// thumbnail links to the shared folder rather than a single-file deep link.
-function buildFolderUrl(webUrl) {
-  const u = new URL(webUrl);
-  return u.origin + u.pathname.slice(0, u.pathname.lastIndexOf("/"));
-}
-
-// Cached drive ID for the Bara Electrical Services SharePoint document library
-let sharepointDriveId = null;
-
-async function getSharepointDriveId() {
-  if (sharepointDriveId) return sharepointDriveId;
-  const siteRes  = await graphFetch(`/sites/baraelectrical.sharepoint.com:/sites/BaraElectricalServices`);
-  const site     = await siteRes.json();
-  const drivesRes = await graphFetch(`/sites/${site.id}/drives`);
-  const drives   = await drivesRes.json();
-  const drive    = (drives.value || []).find(d => d.name === "Documents" || d.name === "Shared Documents");
-  if (!drive) throw new Error("SharePoint Documents drive not found");
-  sharepointDriveId = drive.id;
-  return sharepointDriveId;
-}
-
-async function uploadWorkOrderToOneDrive(jobNumber, filename, contentBytes, contentType = "application/pdf") {
-  const safeName = filename.replace(/#/g, "").trim();
-  const itemPath = ["General", "Other", "AI Workorders [dont touch]", `${jobNumber} - ${safeName}`]
-    .map(s => encodeURIComponent(s)).join("/");
-  const uploadData = await putSharepointFile(itemPath, contentBytes, contentType);
-  return uploadData.webUrl || null;
-}
-
-// Photos go in a per-job subfolder (rather than the flat filename-prefixed layout used for
-// the PDF) so that opening any one of them from the note still gives SharePoint's native
-// gallery view — arrow through the rest of the job's photos — instead of a dead-end preview.
-async function uploadPhotoToOneDrive(jobNumber, filename, contentBytes, contentType) {
-  const safeName = filename.replace(/#/g, "").trim();
-  const itemPath = ["General", "Other", "AI Workorders [dont touch]", jobNumber, safeName]
-    .map(s => encodeURIComponent(s)).join("/");
-  const uploadData = await putSharepointFile(itemPath, contentBytes, contentType);
-  return { id: uploadData.id, webUrl: uploadData.webUrl };
-}
-
-async function putSharepointFile(itemPath, contentBytes, contentType) {
-  const driveId = await getSharepointDriveId();
-
-  const ac = new AbortController();
-  const timer = setTimeout(() => ac.abort(), 20000);
-
+// Forward the original email to the job's inbound address and upload its files via v2.
+// Warnings, never throws: by the time this runs the job exists and its number is known.
+async function attachWorkOrderToJob(jobNumber, pdfAttachment, imageAttachments, emailMeta, warnings) {
+  let v2TaskId = null;
   try {
-    const uploadRes = await graphFetch(`/drives/${driveId}/root:/${itemPath}:/content`, {
-      method: "PUT",
-      headers: { "Content-Type": contentType },
-      body: contentBytes,
-      signal: ac.signal,
-    });
-    if (!uploadRes.ok) {
-      const err = await uploadRes.json().catch(() => ({}));
-      throw new Error(`SharePoint upload failed ${uploadRes.status}: ${err?.error?.message || JSON.stringify(err)}`);
+    v2TaskId = await findTaskIdByJobNumber(jobNumber);
+    if (!v2TaskId) throw new Error(`job ${jobNumber} not found in the v2 task list`);
+  } catch (err) {
+    console.warn("[v2] Could not resolve v2 task id:", err.message);
+    warnings.push({ tag: "Email not sent to job", detail: `v2 task id lookup failed, so neither the email nor the files reached the job: ${err.message}` });
+    return;
+  }
+
+  if (emailMeta?.messageId && emailMeta?.mailbox) {
+    try {
+      const address = await ensureTaskEmail(v2TaskId, officeSession);
+      await graphFetch(`/users/${emailMeta.mailbox}/messages/${emailMeta.messageId}/forward`, {
+        method: "POST",
+        body: JSON.stringify({ comment: "", toRecipients: [{ emailAddress: { address } }] }),
+      });
+      console.log("[job] Work order email forwarded to", address);
+    } catch (err) {
+      console.warn("[job] Email not sent to job:", err.message);
+      warnings.push({ tag: "Email not sent to job", detail: err.message });
     }
-    return await uploadRes.json();
-  } finally {
-    clearTimeout(timer);
+  } else {
+    warnings.push({ tag: "Email not sent to job", detail: "No source message to forward" });
+  }
+
+  const files = [
+    ...(pdfAttachment ? [{ filename: pdfAttachment.name, bytes: pdfAttachment.data, comment: "Work order" }] : []),
+    ...imageAttachments.map(img => ({ filename: img.name, bytes: img.data, comment: "Work order photo" })),
+  ];
+  for (const file of files) {
+    try {
+      await uploadTaskDocument(v2TaskId, file);
+      console.log("[v2] Uploaded", file.filename);
+    } catch (err) {
+      console.warn("[v2] Upload failed:", file.filename, err.message);
+      warnings.push({ tag: "File not uploaded", detail: `${file.filename}: ${err.message}` });
+    }
   }
 }
+
 
 // Known work order portal domains
 const WORKORDER_DOMAINS = /tapihq\.com|propertytree\.com|propertyme\.com\.au|console\.net\.au|inspection\.express|ailo\.io/i;
@@ -2125,6 +2000,8 @@ Return ONLY valid JSON with these exact keys:
   const substatusTagId = Object.entries(SUBSTATUS_TAG_MAP).find(([tag]) => categoriesLower.has(tag))?.[1] || null;
 
   const emailMeta = {
+    messageId: message.id,
+    mailbox,
     from:    message.from?.emailAddress?.address || null,
     to:      (message.toRecipients || []).map(r => r.emailAddress?.address).filter(Boolean).join(", ") || null,
     subject: message.subject || null,
