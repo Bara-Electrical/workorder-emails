@@ -2182,7 +2182,11 @@ async function findJobTagInThread(mailbox, conversationId, excludeMessageId) {
     }
     for (const m of (data.value || [])) {
       if (m.id === excludeMessageId) continue;
-      const tag = (m.categories || []).find(c => c.startsWith("Job created") || c.startsWith("Existing job"));
+      // A held or stopped sibling counts as thread state too: while one message of a thread
+      // waits on the plugin, no other message of it may become a job of its own.
+      const tag = (m.categories || []).find(c =>
+        c.startsWith("Job created") || c.startsWith("Existing job") || c === NEEDS_DECISION_CATEGORY || c === STOPPED_CATEGORY
+      );
       if (tag) return tag;
     }
     return null;
@@ -2335,6 +2339,14 @@ async function pollInbox(mailbox) {
       // message untagged and let the next poll retry. A few minutes' delay is a far
       // cheaper failure than a duplicate job somebody has to find and delete.
       console.warn("[poll] Skipping until thread state is known:", message.subject);
+      continue;
+    }
+    if (siblingTag === NEEDS_DECISION_CATEGORY || siblingTag === STOPPED_CATEGORY) {
+      // The thread is parked on a decision (or was stopped). This message inherits that
+      // state and stays out of the candidate query until the decision lands; the sweep
+      // after job creation clears it along with the other status categories.
+      console.log(`[poll] Thread is "${siblingTag}" — marking this message the same, no job:`, message.subject);
+      await setJobStatus(mailbox, message.id, message.categories, siblingTag);
       continue;
     }
     if (siblingTag) {
