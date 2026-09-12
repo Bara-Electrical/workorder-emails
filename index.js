@@ -1115,7 +1115,10 @@ async function createArofloJob(result, rawEmail, pdfAttachment = null, emailMeta
   let checks = { recentJobs: [], aircon: {} };
   if (location?.locationid) {
     try {
-      checks = await propertyCheck(location.locationid);
+      checks = await propertyCheck({
+        aroFloLocationId: location.locationid, clientAroFloId: client.clientid,
+        street: location.locationname, suburb: location.suburb,
+      });
     } catch (err) {
       const detail = `Dashboard property check failed — duplicate check and Site line skipped: ${err.message}`;
       console.warn("[job]", detail);
@@ -1125,7 +1128,7 @@ async function createArofloJob(result, rawEmail, pdfAttachment = null, emailMeta
   const gateRecord = {
     messageId: emailMeta?.messageId, conversationId: emailMeta?.conversationId,
     subject: emailMeta?.subject, fromAddress: emailMeta?.from,
-    aroFloLocationId: location?.locationid ?? null, checks, warnings,
+    aroFloLocationId: location?.locationid ?? null, locationId: checks.locationId ?? null, checks, warnings,
   };
   if (emailMeta?.messageId) {
     await upsertGateRecord({ ...gateRecord, status: "CHECKED" }).catch(err => console.warn("[gate] record CHECKED:", err.message));

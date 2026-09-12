@@ -49,15 +49,15 @@ test("siteLine orders Split, Ducted, Evaporative, omits zeros, and is empty with
 test("propertyCheck GETs with the bearer and returns the body", async () => {
   const body = { locationId: "L1", recentJobs: [{ jobNumber: "107620" }], aircon: { units: { Split: 1 } } };
   const { f, log } = scripted([{ status: 200, body: JSON.stringify(body) }]);
-  assert.deepEqual(await propertyCheck("JiQq==", { fetchImpl: f, env }), body);
-  assert.equal(log[0].url, "https://dash.test/api/property-check?aroFloLocationId=JiQq%3D%3D");
+  assert.deepEqual(await propertyCheck({ aroFloLocationId: "JiQq==", clientAroFloId: "C1", street: "2 Nardoo Way", suburb: "Maddington" }, { fetchImpl: f, env }), body);
+  assert.equal(log[0].url, "https://dash.test/api/property-check?aroFloLocationId=JiQq%3D%3D&clientAroFloId=C1&street=2+Nardoo+Way&suburb=Maddington");
   assert.equal(log[0].headers.Authorization, "Bearer s3cret");
 });
 
 test("propertyCheck throws on a non-200 and when the dashboard is not configured", async () => {
   const { f } = scripted([{ status: 503, body: "down" }]);
-  await assert.rejects(propertyCheck("x", { fetchImpl: f, env }), /Property check failed: 503 down/);
-  await assert.rejects(propertyCheck("x", { fetchImpl: f, env: {} }), /DASHBOARD_URL/);
+  await assert.rejects(propertyCheck({ aroFloLocationId: "x" }, { fetchImpl: f, env }), /Property check failed: 503 down/);
+  await assert.rejects(propertyCheck({ aroFloLocationId: "x" }, { fetchImpl: f, env: {} }), /DASHBOARD_URL/);
 });
 
 test("upsertGateRecord PUTs the fields as JSON with the bearer", async () => {

@@ -72,11 +72,18 @@ async function dashboardFetch(path, init, label, { fetchImpl = fetch, env = proc
   return res.json();
 }
 
-// → { locationId, recentJobs: [{ jobNumber, taskType, status, requestedAt }], aircon: { units } }.
-// An unknown location is a 200 with empty lists, so a throw here means the dashboard itself
-// is unreachable or refusing us.
-export function propertyCheck(aroFloLocationId, opts) {
-  return dashboardFetch(`/api/property-check?aroFloLocationId=${encodeURIComponent(aroFloLocationId)}`, {}, "Property check", opts);
+// → { locationId, recentJobs: [{ jobNumber, taskType, status, requestedAt }], aircon: { Split: 2 } }.
+// The dashboard finds the site by client + street (its Location rows carry no AroFlo
+// location id — the reports never include one), and uses the v1 location id only to match
+// its own earlier gate records. An unknown site is a 200 with empty lists, so a throw here
+// means the dashboard itself is unreachable or refusing us.
+export function propertyCheck({ aroFloLocationId, clientAroFloId, street, suburb }, opts) {
+  const q = new URLSearchParams();
+  if (aroFloLocationId) q.set("aroFloLocationId", aroFloLocationId);
+  if (clientAroFloId) q.set("clientAroFloId", clientAroFloId);
+  if (street) q.set("street", street);
+  if (suburb) q.set("suburb", suburb);
+  return dashboardFetch(`/api/property-check?${q}`, {}, "Property check", opts);
 }
 
 // Upsert by messageId; any subset of the record's fields. Called at each stage of an email
