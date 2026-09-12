@@ -1119,6 +1119,8 @@ async function createArofloJob(result, rawEmail, pdfAttachment = null, emailMeta
         aroFloLocationId: location.locationid, clientAroFloId: client.clientid,
         street: location.locationname, suburb: location.suburb,
       });
+      // The plugin's question names the site; the dashboard's record has no address of its own.
+      checks.site = [location.locationname, location.suburb].filter(Boolean).join(", ");
     } catch (err) {
       const detail = `Dashboard property check failed — duplicate check and Site line skipped: ${err.message}`;
       console.warn("[job]", detail);
