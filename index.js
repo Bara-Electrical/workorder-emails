@@ -1839,11 +1839,12 @@ async function processMessage(message, mailbox = WORKORDERS_EMAIL, onStatus = nu
     pdfImages = images;
   }
 
-  // Neither a link nor an attachment on this message — it may be a reply further down
-  // a thread (e.g. discussing scope changes) whose original work order PDF is on an
-  // earlier message in the same conversation. Pull that in rather than extracting from
-  // the bare reply text alone.
-  if (!workOrderLink && !workorderAttachment && message.conversationId) {
+  // No PDF yet — it may be a reply further down a thread (e.g. discussing scope changes)
+  // whose original work order PDF is on an earlier message in the same conversation. Pull
+  // that in rather than extracting from the bare reply text alone. Checked on pdfAttachment,
+  // not on whether a link was present: a reply that quotes a Bricks+Agent link whose page
+  // has since gone (404) still has its PDF, and its photos, back up the thread.
+  if (!pdfAttachment && message.conversationId) {
     const threadPdf = await findThreadWorkOrderPdf(mailbox, message.conversationId, message.id);
     if (threadPdf) {
       pdfAttachment = { name: threadPdf.name, data: new Uint8Array(threadPdf.data) };
