@@ -1136,11 +1136,24 @@ async function createArofloJob(result, rawEmail, pdfAttachment = null, emailMeta
     await upsertGateRecord({ ...gateRecord, status: "CHECKED" }).catch(err => console.warn("[gate] record CHECKED:", err.message));
   }
   if (gateApplies(gateMode(process.env), emailMeta?.categories) && checks.recentJobs?.length > 0) {
-    console.log(`[gate] Holding for decision — ${checks.recentJobs.length} recent job(s) at location ${location.locationid}:`, checks.recentJobs.map(j => j.jobNumber).join(", "));
+    // A hold only exists if the dashboard knows about it: the plugin answers from the
+    // record, and the poller only ever hears about the answer through the dashboard. If
+    // that write fails, holding would park the email with nobody able to release it — so
+    // the job is created instead, and the warning says the duplicate check was not applied.
+    let held = false;
     if (emailMeta?.messageId) {
-      await upsertGateRecord({ ...gateRecord, status: "NEEDS_DECISION" }).catch(err => console.warn("[gate] record NEEDS_DECISION:", err.message));
+      try {
+        await upsertGateRecord({ ...gateRecord, status: "NEEDS_DECISION" });
+        held = true;
+      } catch (err) {
+        console.warn("[gate] record NEEDS_DECISION failed — creating the job rather than stranding the email:", err.message);
+        warnings.push({ tag: "Duplicate check not applied", detail: `Recent job(s) ${checks.recentJobs.map(j => j.jobNumber).join(", ")} at this site, but the dashboard could not record the hold: ${err.message}` });
+      }
     }
-    throw new GateHold(checks);
+    if (held) {
+      console.log(`[gate] Holding for decision — ${checks.recentJobs.length} recent job(s) at location ${location.locationid}:`, checks.recentJobs.map(j => j.jobNumber).join(", "));
+      throw new GateHold(checks);
+    }
   }
 
   const pmContact = matchContact(contacts, result["property-manager"]);
@@ -2319,7 +2332,7 @@ async function pollInbox(mailbox) {
   // picked up individually on a later poll).
   const byConversation = new Map();
   for (const m of data.value || []) {
-    if (m.categories.some(c => c.startsWith("Job created"))) continue;
+    if ((m.categories || []).some(c => c.startsWith("Job created"))) continue;
     const key = m.conversationId || m.id;
     if (!byConversation.has(key)) byConversation.set(key, []);
     byConversation.get(key).push(m);
