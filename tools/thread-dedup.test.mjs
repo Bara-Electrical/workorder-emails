@@ -15,7 +15,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
-const src = fs.readFileSync(path.join(here, "..", "index.js"), "utf8");
+const src = fs.readFileSync(path.join(here, "..", "index.js"), "utf8").replace(/\r\n/g, "\n"); // a Windows checkout has CRLF; the markers below are LF
 
 function grab(startMarker, endMarker) {
   const i = src.indexOf(startMarker);
