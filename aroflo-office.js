@@ -134,6 +134,9 @@ export function createOfficeSession({ fetchImpl = fetch, env = process.env } = {
     let page = body.message === "goto" && typeof body.data === "string" ? await officeGet(body.data, { retry: false }) : "";
     for (let step = 0; page.includes('id="frmPostLogin"'); step++) {
       if (step >= 4) throw new Error("AroFlo office login did not settle after 4 post-login steps");
+      // The same form with nothing in it is AroFlo's "nothing pending" landing (seen once
+      // MFA and the session limit are both cleared) — the session is usable.
+      if (/<form id="frmPostLogin"[^>]*>\s*<\/form>/.test(page)) break;
       if (page.includes("<af-login-mfa-main-component")) {
         if (!env.AROFLO_OFFICE_TOTP_SECRET) throw new Error("AroFlo asks for MFA but AROFLO_OFFICE_TOTP_SECRET is not set — run enrol-authenticator.mjs");
         await verifyMfa({ mfatype: "GOOGLE_AUTHENTICATOR", token: totp(env.AROFLO_OFFICE_TOTP_SECRET) });
