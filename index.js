@@ -7,6 +7,9 @@ import { deflateSync } from "node:zlib";
 import { PACKAGE_TEMPLATES } from "./templates.js";
 import Airtable from "airtable";
 import { createOfficeSession, ensureTaskEmail, findTaskIdByJobNumber, uploadTaskDocument } from "./aroflo-office.js";
+
+// The office UI's job page, completed by the task's `webappEncodedID` token verbatim.
+const OFFICE_TASK_URL = "https://office.aroflo.com/ims/Site/Service/workrequest/index.cfm?viewonly=1&viewexist=1&wrCoded=";
 import {
   GateHold, gateMode, gateApplies, propertyCheck, upsertGateRecord, pendingDecisions, siteLine,
   NEEDS_DECISION_CATEGORY, STOPPED_CATEGORY, GATE_CONTINUE_CATEGORY,
@@ -1238,6 +1241,12 @@ async function createArofloJob(result, rawEmail, pdfAttachment = null, emailMeta
   // previously ending up in the "Job created - X" tag, silently wrong.
   let jobNumber = "(see Aroflo)";
   let confirmedTaskId = taskId;
+  // The office web UI addresses a job by the opaque `webappEncodedID` token the task row
+  // carries, already percent-encoded — interpolated verbatim, never re-encoded (the
+  // dashboard's src/lib/aroflo/webLinks.ts explains why). Goes on the gate record so the
+  // plugin can link the new job before the hourly report has brought it into the
+  // dashboard's own Task table.
+  let jobUrl = null;
   if (taskId) {
     for (let attempt = 1; attempt <= 2 && jobNumber === "(see Aroflo)"; attempt++) {
       try {
@@ -1246,6 +1255,7 @@ async function createArofloJob(result, rawEmail, pdfAttachment = null, emailMeta
         if (arr[0]?.jobnumber) {
           jobNumber = arr[0].jobnumber;
           confirmedTaskId = arr[0].taskid || taskId;
+          if (arr[0].webappEncodedID) jobUrl = OFFICE_TASK_URL + arr[0].webappEncodedID;
         } else if (attempt < 2) {
           console.warn(`[job] Job number not yet available for task ${taskId} (attempt ${attempt}/2) — retrying in 1500ms`);
           await new Promise(r => setTimeout(r, 1500));
@@ -1416,7 +1426,7 @@ async function createArofloJob(result, rawEmail, pdfAttachment = null, emailMeta
     }
   }
 
-  return { jobNumber, warnings };
+  return { jobNumber, jobUrl, checks, warnings };
 }
 
 // ================================================================
@@ -2447,11 +2457,13 @@ async function pollInbox(mailbox) {
       }
 
       currentCategories = await setJobStatus(mailbox, message.id, currentCategories, CREATING_JOB_CATEGORY);
-      const { jobNumber, warnings: jobWarnings } = await createArofloJob(result, rawEmail, pdfAttachment, emailMeta, imageAttachments);
+      const { jobNumber, jobUrl, checks, warnings: jobWarnings } = await createArofloJob(result, rawEmail, pdfAttachment, emailMeta, imageAttachments);
       logAiOutput(result, message.subject).catch(err => console.warn("[airtable] logAiOutput:", err.message));
       logActivity("Job created", jobNumber).catch(err => console.warn("[airtable] logActivity:", err.message));
       const allWarnings = [...preWarnings, ...jobWarnings];
-      upsertGateRecord({ messageId: message.id, status: "CREATED", jobNumber, warnings: allWarnings })
+      // jobUrl rides inside checks: the record's Json column already exists and the plugin
+      // reads checks.jobUrl, so no dashboard migration is needed for one link.
+      upsertGateRecord({ messageId: message.id, status: "CREATED", jobNumber, checks: { ...checks, jobUrl }, warnings: allWarnings })
         .catch(err => console.warn("[gate] record CREATED:", err.message));
 
       // Always apply the job tag to prevent re-processing. Warnings are NOT tagged on the
