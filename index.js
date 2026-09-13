@@ -2162,10 +2162,22 @@ async function setJobStatus(mailbox, messageId, currentCategories, newStatus) {
 // Fire-and-forget: the failure is already tagged on the email and in the alert path; the
 // dashboard copy is only so the plugin can show it under the subject.
 function recordGateFailure(message, err) {
+  // The plugin shows this line to the office, so say what to do, not just what broke.
+  const msg = err.message || String(err);
+  let tag = "Failed", detail = msg;
+  if (msg.startsWith("Client not found")) {
+    tag = "Client not found";
+    detail = `${msg}. Add the agency to the client map (or create the client in AroFlo), then remove the "Client not found" tag on the email to retry.`;
+  } else if (msg.startsWith("No address found")) {
+    tag = "No address";
+    detail = `No property address could be read from the email or its PDF. Add it to the email, then remove the "No address" tag to retry.`;
+  } else {
+    detail = `${msg}. Remove the "Failed" tag on the email to retry.`;
+  }
   upsertGateRecord({
     messageId: message.id, conversationId: message.conversationId || null,
     subject: message.subject || null, fromAddress: message.from?.emailAddress?.address || null,
-    status: "FAILED", warnings: [{ tag: "Failed", detail: err.message }],
+    status: "FAILED", warnings: [{ tag, detail }],
   }).catch(e => console.warn("[gate] record FAILED:", e.message));
 }
 
@@ -2410,11 +2422,6 @@ async function pollInbox(mailbox) {
       if (err.message.startsWith("Client not found")) {
         await setJobStatus(mailbox, message.id, message.categories, CLIENT_NOT_FOUND_CATEGORY);
         console.log("[poll] Tagged as client not found:", message.subject);
-        await sendAlertEmail(
-          `Action required — client not found: "${message.subject}"`,
-          `<p style="font-family:sans-serif;font-size:14px">Couldn't match this email to an Aroflo client.</p><p style="font-family:sans-serif;font-size:14px">${escapeHtml(err.message)}</p><p style="font-family:sans-serif;font-size:12px;color:#888">Add a mapping in CLIENT_NAME_MAP or EMAIL_DOMAIN_MAP, then remove the "Client not found" category on the email to retry.</p>`,
-          "client not found"
-        );
       } else if (err.message.startsWith("No address found")) {
         await setJobStatus(mailbox, message.id, message.categories, NO_ADDRESS_CATEGORY);
         console.log("[poll] Tagged as no address:", message.subject);
@@ -2447,15 +2454,13 @@ async function pollInbox(mailbox) {
       upsertGateRecord({ messageId: message.id, status: "CREATED", jobNumber, warnings: allWarnings })
         .catch(err => console.warn("[gate] record CREATED:", err.message));
 
-      // Always apply job tag to prevent re-processing; add a specific tag for each distinct
-      // failure type (multiple failures of the same kind — e.g. several failed photo
-      // uploads — share one tag rather than repeating it).
+      // Always apply the job tag to prevent re-processing. Warnings are NOT tagged on the
+      // email any more: they go on the dashboard record (above) with their explanation, and
+      // the plugin lists them under the subject, which is where the office actually reads.
       const jobTag = `Job created - ${jobNumber}`;
-      const warningTags = [...new Set(allWarnings.map(w => w.tag))];
       const finalCategories = [
         ...currentCategories.filter(c => !STATUS_CATEGORIES.includes(c)),
         jobTag,
-        ...warningTags,
       ];
       await graphFetch(`/users/${mailbox}/messages/${message.id}`, {
         method: "PATCH",
@@ -2464,17 +2469,9 @@ async function pollInbox(mailbox) {
       tagWholeConversation(mailbox, message.conversationId, message.id, jobTag)
         .catch(err => console.warn("[poll] tagWholeConversation:", err.message));
 
-      if (allWarnings.length > 0) {
-        console.warn("[job] Created with issues:", allWarnings.map(w => w.tag));
-        const warningLines = allWarnings.map(w => `<li style="margin:4px 0;font-family:sans-serif;font-size:14px"><strong>${escapeHtml(w.tag)}:</strong> ${escapeHtml(w.detail)}</li>`).join("");
-        await sendAlertEmail(
-          `Action required — Job ${jobNumber} created with issues`,
-          `<p style="font-family:sans-serif;font-size:14px">Job <strong>${escapeHtml(jobNumber)}</strong> was created in Aroflo but the following need attention:</p><ul>${warningLines}</ul><p style="font-family:sans-serif;font-size:12px;color:#888">Original email: ${escapeHtml(message.subject)}</p>`,
-          `job ${jobNumber}`
-        );
-      } else {
-        console.log("[poll] Tagged as done:", message.subject);
-      }
+      // Issues are on the dashboard record for the plugin to show; no alert email.
+      if (allWarnings.length > 0) console.warn("[job] Created with issues:", allWarnings.map(w => w.tag));
+      else console.log("[poll] Tagged as done:", message.subject);
     } catch (err) {
       if (err instanceof GateHold) {
         // Not a failure: the email waits for Continue/Stop from the plugin. The dashboard
@@ -2489,11 +2486,6 @@ async function pollInbox(mailbox) {
       if (err.message.startsWith("Client not found")) {
         await setJobStatus(mailbox, message.id, currentCategories, CLIENT_NOT_FOUND_CATEGORY);
         console.log("[poll] Tagged as client not found:", message.subject);
-        await sendAlertEmail(
-          `Action required — client not found: "${message.subject}"`,
-          `<p style="font-family:sans-serif;font-size:14px">Couldn't match this email to an Aroflo client.</p><p style="font-family:sans-serif;font-size:14px">${escapeHtml(err.message)}</p><p style="font-family:sans-serif;font-size:12px;color:#888">Add a mapping in CLIENT_NAME_MAP or EMAIL_DOMAIN_MAP, then remove the "Client not found" category on the email to retry.</p>`,
-          "client not found"
-        );
       } else if (err.message.startsWith("No address found")) {
         await setJobStatus(mailbox, message.id, currentCategories, NO_ADDRESS_CATEGORY);
         console.log("[poll] Tagged as no address:", message.subject);
@@ -2547,6 +2539,20 @@ app.get("/find-client", requireApiKey, async (req, res) => {
     .filter(c => c.clientname.toLowerCase().includes(key) || key.includes(c.clientname.toLowerCase()))
     .map(c => c.clientname);
   res.json({ result, exactCacheHit: exactCacheHit?.clientname || null, partialMatches });
+});
+
+// ================================================================
+// GATE NUDGE — the dashboard calls this the moment someone answers in the plugin, so the
+// poller runs now rather than at its next 2.5-minute tick. Bearer is the dashboard secret,
+// which both sides already hold. Best effort on the dashboard's side: a missed nudge only
+// means the next tick picks the decision up.
+// ================================================================
+app.post("/gate/decided", (req, res) => {
+  const expected = process.env.DASHBOARD_API_SECRET;
+  if (!expected || req.headers.authorization !== `Bearer ${expected}`) return res.sendStatus(401);
+  res.sendStatus(202);
+  console.log("[gate] Nudged by the dashboard — polling now");
+  pollEmails();
 });
 
 // ================================================================
