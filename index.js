@@ -11,7 +11,7 @@ import { createOfficeSession, ensureTaskEmail, findTaskIdByJobNumber, uploadTask
 // The office UI's job page, completed by the task's `webappEncodedID` token verbatim.
 const OFFICE_TASK_URL = "https://office.aroflo.com/ims/Site/Service/workrequest/index.cfm?viewonly=1&viewexist=1&wrCoded=";
 import {
-  GateHold, gateMode, gateApplies, propertyCheck, upsertGateRecord, pendingDecisions, siteLine,
+  GateHold, gateMode, gateApplies, propertyCheck, upsertGateRecord, pendingDecisions, siteLine, duplicatePrompt,
   NEEDS_DECISION_CATEGORY, STOPPED_CATEGORY, GATE_CONTINUE_CATEGORY,
 } from "./gate.js";
 
@@ -1146,7 +1146,7 @@ async function createArofloJob(result, rawEmail, pdfAttachment = null, emailMeta
     let held = false;
     if (emailMeta?.messageId) {
       try {
-        await upsertGateRecord({ ...gateRecord, status: "NEEDS_DECISION" });
+        await upsertGateRecord({ ...gateRecord, status: "NEEDS_DECISION", checks: { ...checks, prompt: duplicatePrompt(checks) } });
         held = true;
       } catch (err) {
         console.warn("[gate] record NEEDS_DECISION failed — creating the job rather than stranding the email:", err.message);
@@ -2304,7 +2304,9 @@ async function applyGateDecisions(mailbox) {
         await graphFetch(`/users/${mailbox}/messages/${record.messageId}`, { method: "PATCH", body: JSON.stringify({ categories }) });
         // Tell the dashboard the email is re-tagged, or this row comes back every tick.
         await upsertGateRecord({ messageId: record.messageId, applied: true });
-        console.log(`[gate] ${status}: "${record.subject ?? record.messageId}" → "${category}"`);
+        // record.decision is the answer id from the prompt (gate.js duplicatePrompt); today
+        // every answer maps to one of these two statuses, so it is logged, not branched on.
+        console.log(`[gate] ${status} (${record.decision ?? "?"} by ${record.decidedBy ?? "?"}): "${record.subject ?? record.messageId}" → "${category}"`);
       } catch (err) {
         console.warn(`[gate] Could not apply ${status} to ${record.messageId}:`, err.message);
       }

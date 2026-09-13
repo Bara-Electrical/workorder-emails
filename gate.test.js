@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
-  gateMode, gateApplies, siteLine, propertyCheck, upsertGateRecord, pendingDecisions, GateHold,
+  gateMode, gateApplies, siteLine, propertyCheck, upsertGateRecord, pendingDecisions, GateHold, duplicatePrompt,
   GATE_TEST_CATEGORY, GATE_CONTINUE_CATEGORY,
 } from "./gate.js";
 
@@ -36,6 +36,20 @@ test("gateApplies: off never, tagged only with Gate Test, on always — Gate: Co
   ];
   for (const [mode, cats, want] of matrix) assert.equal(gateApplies(mode, cats), want, `${mode} × ${cats.join("+")}`);
   assert.equal(gateApplies("on", undefined), true);
+});
+
+test("duplicatePrompt names the first recent job, the site and the date, with two answers", () => {
+  const prompt = duplicatePrompt({
+    site: "22 Macey Close, Rivervale",
+    recentJobs: [
+      { jobNumber: "107618", taskType: "Callout", requestedAt: "2026-09-12T00:00:00.000Z" },
+      { jobNumber: "107615" },
+    ],
+  });
+  assert.equal(prompt.question, "I found job 107618 (Callout) at 22 Macey Close, Rivervale, raised on 12/09/2026, and 1 more. Is this work order for a new job, or the same one?");
+  assert.deepEqual(prompt.answers.map(a => [a.id, a.effect, a.primary === true]), [["CONTINUE", "CONTINUE", true], ["STOP", "STOP", false]]);
+  assert.equal(prompt.answers[1].then, "Not created — treated as the same job as 107618.");
+  assert.equal(duplicatePrompt({ recentJobs: [] }).question, "Something needs checking before I create this job at this property. Create it, or leave it?");
 });
 
 test("siteLine orders Split, Ducted, Evaporative, omits zeros, and is empty with nothing", () => {

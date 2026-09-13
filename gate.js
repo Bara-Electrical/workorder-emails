@@ -48,6 +48,40 @@ export function gateApplies(mode, categories = []) {
   return false;
 }
 
+// What the plugin asks the office, and the buttons it offers, for an email held because
+// the property had a job lately. Lives on the record (checks.prompt) so the wording and
+// the answers are this service's to change — the plugin draws whatever is here.
+//
+//   { question, answers: [{ id, label, effect: "CONTINUE" | "STOP", primary, then }] }
+//
+// `id` comes back as the record's `decision`; `effect` is what the dashboard turns it into
+// (CONTINUED or STOPPED, which the poller acts on); `then` is what the office sees while
+// the answer is in flight. Add answers freely — a new id with effect CONTINUE can carry a
+// meaning of its own once applyGateDecisions reads `decision`.
+export function duplicatePrompt(checks, now = new Date()) {
+  const recent = Array.isArray(checks?.recentJobs) ? checks.recentJobs : [];
+  const first = recent[0];
+  const site = checks?.site ? ` at ${checks.site}` : " at this property";
+  const when = first?.requestedAt ? ` on ${perthDate(first.requestedAt)}` : "";
+  const question = first
+    ? `I found job ${first.jobNumber}${first.taskType ? ` (${first.taskType})` : ""}${site}, raised${when}${recent.length > 1 ? `, and ${recent.length - 1} more` : ""}. Is this work order for a new job, or the same one?`
+    : `Something needs checking before I create this job${site}. Create it, or leave it?`;
+  return {
+    question,
+    answers: [
+      { id: "CONTINUE", label: "New job — create it", effect: "CONTINUE", primary: true, then: "Creating the job now…" },
+      { id: "STOP", label: "Same job — don't create", effect: "STOP", then: first ? `Not created — treated as the same job as ${first.jobNumber}.` : "Not created." },
+    ],
+  };
+}
+
+// dd/mm/yyyy in Perth, the way the office reads dates; an unparseable date is left out.
+function perthDate(iso) {
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return "";
+  return new Intl.DateTimeFormat("en-AU", { timeZone: "Australia/Perth", day: "2-digit", month: "2-digit", year: "numeric" }).format(d);
+}
+
 // "Site: 2× Split, 1× Ducted" — the tally the dashboard derives from compliance forms, in
 // the order the office reads them. Accepts either the bare tally or the { units } wrapper
 // /api/property-check returns. Empty string when there is nothing to say, so the caller
