@@ -2434,6 +2434,11 @@ async function pollInbox(mailbox) {
       if (err.message.startsWith("Client not found")) {
         await setJobStatus(mailbox, message.id, message.categories, CLIENT_NOT_FOUND_CATEGORY);
         console.log("[poll] Tagged as client not found:", message.subject);
+        await sendAlertEmail(
+          `Action required — client not found: "${message.subject}"`,
+          `<p style="font-family:sans-serif;font-size:14px">Couldn't match this email to an Aroflo client.</p><p style="font-family:sans-serif;font-size:14px">${escapeHtml(err.message)}</p><p style="font-family:sans-serif;font-size:12px;color:#888">Add a mapping in CLIENT_NAME_MAP or EMAIL_DOMAIN_MAP, then remove the "Client not found" category on the email to retry.</p>`,
+          "client not found"
+        );
       } else if (err.message.startsWith("No address found")) {
         await setJobStatus(mailbox, message.id, message.categories, NO_ADDRESS_CATEGORY);
         console.log("[poll] Tagged as no address:", message.subject);
@@ -2468,13 +2473,20 @@ async function pollInbox(mailbox) {
       upsertGateRecord({ messageId: message.id, status: "CREATED", jobNumber, checks: { ...checks, jobUrl }, warnings: allWarnings })
         .catch(err => console.warn("[gate] record CREATED:", err.message));
 
-      // Always apply the job tag to prevent re-processing. Warnings are NOT tagged on the
-      // email any more: they go on the dashboard record (above) with their explanation, and
-      // the plugin lists them under the subject, which is where the office actually reads.
+      // Always apply the job tag to prevent re-processing; add a specific tag for each
+      // distinct warning type (multiple warnings of the same kind — e.g. several failed
+      // photo uploads — share one tag rather than repeating it).
+      //
+      // The warnings are on the gate record too, but Outlook is where the office actually
+      // works today: the dashboard plugin that shows them under the subject is still
+      // waiting on approval, so until it is live the email tag is the ONLY place an issue
+      // is visible. Do not drop these again before the plugin is approved and in use.
       const jobTag = `Job created - ${jobNumber}`;
+      const warningTags = [...new Set(allWarnings.map(w => w.tag))];
       const finalCategories = [
         ...currentCategories.filter(c => !STATUS_CATEGORIES.includes(c)),
         jobTag,
+        ...warningTags,
       ];
       await graphFetch(`/users/${mailbox}/messages/${message.id}`, {
         method: "PATCH",
@@ -2483,9 +2495,19 @@ async function pollInbox(mailbox) {
       tagWholeConversation(mailbox, message.conversationId, message.id, jobTag)
         .catch(err => console.warn("[poll] tagWholeConversation:", err.message));
 
-      // Issues are on the dashboard record for the plugin to show; no alert email.
-      if (allWarnings.length > 0) console.warn("[job] Created with issues:", allWarnings.map(w => w.tag));
-      else console.log("[poll] Tagged as done:", message.subject);
+      // Same reasoning as the tags above: the alert email is the office's only push
+      // notification while the plugin is unapproved.
+      if (allWarnings.length > 0) {
+        console.warn("[job] Created with issues:", allWarnings.map(w => w.tag));
+        const warningLines = allWarnings.map(w => `<li style="margin:4px 0;font-family:sans-serif;font-size:14px"><strong>${escapeHtml(w.tag)}:</strong> ${escapeHtml(w.detail)}</li>`).join("");
+        await sendAlertEmail(
+          `Action required — Job ${jobNumber} created with issues`,
+          `<p style="font-family:sans-serif;font-size:14px">Job <strong>${escapeHtml(jobNumber)}</strong> was created in Aroflo but the following need attention:</p><ul>${warningLines}</ul><p style="font-family:sans-serif;font-size:12px;color:#888">Original email: ${escapeHtml(message.subject)}</p>`,
+          `job ${jobNumber}`
+        );
+      } else {
+        console.log("[poll] Tagged as done:", message.subject);
+      }
     } catch (err) {
       if (err instanceof GateHold) {
         // Not a failure: the email waits for Continue/Stop from the plugin. The dashboard
@@ -2500,6 +2522,11 @@ async function pollInbox(mailbox) {
       if (err.message.startsWith("Client not found")) {
         await setJobStatus(mailbox, message.id, currentCategories, CLIENT_NOT_FOUND_CATEGORY);
         console.log("[poll] Tagged as client not found:", message.subject);
+        await sendAlertEmail(
+          `Action required — client not found: "${message.subject}"`,
+          `<p style="font-family:sans-serif;font-size:14px">Couldn't match this email to an Aroflo client.</p><p style="font-family:sans-serif;font-size:14px">${escapeHtml(err.message)}</p><p style="font-family:sans-serif;font-size:12px;color:#888">Add a mapping in CLIENT_NAME_MAP or EMAIL_DOMAIN_MAP, then remove the "Client not found" category on the email to retry.</p>`,
+          "client not found"
+        );
       } else if (err.message.startsWith("No address found")) {
         await setJobStatus(mailbox, message.id, currentCategories, NO_ADDRESS_CATEGORY);
         console.log("[poll] Tagged as no address:", message.subject);
