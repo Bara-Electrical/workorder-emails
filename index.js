@@ -6,11 +6,20 @@ import { createHmac } from "crypto";
 import { deflateSync } from "node:zlib";
 import { PACKAGE_TEMPLATES } from "./templates.js";
 import Airtable from "airtable";
+import { createOfficeSession, ensureTaskEmail, findTaskIdByJobNumber, uploadTaskDocument } from "./aroflo-office.js";
+
+// The office UI's job page, completed by the task's `webappEncodedID` token verbatim.
+const OFFICE_TASK_URL = "https://office.aroflo.com/ims/Site/Service/workrequest/index.cfm?viewonly=1&viewexist=1&wrCoded=";
+import {
+  GateHold, gateMode, gateApplies, propertyCheck, upsertGateRecord, pendingDecisions, siteLine, duplicatePrompt,
+  NEEDS_DECISION_CATEGORY, STOPPED_CATEGORY, GATE_CONTINUE_CATEGORY,
+} from "./gate.js";
 
 const REQUIRED_ENV = [
   "OPENAI_API_KEY",
   "GRAPH_TENANT_ID", "GRAPH_CLIENT_ID", "GRAPH_CLIENT_SECRET",
   "UENCODED", "PENCODED", "ORGENCODED", "SECRET_KEY",
+  "AROFLO_V2_TOKEN", "AROFLO_OFFICE_USER", "AROFLO_OFFICE_PASS",
 ];
 for (const key of REQUIRED_ENV) {
   if (!process.env[key]) {
@@ -28,6 +37,12 @@ if (process.env.AIRTABLE_API_KEY && process.env.AIRTABLE_BASE_ID) {
 
 if (!process.env.ADMIN_API_KEY) {
   console.warn("[startup] ADMIN_API_KEY not set — /clients, /find-client, and /aroflo-webhook are open with no auth");
+}
+
+// Not required: the dashboard is best effort, and a missing pair just makes every property
+// check fail into its "Property check unavailable" warning — jobs are still created.
+if (!process.env.DASHBOARD_URL || !process.env.DASHBOARD_API_SECRET) {
+  console.warn("[startup] DASHBOARD_URL or DASHBOARD_API_SECRET not set — property checks and gate records disabled");
 }
 
 // Known sender name → Aroflo client name mappings
@@ -125,6 +140,10 @@ const STATUS_CATEGORIES = [
   SENDING_TO_AI_CATEGORY, CREATING_JOB_CATEGORY,
   CLIENT_NOT_FOUND_CATEGORY, NO_ADDRESS_CATEGORY,
 ];
+// The gate's categories are transient too. Added after the literal rather than inside it
+// because tools/thread-dedup.test.mjs evaluates the block above on its own, where an
+// imported name would be undefined.
+STATUS_CATEGORIES.push(NEEDS_DECISION_CATEGORY, STOPPED_CATEGORY, GATE_CONTINUE_CATEGORY);
 
 let pollRunning = false;
 
@@ -957,7 +976,7 @@ function extractKeyCollectionLine(taskDescription) {
   return line || null;
 }
 
-function buildDescription(result, photoLinkHtml = null, airconUnitType = null) {
+function buildDescription(result, airconUnitType = null, site = "") {
   const parts = [];
   const spacer = `<p>&nbsp;</p>`;
   const lockboxDetails = extractLockboxDetails(result["access-details"]);
@@ -983,10 +1002,14 @@ function buildDescription(result, photoLinkHtml = null, airconUnitType = null) {
     );
   }
 
-  const hasHighlights = result["expenditure-limit"] || lockboxDetails || photoLinkHtml;
+  const hasHighlights = result["expenditure-limit"] || lockboxDetails || site;
   if (hasHighlights) parts.push(spacer);
 
-  if (photoLinkHtml) parts.push(photoLinkHtml);
+  // What the dashboard knows is installed at the site (from compliance forms), so the tech
+  // knows what to expect before arriving. Empty when the dashboard has nothing on record.
+  if (site) {
+    parts.push(`<p><span style="background:#e0e0e0;font-weight:bold">${escapeHtml(site)}</span></p>`);
+  }
 
   if (result["expenditure-limit"]) {
     parts.push(`<p><span style="background:#cce5ff;font-weight:bold">Expenditure Limit: ${escapeHtml(result["expenditure-limit"])}</span></p>`);
@@ -1087,6 +1110,55 @@ async function createArofloJob(result, rawEmail, pdfAttachment = null, emailMeta
     warnings.push({ tag: "Location not linked", detail });
   }
 
+  // Ask the dashboard what it knows about this property: jobs there in the last 30 days
+  // (a second PM forwarding the same work order, a tenant re-reporting) and the aircon unit
+  // tally for the description. Without a linked location there is nothing to ask about.
+  // The check itself is best effort — an unreachable dashboard must never lose a work
+  // order — but a hold, once decided, is not: the throw below stops the task being made.
+  let checks = { recentJobs: [], aircon: {} };
+  if (location?.locationid) {
+    try {
+      checks = await propertyCheck({
+        aroFloLocationId: location.locationid, clientAroFloId: client.clientid,
+        street: location.locationname, suburb: location.suburb,
+      });
+      // The plugin's question names the site; the dashboard's record has no address of its own.
+      checks.site = [location.locationname, location.suburb].filter(Boolean).join(", ");
+    } catch (err) {
+      const detail = `Dashboard property check failed — duplicate check and Site line skipped: ${err.message}`;
+      console.warn("[job]", detail);
+      warnings.push({ tag: "Property check unavailable", detail });
+    }
+  }
+  const gateRecord = {
+    messageId: emailMeta?.messageId, conversationId: emailMeta?.conversationId,
+    subject: emailMeta?.subject, fromAddress: emailMeta?.from,
+    aroFloLocationId: location?.locationid ?? null, locationId: checks.locationId ?? null, checks, warnings,
+  };
+  if (emailMeta?.messageId) {
+    await upsertGateRecord({ ...gateRecord, status: "CHECKED" }).catch(err => console.warn("[gate] record CHECKED:", err.message));
+  }
+  if (gateApplies(gateMode(process.env), emailMeta?.categories) && checks.recentJobs?.length > 0) {
+    // A hold only exists if the dashboard knows about it: the plugin answers from the
+    // record, and the poller only ever hears about the answer through the dashboard. If
+    // that write fails, holding would park the email with nobody able to release it — so
+    // the job is created instead, and the warning says the duplicate check was not applied.
+    let held = false;
+    if (emailMeta?.messageId) {
+      try {
+        await upsertGateRecord({ ...gateRecord, status: "NEEDS_DECISION", checks: { ...checks, prompt: duplicatePrompt(checks) } });
+        held = true;
+      } catch (err) {
+        console.warn("[gate] record NEEDS_DECISION failed — creating the job rather than stranding the email:", err.message);
+        warnings.push({ tag: "Duplicate check not applied", detail: `Recent job(s) ${checks.recentJobs.map(j => j.jobNumber).join(", ")} at this site, but the dashboard could not record the hold: ${err.message}` });
+      }
+    }
+    if (held) {
+      console.log(`[gate] Holding for decision — ${checks.recentJobs.length} recent job(s) at location ${location.locationid}:`, checks.recentJobs.map(j => j.jobNumber).join(", "));
+      throw new GateHold(checks);
+    }
+  }
+
   const pmContact = matchContact(contacts, result["property-manager"]);
   if (pmContact) {
     console.log("[job] PM contact:", pmContact.userid, `${pmContact.givennames} ${pmContact.surname}`);
@@ -1138,7 +1210,7 @@ async function createArofloJob(result, rawEmail, pdfAttachment = null, emailMeta
     ${location ? `<location><locationid>${location.locationid}</locationid></location>` : ""}
     ${result.address && !location  ? `<sitename>${cdata(result.address)}</sitename>`          : ""}
     <taskname>${cdata(taskName)}</taskname>
-    <description>${cdata(buildDescription(result, null, emailMeta?.airconUnitType))}</description>
+    <description>${cdata(buildDescription(result, emailMeta?.airconUnitType, siteLine(checks.aircon)))}</description>
     <duedate>${dueDate}</duedate>
     ${result["order-number"] ? `<custon>${cdata(result["order-number"])}</custon>` : ""}
     ${(result["account-to"] || realEstate) ? `<customfields><customfield><name><![CDATA[ Account To: ]]></name><type><![CDATA[ text ]]></type><value>${cdata(result["account-to"] || realEstate)}</value></customfield></customfields>` : ""}
@@ -1169,6 +1241,12 @@ async function createArofloJob(result, rawEmail, pdfAttachment = null, emailMeta
   // previously ending up in the "Job created - X" tag, silently wrong.
   let jobNumber = "(see Aroflo)";
   let confirmedTaskId = taskId;
+  // The office web UI addresses a job by the opaque `webappEncodedID` token the task row
+  // carries, already percent-encoded — interpolated verbatim, never re-encoded (the
+  // dashboard's src/lib/aroflo/webLinks.ts explains why). Goes on the gate record so the
+  // plugin can link the new job before the hourly report has brought it into the
+  // dashboard's own Task table.
+  let jobUrl = null;
   if (taskId) {
     for (let attempt = 1; attempt <= 2 && jobNumber === "(see Aroflo)"; attempt++) {
       try {
@@ -1177,6 +1255,7 @@ async function createArofloJob(result, rawEmail, pdfAttachment = null, emailMeta
         if (arr[0]?.jobnumber) {
           jobNumber = arr[0].jobnumber;
           confirmedTaskId = arr[0].taskid || taskId;
+          if (arr[0].webappEncodedID) jobUrl = OFFICE_TASK_URL + arr[0].webappEncodedID;
         } else if (attempt < 2) {
           console.warn(`[job] Job number not yet available for task ${taskId} (attempt ${attempt}/2) — retrying in 1500ms`);
           await new Promise(r => setTimeout(r, 1500));
@@ -1195,54 +1274,19 @@ async function createArofloJob(result, rawEmail, pdfAttachment = null, emailMeta
   }
   console.log("[job] Aroflo job created — job number:", jobNumber, "taskId:", confirmedTaskId);
 
-  // Upload PDF and any photo attachments to SharePoint
-  let oneDriveUrl = null;
-  const photos = [];
-  if (jobNumber !== "(see Aroflo)") {
-    if (pdfAttachment) {
-      try {
-        oneDriveUrl = await uploadWorkOrderToOneDrive(jobNumber, pdfAttachment.name, pdfAttachment.data);
-        console.log("[sharepoint] PDF uploaded:", oneDriveUrl);
-      } catch (err) {
-        console.warn("[sharepoint] PDF upload failed:", err.message);
-        warnings.push({ tag: "PDF upload failed", detail: err.message });
-      }
-    }
-    if (imageAttachments.length > 0) {
-      const photoResults = await Promise.all(
-        imageAttachments.map(async img => {
-          try {
-            const item = await uploadPhotoToOneDrive(jobNumber, img.name, img.data, img.contentType);
-            console.log("[sharepoint] Photo uploaded:", img.name);
-            return { name: img.name, webUrl: item.webUrl };
-          } catch (err) {
-            console.warn("[sharepoint] Photo upload failed:", img.name, err.message);
-            warnings.push({ tag: "Photo upload failed", detail: `${img.name}: ${err.message}` });
-            return null;
-          }
-        })
-      );
-      photos.push(...photoResults.filter(Boolean));
-    }
+  // Put the work order on the job the way AroFlo itself would: the original email is
+  // forwarded to the task's own inbound address (AroFlo files it, attachments and all, as
+  // an email on the job), and the PDF plus any real photos go to Documents & Photos via v2.
+  // The job already exists by now, so nothing here may throw — every failure is a warning
+  // on the alert email and the office fixes it by hand.
+  if (confirmedTaskId && jobNumber !== "(see Aroflo)") {
+    await attachWorkOrderToJob(jobNumber, pdfAttachment, imageAttachments, emailMeta, warnings);
   }
 
   // Post the original email as a note and set the substatus in one combined task
   // update (Aroflo doesn't apply substatus on create, so a follow-up write is
   // always needed — piggyback the note content on the same call).
   if (confirmedTaskId) {
-    let noteHtml = null;
-    if (rawEmail) {
-      try {
-        noteHtml = await emailHtmlForNote(rawEmail, oneDriveUrl, emailMeta);
-      } catch (err) {
-        const detail = `Email note not posted to job: ${err.message}`;
-        console.warn("[job]", detail);
-        warnings.push({ tag: "Note not posted", detail });
-      }
-    } else {
-      warnings.push({ tag: "Note not posted", detail: "No email content available — note not posted to job" });
-    }
-
     const today     = new Date();
     const dateStamp = `${today.getDate()}/${today.getMonth() + 1}`;
 
@@ -1324,29 +1368,18 @@ async function createArofloJob(result, rawEmail, pdfAttachment = null, emailMeta
       }
     }
 
-    // The photo folder link can only be known once photos are uploaded (which needs the
-    // jobNumber from creation), so it can't go in the description set at task creation —
-    // fold it into this same follow-up update instead of a separate note, which techs
-    // were prone to scroll past.
-    const photoLinkText = `VIEW ${photos.length} JOB PHOTO${photos.length === 1 ? "" : "S"}`;
-    const photoLinkHtml = photos.length > 0
-      ? `<p><span style="background:plum;font-weight:bold"><a href="${buildFolderUrl(photos[0].webUrl)}" target="_blank" rel="noopener noreferrer">${photoLinkText}</a></span></p>`
-      : null;
-
     const notesXml = [
-      noteHtml             ? `<note><content>${cdata(noteHtml)}</content></note>`             : "",
       additionalTenantNote ? `<note><content>${cdata(additionalTenantNote)}</content></note>` : "",
       vacantAccessNote     ? `<note><content>${cdata(vacantAccessNote)}</content></note>`     : "",
       vacateDateNote       ? `<note><content>${cdata(vacateDateNote)}</content></note>`       : "",
     ].join("");
 
-    if (notesXml || substatusId || photoLinkHtml) {
+    if (notesXml || substatusId) {
       const updateXml =
 `<tasks>
   <task>
     <taskid>${confirmedTaskId}</taskid>
     ${substatusId ? `<status>not started</status><substatus><substatusid>${substatusId}</substatusid></substatus>` : ""}
-    ${photoLinkHtml ? `<description>${cdata(buildDescription(result, photoLinkHtml, emailMeta?.airconUnitType))}</description>` : ""}
     ${notesXml ? `<notes>${notesXml}</notes>` : ""}
   </task>
 </tasks>`;
@@ -1378,11 +1411,9 @@ async function createArofloJob(result, rawEmail, pdfAttachment = null, emailMeta
       }
 
       if (applied) {
-        console.log("[job] Task update applied — note:", !!noteHtml, "additional tenant note:", !!additionalTenantNote, "vacant access note:", !!vacantAccessNote, "vacate date note:", !!vacateDateNote, "photo link:", !!photoLinkHtml, "substatus:", substatusId || "n/a");
+        console.log("[job] Task update applied — additional tenant note:", !!additionalTenantNote, "vacant access note:", !!vacantAccessNote, "vacate date note:", !!vacateDateNote, "substatus:", substatusId || "n/a");
       } else if (lastErr) {
         console.warn("[job] Combined task update failed after retry:", lastErr.message);
-        if (noteHtml) warnings.push({ tag: "Note not posted", detail: `Email note not posted to job: ${lastErr.message}` });
-        if (photoLinkHtml) warnings.push({ tag: "Photo link not added", detail: `Description not updated with photo link: ${lastErr.message}` });
         if (substatusId) warnings.push({ tag: "Substatus failed", detail: `Substatus not applied: ${lastErr.message}` });
       } else {
         const errArr  = toArray(lastUpPr?.errors);
@@ -1390,14 +1421,12 @@ async function createArofloJob(result, rawEmail, pdfAttachment = null, emailMeta
           ? errArr.map(e => e.detail || e.message || JSON.stringify(e)).join("; ")
           : `Combined task update did not apply after retry — Aroflo response: ${JSON.stringify(lastUpPr)}`;
         console.warn("[job] Combined task update did not apply after retry:", detail);
-        if (noteHtml) warnings.push({ tag: "Note not posted", detail });
-        if (photoLinkHtml) warnings.push({ tag: "Photo link not added", detail });
         if (substatusId) warnings.push({ tag: "Substatus failed", detail });
       }
     }
   }
 
-  return { jobNumber, warnings };
+  return { jobNumber, jobUrl, checks, warnings };
 }
 
 // ================================================================
@@ -1570,128 +1599,52 @@ function cleanHtml(html) {
     .trim();
 }
 
-// Decode SafeLinks/Inky wrapped URLs. Inky requires following the redirect.
-async function decodeWrappedLinks(html) {
-  const matches = [...html.matchAll(/href="([^"]+)"/gi)];
-  const unique  = [...new Set(matches.map(m => m[1]))];
-  const map     = {};
+const officeSession = createOfficeSession();
 
-  await Promise.all(unique.map(async href => {
-    const decoded = href.replace(/&amp;/g, "&");
-    try {
-      if (/safelinks\.protection\.outlook\.com/i.test(decoded)) {
-        const url = new URL(decoded).searchParams.get("url");
-        if (url) map[href] = decodeURIComponent(url);
-      } else if (/shared\.outlook\.inky\.com/i.test(decoded)) {
-        const res = await fetch(decoded.includes("confirm=True") ? decoded : decoded + "&confirm=True", {
-          redirect: "follow",
-          headers: { "User-Agent": "Mozilla/5.0" },
-        });
-        map[href] = res.url;
-      }
-    } catch { /* leave as-is */ }
-  }));
-
-  return html.replace(/href="([^"]+)"/gi, (match, href) =>
-    map[href] ? `href="${map[href]}"` : match
-  );
-}
-
-// Strip scripts/styles/tracking pixels but keep HTML structure for display in Aroflo notes
-async function emailHtmlForNote(html, oneDriveUrl = null, emailMeta = null) {
-  let cleaned = html
-    .replace(/<script[\s\S]*?<\/script>/gi, "")
-    .replace(/<style[\s\S]*?<\/style>/gi, "")
-    .replace(/<img[^>]*>/gi, "")
-    .trim();
-
-  // Remove Inky security banner — strip from start of HTML up to and including the
-  // ipw-end anchor (raw email uses "ipw-end-*", Outlook renderer prefixes it "x_ipw-end-*")
-  cleaned = cleaned.replace(/[\s\S]*?<a\b[^>]*name="(?:x_)?ipw-end-\d+"[^>]*><\/a>(?:\s*<\/\w+>)*/i, "");
-
-  cleaned = await decodeWrappedLinks(cleaned);
-
-  const cell = (label, value) =>
-    `<tr><td style="border:none;color:#888888;font-size:12px;font-weight:bold;padding:1px 12px 1px 0;white-space:nowrap;vertical-align:top">${label}</td><td style="border:none;color:#444444;font-size:12px;padding:1px 0">${value}</td></tr>`;
-
-  const metaRows = [
-    emailMeta?.from    ? cell("From:",       escapeHtml(emailMeta.from))    : "",
-    emailMeta?.to      ? cell("To:",         escapeHtml(emailMeta.to))      : "",
-    emailMeta?.subject ? cell("Subject:",    escapeHtml(emailMeta.subject)) : "",
-    oneDriveUrl        ? cell("Attachment:", `<a href="${oneDriveUrl}" style="color:#1a6bbf" target="_blank">View Work Order PDF</a>`) : "",
-  ].filter(Boolean).join("");
-
-  const titleRow = `<tr><td colspan="2" style="border:none;font-size:16px;font-weight:bold;color:#444444;padding:0 0 5px 0">Work Order</td></tr>`;
-  const metaHtml = `<table style="border-collapse:collapse;margin:0 0 12px 0">${titleRow}${metaRows}</table>`;
-
-  return `${metaHtml}<hr style="border:none;border-top:1px solid #dddddd;margin:0 0 14px 0"><div>${cleaned}</div>`;
-}
-
-// A plain driveItem webUrl opens the file in isolation with no folder context — no gallery
-// navigation. Browsing to the parent folder and clicking a photo from there does give
-// SharePoint's native arrow navigation between sibling files (confirmed manually), so every
-// thumbnail links to the shared folder rather than a single-file deep link.
-function buildFolderUrl(webUrl) {
-  const u = new URL(webUrl);
-  return u.origin + u.pathname.slice(0, u.pathname.lastIndexOf("/"));
-}
-
-// Cached drive ID for the Bara Electrical Services SharePoint document library
-let sharepointDriveId = null;
-
-async function getSharepointDriveId() {
-  if (sharepointDriveId) return sharepointDriveId;
-  const siteRes  = await graphFetch(`/sites/baraelectrical.sharepoint.com:/sites/BaraElectricalServices`);
-  const site     = await siteRes.json();
-  const drivesRes = await graphFetch(`/sites/${site.id}/drives`);
-  const drives   = await drivesRes.json();
-  const drive    = (drives.value || []).find(d => d.name === "Documents" || d.name === "Shared Documents");
-  if (!drive) throw new Error("SharePoint Documents drive not found");
-  sharepointDriveId = drive.id;
-  return sharepointDriveId;
-}
-
-async function uploadWorkOrderToOneDrive(jobNumber, filename, contentBytes, contentType = "application/pdf") {
-  const safeName = filename.replace(/#/g, "").trim();
-  const itemPath = ["General", "Other", "AI Workorders [dont touch]", `${jobNumber} - ${safeName}`]
-    .map(s => encodeURIComponent(s)).join("/");
-  const uploadData = await putSharepointFile(itemPath, contentBytes, contentType);
-  return uploadData.webUrl || null;
-}
-
-// Photos go in a per-job subfolder (rather than the flat filename-prefixed layout used for
-// the PDF) so that opening any one of them from the note still gives SharePoint's native
-// gallery view — arrow through the rest of the job's photos — instead of a dead-end preview.
-async function uploadPhotoToOneDrive(jobNumber, filename, contentBytes, contentType) {
-  const safeName = filename.replace(/#/g, "").trim();
-  const itemPath = ["General", "Other", "AI Workorders [dont touch]", jobNumber, safeName]
-    .map(s => encodeURIComponent(s)).join("/");
-  const uploadData = await putSharepointFile(itemPath, contentBytes, contentType);
-  return { id: uploadData.id, webUrl: uploadData.webUrl };
-}
-
-async function putSharepointFile(itemPath, contentBytes, contentType) {
-  const driveId = await getSharepointDriveId();
-
-  const ac = new AbortController();
-  const timer = setTimeout(() => ac.abort(), 20000);
-
+// Forward the original email to the job's inbound address and upload its files via v2.
+// Warnings, never throws: by the time this runs the job exists and its number is known.
+async function attachWorkOrderToJob(jobNumber, pdfAttachment, imageAttachments, emailMeta, warnings) {
+  let v2TaskId = null;
   try {
-    const uploadRes = await graphFetch(`/drives/${driveId}/root:/${itemPath}:/content`, {
-      method: "PUT",
-      headers: { "Content-Type": contentType },
-      body: contentBytes,
-      signal: ac.signal,
-    });
-    if (!uploadRes.ok) {
-      const err = await uploadRes.json().catch(() => ({}));
-      throw new Error(`SharePoint upload failed ${uploadRes.status}: ${err?.error?.message || JSON.stringify(err)}`);
+    v2TaskId = await findTaskIdByJobNumber(jobNumber);
+    if (!v2TaskId) throw new Error(`job ${jobNumber} not found in the v2 task list`);
+  } catch (err) {
+    console.warn("[v2] Could not resolve v2 task id:", err.message);
+    warnings.push({ tag: "Email not sent to job", detail: `v2 task id lookup failed, so neither the email nor the files reached the job: ${err.message}` });
+    return;
+  }
+
+  if (emailMeta?.messageId && emailMeta?.mailbox) {
+    try {
+      const address = await ensureTaskEmail(v2TaskId, officeSession);
+      await graphFetch(`/users/${emailMeta.mailbox}/messages/${emailMeta.messageId}/forward`, {
+        method: "POST",
+        body: JSON.stringify({ comment: "", toRecipients: [{ emailAddress: { address } }] }),
+      });
+      console.log("[job] Work order email forwarded to", address);
+    } catch (err) {
+      console.warn("[job] Email not sent to job:", err.message);
+      warnings.push({ tag: "Email not sent to job", detail: err.message });
     }
-    return await uploadRes.json();
-  } finally {
-    clearTimeout(timer);
+  } else {
+    warnings.push({ tag: "Email not sent to job", detail: "No source message to forward" });
+  }
+
+  const files = [
+    ...(pdfAttachment ? [{ filename: pdfAttachment.name, bytes: pdfAttachment.data, comment: "Work order" }] : []),
+    ...imageAttachments.map(img => ({ filename: img.name, bytes: img.data, comment: "Work order photo" })),
+  ];
+  for (const file of files) {
+    try {
+      await uploadTaskDocument(v2TaskId, file);
+      console.log("[v2] Uploaded", file.filename);
+    } catch (err) {
+      console.warn("[v2] Upload failed:", file.filename, err.message);
+      warnings.push({ tag: "File not uploaded", detail: `${file.filename}: ${err.message}` });
+    }
   }
 }
+
 
 // Known work order portal domains
 const WORKORDER_DOMAINS = /tapihq\.com|propertytree\.com|propertyme\.com\.au|console\.net\.au|inspection\.express|ailo\.io/i;
@@ -1964,11 +1917,12 @@ async function processMessage(message, mailbox = WORKORDERS_EMAIL, onStatus = nu
     pdfImages = images;
   }
 
-  // Neither a link nor an attachment on this message — it may be a reply further down
-  // a thread (e.g. discussing scope changes) whose original work order PDF is on an
-  // earlier message in the same conversation. Pull that in rather than extracting from
-  // the bare reply text alone.
-  if (!workOrderLink && !workorderAttachment && message.conversationId) {
+  // No PDF yet — it may be a reply further down a thread (e.g. discussing scope changes)
+  // whose original work order PDF is on an earlier message in the same conversation. Pull
+  // that in rather than extracting from the bare reply text alone. Checked on pdfAttachment,
+  // not on whether a link was present: a reply that quotes a Bricks+Agent link whose page
+  // has since gone (404) still has its PDF, and its photos, back up the thread.
+  if (!pdfAttachment && message.conversationId) {
     const threadPdf = await findThreadWorkOrderPdf(mailbox, message.conversationId, message.id);
     if (threadPdf) {
       pdfAttachment = { name: threadPdf.name, data: new Uint8Array(threadPdf.data) };
@@ -2125,6 +2079,11 @@ Return ONLY valid JSON with these exact keys:
   const substatusTagId = Object.entries(SUBSTATUS_TAG_MAP).find(([tag]) => categoriesLower.has(tag))?.[1] || null;
 
   const emailMeta = {
+    messageId: message.id,
+    conversationId: message.conversationId || null,
+    mailbox,
+    // The gate reads "Gate Test" / "Gate: Continue" off the email itself.
+    categories: message.categories || [],
     from:    message.from?.emailAddress?.address || null,
     to:      (message.toRecipients || []).map(r => r.emailAddress?.address).filter(Boolean).join(", ") || null,
     subject: message.subject || null,
@@ -2210,6 +2169,28 @@ async function setJobStatus(mailbox, messageId, currentCategories, newStatus) {
   return updated;
 }
 
+// Fire-and-forget: the failure is already tagged on the email and in the alert path; the
+// dashboard copy is only so the plugin can show it under the subject.
+function recordGateFailure(message, err) {
+  // The plugin shows this line to the office, so say what to do, not just what broke.
+  const msg = err.message || String(err);
+  let tag = "Failed", detail = msg;
+  if (msg.startsWith("Client not found")) {
+    tag = "Client not found";
+    detail = `${msg}. Add the agency to the client map (or create the client in AroFlo), then remove the "Client not found" tag on the email to retry.`;
+  } else if (msg.startsWith("No address found")) {
+    tag = "No address";
+    detail = `No property address could be read from the email or its PDF. Add it to the email, then remove the "No address" tag to retry.`;
+  } else {
+    detail = `${msg}. Remove the "Failed" tag on the email to retry.`;
+  }
+  upsertGateRecord({
+    messageId: message.id, conversationId: message.conversationId || null,
+    subject: message.subject || null, fromAddress: message.from?.emailAddress?.address || null,
+    status: "FAILED", warnings: [{ tag, detail }],
+  }).catch(e => console.warn("[gate] record FAILED:", e.message));
+}
+
 // Look for a sibling message already tagged "Job created - X" or "Existing job - X"
 // elsewhere in the same reply thread — replies to an already-processed work
 // order get their own "Bara AI" tag but shouldn't trigger their own job.
@@ -2238,7 +2219,11 @@ async function findJobTagInThread(mailbox, conversationId, excludeMessageId) {
     }
     for (const m of (data.value || [])) {
       if (m.id === excludeMessageId) continue;
-      const tag = (m.categories || []).find(c => c.startsWith("Job created") || c.startsWith("Existing job"));
+      // A held or stopped sibling counts as thread state too: while one message of a thread
+      // waits on the plugin, no other message of it may become a job of its own.
+      const tag = (m.categories || []).find(c =>
+        c.startsWith("Job created") || c.startsWith("Existing job") || c === NEEDS_DECISION_CATEGORY || c === STOPPED_CATEGORY
+      );
       if (tag) return tag;
     }
     return null;
@@ -2293,13 +2278,53 @@ async function tagWholeConversation(mailbox, conversationId, excludeMessageId, t
   }
 }
 
+// Decisions made in the plugin reach the poller through the dashboard: a CONTINUED record
+// swaps the email's "Needs Decision" for "Gate: Continue", which puts it back in the
+// candidate query on this same tick with the gate disarmed; a STOPPED record swaps it for
+// "Stopped", which keeps it out for good. The dashboard already holds the final status for
+// both, so nothing is written back. Best effort: a failure here just delays the decision to
+// the next tick.
+async function applyGateDecisions(mailbox) {
+  for (const [status, category] of [["CONTINUED", GATE_CONTINUE_CATEGORY], ["STOPPED", STOPPED_CATEGORY]]) {
+    let records;
+    try {
+      records = await pendingDecisions(status);
+    } catch (err) {
+      console.warn(`[gate] Could not fetch ${status} decisions:`, err.message);
+      continue;
+    }
+    for (const record of records) {
+      try {
+        const res = await graphFetch(`/users/${mailbox}/messages/${record.messageId}?$select=id,categories`);
+        if (!res.ok) throw new Error(`Graph ${res.status}`);
+        const current = (await res.json()).categories || [];
+        // Re-reading the categories rather than trusting the poller's last write: an admin
+        // may have tagged the email while it sat waiting.
+        const categories = [...current.filter(c => c !== NEEDS_DECISION_CATEGORY && c !== category), category];
+        await graphFetch(`/users/${mailbox}/messages/${record.messageId}`, { method: "PATCH", body: JSON.stringify({ categories }) });
+        // Tell the dashboard the email is re-tagged, or this row comes back every tick.
+        await upsertGateRecord({ messageId: record.messageId, applied: true });
+        // record.decision is the answer id from the prompt (gate.js duplicatePrompt); today
+        // every answer maps to one of these two statuses, so it is logged, not branched on.
+        console.log(`[gate] ${status} (${record.decision ?? "?"} by ${record.decidedBy ?? "?"}): "${record.subject ?? record.messageId}" → "${category}"`);
+      } catch (err) {
+        console.warn(`[gate] Could not apply ${status} to ${record.messageId}:`, err.message);
+      }
+    }
+  }
+}
+
 async function pollInbox(mailbox) {
+  await applyGateDecisions(mailbox);
+
   const filter = encodeURIComponent(
     `categories/any(c:c eq '${TRIGGER_CATEGORY}')` +
     ` and not categories/any(c:c eq '${CLIENT_NOT_FOUND_CATEGORY}')` +
     ` and not categories/any(c:c eq '${NO_ADDRESS_CATEGORY}')` +
     ` and not categories/any(c:c eq '${PROCESSING_CATEGORY}')` +
     ` and not categories/any(c:c eq '${FAILED_CATEGORY}')` +
+    ` and not categories/any(c:c eq '${NEEDS_DECISION_CATEGORY}')` +
+    ` and not categories/any(c:c eq '${STOPPED_CATEGORY}')` +
     ` and not categories/any(c:c eq '${READING_EMAIL_CATEGORY}')` +
     ` and not categories/any(c:c eq '${SENDING_TO_AI_CATEGORY}')` +
     ` and not categories/any(c:c eq '${CREATING_JOB_CATEGORY}')`
@@ -2331,7 +2356,7 @@ async function pollInbox(mailbox) {
   // picked up individually on a later poll).
   const byConversation = new Map();
   for (const m of data.value || []) {
-    if (m.categories.some(c => c.startsWith("Job created"))) continue;
+    if ((m.categories || []).some(c => c.startsWith("Job created"))) continue;
     const key = m.conversationId || m.id;
     if (!byConversation.has(key)) byConversation.set(key, []);
     byConversation.get(key).push(m);
@@ -2353,6 +2378,14 @@ async function pollInbox(mailbox) {
       // message untagged and let the next poll retry. A few minutes' delay is a far
       // cheaper failure than a duplicate job somebody has to find and delete.
       console.warn("[poll] Skipping until thread state is known:", message.subject);
+      continue;
+    }
+    if (siblingTag === NEEDS_DECISION_CATEGORY || siblingTag === STOPPED_CATEGORY) {
+      // The thread is parked on a decision (or was stopped). This message inherits that
+      // state and stays out of the candidate query until the decision lands; the sweep
+      // after job creation clears it along with the other status categories.
+      console.log(`[poll] Thread is "${siblingTag}" — marking this message the same, no job:`, message.subject);
+      await setJobStatus(mailbox, message.id, message.categories, siblingTag);
       continue;
     }
     if (siblingTag) {
@@ -2397,14 +2430,10 @@ async function pollInbox(mailbox) {
     if (outcome.status === "rejected") {
       const err = outcome.reason;
       console.error("[poll] Error processing message:", message.subject, err.message);
+      recordGateFailure(message, err);
       if (err.message.startsWith("Client not found")) {
         await setJobStatus(mailbox, message.id, message.categories, CLIENT_NOT_FOUND_CATEGORY);
         console.log("[poll] Tagged as client not found:", message.subject);
-        await sendAlertEmail(
-          `Action required — client not found: "${message.subject}"`,
-          `<p style="font-family:sans-serif;font-size:14px">Couldn't match this email to an Aroflo client.</p><p style="font-family:sans-serif;font-size:14px">${escapeHtml(err.message)}</p><p style="font-family:sans-serif;font-size:12px;color:#888">Add a mapping in CLIENT_NAME_MAP or EMAIL_DOMAIN_MAP, then remove the "Client not found" category on the email to retry.</p>`,
-          "client not found"
-        );
       } else if (err.message.startsWith("No address found")) {
         await setJobStatus(mailbox, message.id, message.categories, NO_ADDRESS_CATEGORY);
         console.log("[poll] Tagged as no address:", message.subject);
@@ -2430,20 +2459,22 @@ async function pollInbox(mailbox) {
       }
 
       currentCategories = await setJobStatus(mailbox, message.id, currentCategories, CREATING_JOB_CATEGORY);
-      const { jobNumber, warnings: jobWarnings } = await createArofloJob(result, rawEmail, pdfAttachment, emailMeta, imageAttachments);
+      const { jobNumber, jobUrl, checks, warnings: jobWarnings } = await createArofloJob(result, rawEmail, pdfAttachment, emailMeta, imageAttachments);
       logAiOutput(result, message.subject).catch(err => console.warn("[airtable] logAiOutput:", err.message));
       logActivity("Job created", jobNumber).catch(err => console.warn("[airtable] logActivity:", err.message));
       const allWarnings = [...preWarnings, ...jobWarnings];
+      // jobUrl rides inside checks: the record's Json column already exists and the plugin
+      // reads checks.jobUrl, so no dashboard migration is needed for one link.
+      upsertGateRecord({ messageId: message.id, status: "CREATED", jobNumber, checks: { ...checks, jobUrl }, warnings: allWarnings })
+        .catch(err => console.warn("[gate] record CREATED:", err.message));
 
-      // Always apply job tag to prevent re-processing; add a specific tag for each distinct
-      // failure type (multiple failures of the same kind — e.g. several failed photo
-      // uploads — share one tag rather than repeating it).
+      // Always apply the job tag to prevent re-processing. Warnings are NOT tagged on the
+      // email any more: they go on the dashboard record (above) with their explanation, and
+      // the plugin lists them under the subject, which is where the office actually reads.
       const jobTag = `Job created - ${jobNumber}`;
-      const warningTags = [...new Set(allWarnings.map(w => w.tag))];
       const finalCategories = [
         ...currentCategories.filter(c => !STATUS_CATEGORIES.includes(c)),
         jobTag,
-        ...warningTags,
       ];
       await graphFetch(`/users/${mailbox}/messages/${message.id}`, {
         method: "PATCH",
@@ -2452,27 +2483,23 @@ async function pollInbox(mailbox) {
       tagWholeConversation(mailbox, message.conversationId, message.id, jobTag)
         .catch(err => console.warn("[poll] tagWholeConversation:", err.message));
 
-      if (allWarnings.length > 0) {
-        console.warn("[job] Created with issues:", allWarnings.map(w => w.tag));
-        const warningLines = allWarnings.map(w => `<li style="margin:4px 0;font-family:sans-serif;font-size:14px"><strong>${escapeHtml(w.tag)}:</strong> ${escapeHtml(w.detail)}</li>`).join("");
-        await sendAlertEmail(
-          `Action required — Job ${jobNumber} created with issues`,
-          `<p style="font-family:sans-serif;font-size:14px">Job <strong>${escapeHtml(jobNumber)}</strong> was created in Aroflo but the following need attention:</p><ul>${warningLines}</ul><p style="font-family:sans-serif;font-size:12px;color:#888">Original email: ${escapeHtml(message.subject)}</p>`,
-          `job ${jobNumber}`
-        );
-      } else {
-        console.log("[poll] Tagged as done:", message.subject);
-      }
+      // Issues are on the dashboard record for the plugin to show; no alert email.
+      if (allWarnings.length > 0) console.warn("[job] Created with issues:", allWarnings.map(w => w.tag));
+      else console.log("[poll] Tagged as done:", message.subject);
     } catch (err) {
+      if (err instanceof GateHold) {
+        // Not a failure: the email waits for Continue/Stop from the plugin. The dashboard
+        // record already says NEEDS_DECISION, and the plugin is where the office sees it,
+        // so no alert email.
+        await setJobStatus(mailbox, message.id, currentCategories, NEEDS_DECISION_CATEGORY);
+        console.log("[poll] Held for decision:", message.subject, "—", err.message);
+        continue;
+      }
       console.error("[poll] Error processing message:", message.subject, err.message);
+      recordGateFailure(message, err);
       if (err.message.startsWith("Client not found")) {
         await setJobStatus(mailbox, message.id, currentCategories, CLIENT_NOT_FOUND_CATEGORY);
         console.log("[poll] Tagged as client not found:", message.subject);
-        await sendAlertEmail(
-          `Action required — client not found: "${message.subject}"`,
-          `<p style="font-family:sans-serif;font-size:14px">Couldn't match this email to an Aroflo client.</p><p style="font-family:sans-serif;font-size:14px">${escapeHtml(err.message)}</p><p style="font-family:sans-serif;font-size:12px;color:#888">Add a mapping in CLIENT_NAME_MAP or EMAIL_DOMAIN_MAP, then remove the "Client not found" category on the email to retry.</p>`,
-          "client not found"
-        );
       } else if (err.message.startsWith("No address found")) {
         await setJobStatus(mailbox, message.id, currentCategories, NO_ADDRESS_CATEGORY);
         console.log("[poll] Tagged as no address:", message.subject);
@@ -2526,6 +2553,20 @@ app.get("/find-client", requireApiKey, async (req, res) => {
     .filter(c => c.clientname.toLowerCase().includes(key) || key.includes(c.clientname.toLowerCase()))
     .map(c => c.clientname);
   res.json({ result, exactCacheHit: exactCacheHit?.clientname || null, partialMatches });
+});
+
+// ================================================================
+// GATE NUDGE — the dashboard calls this the moment someone answers in the plugin, so the
+// poller runs now rather than at its next 2.5-minute tick. Bearer is the dashboard secret,
+// which both sides already hold. Best effort on the dashboard's side: a missed nudge only
+// means the next tick picks the decision up.
+// ================================================================
+app.post("/gate/decided", (req, res) => {
+  const expected = process.env.DASHBOARD_API_SECRET;
+  if (!expected || req.headers.authorization !== `Bearer ${expected}`) return res.sendStatus(401);
+  res.sendStatus(202);
+  console.log("[gate] Nudged by the dashboard — polling now");
+  pollEmails();
 });
 
 // ================================================================

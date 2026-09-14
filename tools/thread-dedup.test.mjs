@@ -15,7 +15,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
-const src = fs.readFileSync(path.join(here, "..", "index.js"), "utf8");
+const src = fs.readFileSync(path.join(here, "..", "index.js"), "utf8").replace(/\r\n/g, "\n"); // a Windows checkout has CRLF; the markers below are LF
 
 function grab(startMarker, endMarker) {
   const i = src.indexOf(startMarker);
@@ -36,6 +36,8 @@ const statusCatsSrc = grab("const TRIGGER_CATEGORY", "];");
 // real function sees it.
 function build(graphFetch) {
   return new Function("graphFetch", "console", `
+    // Imported from gate.js in index.js; the function under test only compares against them.
+    const NEEDS_DECISION_CATEGORY = "Needs Decision", STOPPED_CATEGORY = "Stopped";
     ${sentinelSrc}
     ${fnSrc}
     return { findJobTagInThread, THREAD_LOOKUP_FAILED };
@@ -76,6 +78,16 @@ const CASES = [
     name: "sibling tagged Existing job — also counts as already handled",
     graphFetch: ok([{ id: "other", categories: ["Existing job - 106941"] }]),
     expect: (r, S) => r === "Existing job - 106941",
+  },
+  {
+    name: "a sibling held for a decision parks the thread — returns that category",
+    graphFetch: ok([{ id: "other", categories: ["Bara AI", "Needs Decision"] }]),
+    expect: (r, S) => r === "Needs Decision",
+  },
+  {
+    name: "a stopped sibling keeps the thread stopped",
+    graphFetch: ok([{ id: "other", categories: ["Bara AI", "Stopped"] }]),
+    expect: (r, S) => r === "Stopped",
   },
   {
     name: "genuinely untagged thread — returns null so a job IS created",
