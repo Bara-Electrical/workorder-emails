@@ -5,7 +5,6 @@ import * as pdfjsLib from "pdfjs-dist/legacy/build/pdf.mjs";
 import { createHmac } from "crypto";
 import { deflateSync } from "node:zlib";
 import { PACKAGE_TEMPLATES } from "./templates.js";
-import Airtable from "airtable";
 import { createOfficeSession, ensureTaskEmail, findTaskIdByJobNumber, uploadTaskDocument } from "./aroflo-office.js";
 
 // The office UI's job page, completed by the task's `webappEncodedID` token verbatim.
@@ -28,11 +27,28 @@ for (const key of REQUIRED_ENV) {
   }
 }
 
-let airtableBase = null;
-if (process.env.AIRTABLE_API_KEY && process.env.AIRTABLE_BASE_ID) {
-  airtableBase = new Airtable({ apiKey: process.env.AIRTABLE_API_KEY }).base(process.env.AIRTABLE_BASE_ID);
-} else {
-  console.warn("[startup] AIRTABLE_API_KEY or AIRTABLE_BASE_ID not set — activity and AI logging disabled");
+// Activity and AI logging go to the Bara dashboard, which owns both tables now. They were
+// Airtable tables in the "Bara AI" base until Sep 2026; Airtable is being decommissioned.
+//
+// Its own secret rather than DASHBOARD_API_SECRET, which this service already holds: that
+// one also opens /api/property-check and the work-order gate, and the other two services
+// being moved off Airtable (quote-follow-ups, annual-reminders) have no business holding a
+// key that reaches those. A log-writing key should write log lines and nothing else.
+const LOG_API = process.env.DASHBOARD_URL?.replace(/\/$/, "");
+if (!LOG_API || !process.env.LOG_API_SECRET) {
+  console.warn("[startup] DASHBOARD_URL or LOG_API_SECRET not set — activity and AI logging disabled");
+}
+
+// Fire-and-forget, exactly as the Airtable calls were: a log line that fails to write is a
+// line missing from a dashboard feed, and must never take down the run that produced it.
+async function postLog(path, body) {
+  if (!LOG_API || !process.env.LOG_API_SECRET) return;
+  const res = await fetch(`${LOG_API}${path}`, {
+    method: "POST",
+    headers: { Authorization: `Bearer ${process.env.LOG_API_SECRET}`, "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  if (!res.ok) throw new Error(`${res.status} ${(await res.text()).slice(0, 200)}`);
 }
 
 if (!process.env.ADMIN_API_KEY) {
@@ -916,40 +932,43 @@ async function findOrUpdateLocation(clientId, locations, address, tenantName, te
 }
 
 async function logActivity(action, jobNumber) {
-  if (!airtableBase) return;
   try {
-    await airtableBase("Activity Log").create([{
-      fields: { "Action": action, "Job number": jobNumber || null, "Department": "Admin" },
-    }]);
+    await postLog("/api/log/activity", {
+      action,
+      jobNumber: jobNumber || null,
+      department: "Admin",
+      // Airtable had no column for this and it was missed the first time a line looked
+      // wrong and nobody could tell which service wrote it.
+      source: "workorder-emails",
+    });
   } catch (err) {
-    console.warn("[airtable] Activity log failed:", err.message);
+    console.warn("[log] Activity log failed:", err.message);
   }
 }
 
 async function logAiOutput(result, emailSubject) {
-  if (!airtableBase) return;
   try {
-    await airtableBase("Work Order AI Log").create([{
-      fields: {
-        "Email Subject":     emailSubject || null,
-        "Task Type":         result["task-type"] || null,
-        "Package":           result["package"] || null,
-        "Address":           result["address"] || null,
-        "Real Estate":       result["real-estate"] || null,
-        "Property Manager":  result["property-manager"] || null,
-        "Tenant Name":       result["tenant-name"] || null,
-        "Tenant Contact":    result["tenant-contact"] || null,
-        "Order Number":      result["order-number"] || null,
-        "Account To":        result["account-to"] || null,
-        "Access Details":    result["access-details"] || null,
-        "Expenditure Limit": result["expenditure-limit"] || null,
-        "Task Description":  result["task-description"] || null,
-        "Confidence":        result["confidence"] != null ? Number(result["confidence"]) : null,
-        "AI Notes":          result["notes"] || null,
-      },
-    }]);
+    // camelCase keys now, where Airtable wanted its column names verbatim. The values are
+    // untouched — same fields, same order, same nulls.
+    await postLog("/api/log/work-order", {
+      emailSubject:     emailSubject || null,
+      taskType:         result["task-type"] || null,
+      package:          result["package"] || null,
+      address:          result["address"] || null,
+      realEstate:       result["real-estate"] || null,
+      propertyManager:  result["property-manager"] || null,
+      tenantName:       result["tenant-name"] || null,
+      tenantContact:    result["tenant-contact"] || null,
+      orderNumber:      result["order-number"] || null,
+      accountTo:        result["account-to"] || null,
+      accessDetails:    result["access-details"] || null,
+      expenditureLimit: result["expenditure-limit"] || null,
+      taskDescription:  result["task-description"] || null,
+      confidence:       result["confidence"] != null ? Number(result["confidence"]) : null,
+      aiNotes:          result["notes"] || null,
+    });
   } catch (err) {
-    console.warn("[airtable] AI log failed:", err.message);
+    console.warn("[log] AI log failed:", err.message);
   }
 }
 
@@ -957,7 +976,7 @@ async function logAiOutput(result, emailSubject) {
 // gate codes, and swipe cards aren't actionable on the job (keys are already held
 // by us, gate/swipe access is arranged separately) — so only lockbox info surfaces
 // in the visible task description; the full access-details string is still logged
-// to Airtable for record-keeping.
+// to the work-order AI log for record-keeping.
 function extractLockboxDetails(accessDetails) {
   if (!accessDetails) return null;
   const lockboxParts = accessDetails.split(",").map(s => s.trim()).filter(s => /lockbox/i.test(s));
@@ -2465,8 +2484,8 @@ async function pollInbox(mailbox) {
 
       currentCategories = await setJobStatus(mailbox, message.id, currentCategories, CREATING_JOB_CATEGORY);
       const { jobNumber, jobUrl, checks, warnings: jobWarnings } = await createArofloJob(result, rawEmail, pdfAttachment, emailMeta, imageAttachments);
-      logAiOutput(result, message.subject).catch(err => console.warn("[airtable] logAiOutput:", err.message));
-      logActivity("Job created", jobNumber).catch(err => console.warn("[airtable] logActivity:", err.message));
+      logAiOutput(result, message.subject).catch(err => console.warn("[log] logAiOutput:", err.message));
+      logActivity("Job created", jobNumber).catch(err => console.warn("[log] logActivity:", err.message));
       const allWarnings = [...preWarnings, ...jobWarnings];
       // jobUrl rides inside checks: the record's Json column already exists and the plugin
       // reads checks.jobUrl, so no dashboard migration is needed for one link.
