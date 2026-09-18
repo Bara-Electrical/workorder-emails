@@ -6,7 +6,6 @@ import { createHmac } from "crypto";
 import { deflateSync } from "node:zlib";
 import { PACKAGE_TEMPLATES } from "./templates.js";
 import { createOfficeSession, ensureTaskEmail, findTaskIdByJobNumber, uploadTaskDocument } from "./aroflo-office.js";
-import { runAirtableBackfill } from "./backfill-airtable.js";
 
 // The office UI's job page, completed by the task's `webappEncodedID` token verbatim.
 const OFFICE_TASK_URL = "https://office.aroflo.com/ims/Site/Service/workrequest/index.cfm?viewonly=1&viewexist=1&wrCoded=";
@@ -2634,15 +2633,6 @@ app.listen(process.env.PORT || 3000, async () => {
   // falls back to a less reliable single-candidate live API lookup.
   await loadClientCache();
   scheduleClientCacheRefresh();
-
-  // ONE-OFF: copies the ex-Airtable tables into the dashboard's Postgres, then verifies the
-  // copy field by field. This service is the only place that holds both an Airtable key and
-  // a route to the dashboard, which is why the migration runs from here. The flag is set on
-  // Railway for one deploy and removed afterwards; without it nothing happens at all.
-  // Delete this block and backfill-airtable.js once Airtable is gone.
-  if (process.env.AIRTABLE_BACKFILL) {
-    runAirtableBackfill().catch((err) => console.error("[backfill] failed:", err));
-  }
 
   pollEmails();
   setInterval(pollEmails, POLL_INTERVAL_MS);
