@@ -2333,6 +2333,74 @@ async function applyGateDecisions(mailbox) {
   }
 }
 
+// The whole inbox is the window, and 200 is far beyond what it ever holds — the office keeps
+// it to a couple of dozen. It is a bound so a runaway inbox can't make one poll unbounded,
+// not a target.
+const POLL_WINDOW     = 200;
+// How many work orders one tick will actually process. Phase 2 runs these concurrently
+// through the AI, so this bounds cost and concurrency per tick, not what the poll can SEE.
+// Anything above it waits for the next tick, which is 2.5 minutes away.
+const POLL_BATCH_SIZE = 10;
+
+// The candidate query for one poll: ids and categories for the whole inbox, deliberately
+// without the body or the attachment list.
+//
+// $orderby=receivedDateTime asc is required, not just a nicety — without it Graph's default
+// order is newest-first, so when more work is eligible than one tick processes, the oldest
+// are bumped by newer arrivals on every cycle and are never processed at all (confirmed
+// live: three work orders from a 2026-08-06 batch sat untouched for 3+ hours this way,
+// starved out rather than failing loudly). Oldest-first guarantees the backlog drains.
+//
+// The window has to span the whole inbox, and that is the part that was missing. The job tag
+// carries the job number, so there is no constant value for the $filter to exclude and no
+// startswith inside a collection lambda to do it with: an already-created email still
+// matches the query and has to be dropped below. With a small window that made it a problem
+// for the window rather than the result — a window's worth of already-created work orders
+// filled it completely, and oldest-first meant genuinely new mail sat behind that wall for
+// good while the poll reported "0 conversation(s) found". Confirmed live 2026-09-21: eight
+// created Bourkes work orders stayed in the inbox, and from 02:19 every poll found nothing
+// while four newer work orders waited behind them.
+//
+// Asking for the whole inbox is only affordable because this pass is metadata: the bodies
+// and attachments — by far the bulk of a work-order email — are fetched per candidate in
+// fetchFullMessage below, so nothing heavy is ever pulled for an email that gets dropped.
+// That makes this cheaper than the ten-message page it replaces, not more expensive.
+async function fetchPollCandidates(mailbox, filter) {
+  const res = await graphFetch(
+    `/users/${mailbox}/mailFolders/inbox/messages` +
+    `?$filter=${filter}` +
+    `&$select=id,subject,categories,conversationId,receivedDateTime` +
+    `&$orderby=receivedDateTime asc` +
+    `&$top=${POLL_WINDOW}`
+  );
+  const data = await res.json();
+  if (!res.ok) throw new Error(`Graph API error ${res.status}: ${JSON.stringify(data?.error || data)}`);
+
+  const messages = [];
+  let   skipped  = 0;
+  for (const m of data.value || []) {
+    // Already created. Counted rather than dropped in silence, because the silence is what
+    // made the starvation above invisible for as long as it was.
+    if ((m.categories || []).some(c => c.startsWith("Job created"))) { skipped++; continue; }
+    messages.push(m);
+  }
+  return { messages, skipped };
+}
+
+// The body and the attachment list for one candidate, fetched only once it is going to be
+// processed. Same $select/$expand the candidate query used to carry for every message in the
+// window, now paid for per work order actually being turned into a job.
+async function fetchFullMessage(mailbox, messageId) {
+  const res = await graphFetch(
+    `/users/${mailbox}/messages/${messageId}` +
+    `?$select=id,subject,body,categories,from,toRecipients,conversationId,receivedDateTime` +
+    `&$expand=attachments($select=id,name,contentType,size)`
+  );
+  const data = await res.json();
+  if (!res.ok) throw new Error(`Graph API error ${res.status}: ${JSON.stringify(data?.error || data)}`);
+  return data;
+}
+
 async function pollInbox(mailbox) {
   await applyGateDecisions(mailbox);
 
@@ -2349,22 +2417,8 @@ async function pollInbox(mailbox) {
     ` and not categories/any(c:c eq '${CREATING_JOB_CATEGORY}')`
   );
 
-  // $orderby=receivedDateTime asc is required here, not just a nicety — without it Graph's
-  // default order is newest-first, so when more than $top=10 messages are eligible at once
-  // (e.g. a bulk work-order import), the oldest ones get bumped out of the window by newer
-  // arrivals on every single poll cycle and are never processed at all (confirmed live:
-  // three work orders from a 2026-08-06 batch sat untouched for 3+ hours this way, silently
-  // starved out rather than failing loudly). Oldest-first guarantees the backlog drains.
-  const res  = await graphFetch(
-    `/users/${mailbox}/mailFolders/inbox/messages` +
-    `?$filter=${filter}` +
-    `&$select=id,subject,body,categories,from,toRecipients,conversationId,receivedDateTime` +
-    `&$expand=attachments($select=id,name,contentType,size)` +
-    `&$orderby=receivedDateTime asc` +
-    `&$top=10`
-  );
-  const data = await res.json();
-  if (!res.ok) throw new Error(`Graph API error ${res.status}: ${JSON.stringify(data?.error || data)}`);
+  const { messages: eligible, skipped } = await fetchPollCandidates(mailbox, filter);
+  if (skipped) console.log(`[poll] Skipped ${skipped} already-created email(s) still in the inbox`);
 
   // Threads (jobs) are processed oldest-first, per admin's request, so job creation
   // follows the order work orders actually came in. Job creation is per-conversation, not
@@ -2374,8 +2428,7 @@ async function pollInbox(mailbox) {
   // get swept up by tagWholeConversation once the newest one creates a job (or, if it fails,
   // picked up individually on a later poll).
   const byConversation = new Map();
-  for (const m of data.value || []) {
-    if ((m.categories || []).some(c => c.startsWith("Job created"))) continue;
+  for (const m of eligible) {
     const key = m.conversationId || m.id;
     if (!byConversation.has(key)) byConversation.set(key, []);
     byConversation.get(key).push(m);
@@ -2425,7 +2478,25 @@ async function pollInbox(mailbox) {
     }
     const currentCategories = await setJobStatus(mailbox, message.id, message.categories, READING_EMAIL_CATEGORY);
     console.log("[poll] Reading:", message.subject);
-    candidates.push({ message, currentCategories });
+    // The candidate query carried metadata only; the body and attachments are fetched here,
+    // for this message alone, now that it is certain to be processed.
+    let full;
+    try {
+      full = await fetchFullMessage(mailbox, message.id);
+    } catch (err) {
+      // Leave it on "Reading email" and let the next tick retry rather than tagging a
+      // failure: nothing has been read yet, so there is nothing to report about the content.
+      console.warn("[poll] Could not read message body, retrying next tick:", message.subject, err.message);
+      continue;
+    }
+    candidates.push({ message: full, currentCategories });
+    if (candidates.length >= POLL_BATCH_SIZE) {
+      // Bounds the work of one tick, not what the poll can see. The rest keeps its place at
+      // the front of the oldest-first window and goes on the next tick.
+      const remaining = messages.length - (messages.indexOf(message) + 1);
+      if (remaining > 0) console.log(`[poll] Taking ${POLL_BATCH_SIZE} this tick — ${remaining} conversation(s) wait for the next`);
+      break;
+    }
   }
 
   // Phase 2 (expensive, parallel): AI extraction and attachment/link fetching have no shared
