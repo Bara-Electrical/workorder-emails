@@ -80,7 +80,7 @@ Optional:
 | `DASHBOARD_URL`, `DASHBOARD_API_SECRET` | the property check and gate records; without them jobs are created with a "Property check unavailable" warning |
 | `WORKORDER_GATE` | `off` / `tagged` / `on`, see above |
 | `ADMIN_API_KEY` | protects `/clients`, `/find-client`, `/aroflo-webhook`; unset means open |
-| `AIRTABLE_API_KEY`, `AIRTABLE_BASE_ID` | activity log, best effort |
+| `LOG_API_SECRET` | the activity and AI logs written to the dashboard, best effort |
 
 On Railway, `DASHBOARD_URL` and `DASHBOARD_API_SECRET` are references to the Chrome Plugin
 service's variables of the same name.
