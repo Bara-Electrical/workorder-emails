@@ -135,6 +135,12 @@ const EMAIL_DOMAIN_MAP = {
   // that simply isn't our client. A name alias would be wrong — the conveyancer varies by
   // property — so fall back to the sending domain, which is always the agency.
   "oscardsouza.com.au": "Oscar D'Souza Real Estate",
+  // Same shape, different third party: this work order named the OWNER's company
+  // ("Porcherealty Pty Ltd") where the agency name normally sits, so the AI extracted a real
+  // company that simply isn't our client. The owner varies by property, so there is nothing
+  // to alias — but every one of these comes from @coronis.com.au, and the Aroflo card has
+  // always been "Coronis Now WA" (722 jobs since 2021).
+  "coronis.com.au": "Coronis Now WA",
 };
 
 // Agencies whose Aroflo cards are per-branch while the work order names only the group, so
