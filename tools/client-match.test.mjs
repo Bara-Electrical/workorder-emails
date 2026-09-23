@@ -76,6 +76,12 @@ const CLIENTS = [
   "First National Swans Residential", "Oscar D'Souza Real Estate",
   "@realty (WA)", "Acton | Belle Property Rockingham",
   "Pro Property Group Real Estate", "ProProperty Group",
+  // Client-not-found alerts of 21-23 Sep 2026, each with its closest Aroflo rival so the
+  // aliases below are shown to be unambiguous rather than merely lucky.
+  "Raine and Horne Landsdale", "Raine & Horne Midland",
+  "Morgan & Hayes Real Estate", "Michael  Hayes",
+  "Century 21 Grand Alliance", "Century 21 Coast Realty Mandurah",
+  "Certainty Property WA", "Certainty Property Pty LTd",
 ];
 
 for (const name of CLIENTS) m.clientCache.set(name.toLowerCase(), { clientname: name, clientid: name });
@@ -119,6 +125,10 @@ const CASES = [
   ["Regina Property Group",         null],
   // A genuinely single-word agency name is still a whole name, so it may normalise-match.
   ["Steven",                        "Steven  ."],
+  // Client-not-found alert of 21 Sep 2026 that needed no alias: the card is an exact match,
+  // and the exact tier has to beat the "Certainty Property Pty LTd" prefix rival for that to
+  // hold. It failed live only because the card was created after the cache was loaded.
+  ["Certainty Property WA",         "Certainty Property WA"],
 ];
 
 // CLIENT_NAME_MAP is applied to the AI's extracted name BEFORE findClient sees it (see
@@ -139,6 +149,13 @@ const MAPPED_CASES = [
   ["at realty wa", "@realty (WA)"],
   ["Acton Belle Property Rockingham & Baldivis", "Acton | Belle Property Rockingham"],
   ["Acton Belle Property Rockingham and Baldivis", "Acton | Belle Property Rockingham"],
+  // Client-not-found alerts of 21-23 Sep 2026. "&" and "and" are not interchangeable once
+  // normaliseClientName has stripped the ampersand, in either direction, and a legal name in
+  // front of a trading name is not a prefix of it.
+  ["Raine & Horne Landsdale", "Raine and Horne Landsdale"],
+  ["raine & horne landsdale", "Raine and Horne Landsdale"],
+  ["Morgan and Hayes Real Estate", "Morgan & Hayes Real Estate"],
+  ["Grand Alliance Property Group Pty Ltd T/As Century 21 Grand Alliance", "Century 21 Grand Alliance"],
 ];
 
 // Without its alias the legal name is genuinely ambiguous — it starts-with matches both
@@ -150,6 +167,9 @@ const UNMAPPED_MUST_DECLINE = [
   "First National Real Estate Swans Residential",
   "At Realty (WA)",
   "Acton Belle Property Rockingham & Baldivis",
+  "Raine & Horne Landsdale",
+  "Morgan and Hayes Real Estate",
+  "Grand Alliance Property Group Pty Ltd T/As Century 21 Grand Alliance",
 ];
 
 let pass = 0;

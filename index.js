@@ -103,6 +103,16 @@ const CLIENT_NAME_MAP = {
   "driven group": "Driven Property Group",
   // Tapi inserts "Real Estate" mid-name, so neither string is a prefix of the other.
   "first national real estate swans residential": "First National Swans Residential",
+  // Client-not-found alerts of 21-23 Sep 2026. Each has a real Aroflo card the extracted
+  // name cannot reach: "&" and "and" are not interchangeable once normaliseClientName has
+  // stripped the ampersand ("raine & horne" normalises to "rainehorne", the card to
+  // "raineandhorne"), and a legal name in front of a trading name is not a prefix of it.
+  "raine & horne landsdale": "Raine and Horne Landsdale",
+  "raine and horne landsdale": "Raine and Horne Landsdale",
+  "morgan and hayes real estate": "Morgan & Hayes Real Estate",
+  "morgan & hayes real estate": "Morgan & Hayes Real Estate",
+  "grand alliance property group pty ltd t/as century 21 grand alliance": "Century 21 Grand Alliance",
+  "grand alliance property group": "Century 21 Grand Alliance",
   // The agency trades as "@realty"; the AI reads the leading "@" as the word "At", so the
   // extracted name never matches the Aroflo card however it is normalised.
   "at realty (wa)": "@realty (WA)",
@@ -127,14 +137,73 @@ const EMAIL_DOMAIN_MAP = {
   "oscardsouza.com.au": "Oscar D'Souza Real Estate",
 };
 
-// Rental Management Australia operates multiple branches sharing the same sender domain and
-// AI-extracted name ("Rental Management Australia (WA)") — Aroflo has a separate client per
-// branch, so disambiguate using the branch office address printed in the work order itself
-// (e.g. "C/O Rental Management Australia (WA) 17 Drake St, Osborne Park WA 6017").
-const RMA_BRANCH_MAP = {
-  "osborne park": "RMA - Osborne Park",
-  "port kennedy": "RMA - Port Kennedy",
-};
+// Agencies whose Aroflo cards are per-branch while the work order names only the group, so
+// the AI-extracted name reaches either every branch or none of them. The branch is never in
+// that name — it is in the email's own text: a signature ("Regards, Austpro Properties
+// Booragoon"), a subject ("Bellcourt Mount Lawley 1 has a job request") or the branch
+// address printed on the work order ("C/O Rental Management Australia (WA) 17 Drake St,
+// Osborne Park WA 6017") — so resolveBranch reads it back out of the raw email.
+//
+// `near` is how the agency names itself in the body, which is not always the extracted name.
+const BRANCH_MAPS = [
+  {
+    agency:   /rental management australia/i,
+    near:     /rental management australia|\brma\b/i,
+    branches: {
+      "osborne park": "RMA - Osborne Park",
+      "port kennedy": "RMA - Port Kennedy",
+    },
+  },
+  {
+    agency:   /austpro/i,
+    near:     /austpro/i,
+    branches: {
+      "booragoon":   "Austpro Properties - Booragoon",
+      "south perth": "Austpro Properties - South Perth",
+    },
+  },
+  {
+    agency:   /bellcourt/i,
+    near:     /bellcourt/i,
+    branches: {
+      "mount lawley": "Bellcourt Property Group Mount Lawley",
+      "shenton park": "Bellcourt Property Group Shenton Park",
+      "south perth":  "Bellcourt Property Group South Perth",
+    },
+  },
+];
+
+// How close to the agency name a suburb has to be to be read as its branch. Wide enough for
+// the words an agency puts between the two ("Austpro Properties Booragoon"), far short of
+// the distance to an unrelated address elsewhere in the email.
+const BRANCH_PROXIMITY = 40;
+
+// Which branch card a work order belongs to, or null if this agency has no branches.
+//
+// A suburb beside the agency name wins over a suburb anywhere in the email, because the bare
+// suburb is a false friend: a Bellcourt Mount Lawley work order for a property in South
+// Perth has both suburbs in the email and only one of them is the branch. A suburb found
+// only far away is still better than nothing — that is how the RMA branch address on a work
+// order has always been read — but two candidates is a guess, and a guess here books the job
+// against the wrong office, so it declines and says so instead.
+function resolveBranch(realEstate, rawEmail) {
+  const entry = BRANCH_MAPS.find(b => b.agency.test(realEstate || ""));
+  if (!entry) return null;
+
+  const haystack = String(rawEmail || "");
+  const suburbs  = Object.keys(entry.branches);
+  const hit      = (suburb, how) => ({ suburb, name: entry.branches[suburb], how });
+
+  const adjacent = suburbs.filter(suburb =>
+    new RegExp(`(?:${entry.near.source})[\\s\\S]{0,${BRANCH_PROXIMITY}}?${suburb}`, "i").test(haystack)
+  );
+  if (adjacent.length === 1) return hit(adjacent[0], "beside the agency name");
+
+  const anywhere = suburbs.filter(suburb => haystack.toLowerCase().includes(suburb));
+  if (anywhere.length === 1) return hit(anywhere[0], "elsewhere in the email");
+
+  return { ambiguous: adjacent.length > 1 ? adjacent : anywhere };
+}
 
 const TRIGGER_CATEGORY          = "Bara AI";
 const PROCESSING_CATEGORY       = "Processing";
@@ -1063,15 +1132,19 @@ async function createArofloJob(result, rawEmail, pdfAttachment = null, emailMeta
   }
 
   let realEstate = CLIENT_NAME_MAP[result["real-estate"]?.toLowerCase()] || result["real-estate"];
-  if (/rental management australia/i.test(realEstate || "")) {
-    const haystack = String(rawEmail || "").toLowerCase();
-    const branch = Object.keys(RMA_BRANCH_MAP).find(suburb => haystack.includes(suburb));
-    if (branch) {
-      realEstate = RMA_BRANCH_MAP[branch];
-      console.log(`[job] RMA branch resolved via "${branch}" → "${realEstate}"`);
-    } else {
-      console.warn(`[job] RMA branch address not found in work order — cannot disambiguate Osborne Park vs Port Kennedy`);
-    }
+  const branchHit = resolveBranch(realEstate, rawEmail);
+  if (branchHit?.name) {
+    console.log(`[job] Branch resolved via "${branchHit.suburb}" (${branchHit.how}) → "${branchHit.name}"`);
+    realEstate = branchHit.name;
+  } else if (branchHit) {
+    // Left as the group name, which will not match a branch card — the client-not-found tag
+    // and its alert are the right outcome, with the reason in the log.
+    console.warn(
+      `[job] Branch not resolved for "${realEstate}" — ` +
+      (branchHit.ambiguous.length
+        ? `more than one branch named in the email: ${branchHit.ambiguous.join(", ")}`
+        : "no branch named in the email")
+    );
   }
   console.log(`[job] Client lookup — AI extracted real-estate: "${result["real-estate"]}", resolved to: "${realEstate}", from: "${emailMeta?.from}"`);
   let client = await findClient(realEstate);
