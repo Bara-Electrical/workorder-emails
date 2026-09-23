@@ -180,17 +180,27 @@ const BRANCH_PROXIMITY = 40;
 
 // Which branch card a work order belongs to, or null if this agency has no branches.
 //
-// A suburb beside the agency name wins over a suburb anywhere in the email, because the bare
-// suburb is a false friend: a Bellcourt Mount Lawley work order for a property in South
-// Perth has both suburbs in the email and only one of them is the branch. A suburb found
-// only far away is still better than nothing — that is how the RMA branch address on a work
-// order has always been read — but two candidates is a guess, and a guess here books the job
-// against the wrong office, so it declines and says so instead.
-function resolveBranch(realEstate, rawEmail) {
+// A suburb beside the agency name wins, because the bare suburb is a false friend: a
+// Bellcourt Mount Lawley work order for a property in South Perth has both suburbs in the
+// email and only one of them is the branch. Beside the agency name it is the branch even when
+// it also happens to be the property's suburb, so that pass takes the address as given.
+//
+// A suburb found only far from the agency name still resolves — that is how the RMA branch
+// address printed on a work order has always been read — but the property's OWN suburb is
+// thrown out of that pass first. Far from the agency name there is nothing to tell the branch
+// from the property, and a work order for a house in Booragoon says "Booragoon" whoever
+// manages it, so reading that as the branch is not evidence, it is a coincidence: it would
+// book an Austpro South Perth job against Booragoon on the strength of the address alone.
+//
+// Two surviving candidates is a guess either way, and a guess here books the job against the
+// wrong office, so it declines and names them instead. So does none: the group name then
+// matches no branch card, and the client-not-found tag is the right outcome.
+function resolveBranch(realEstate, rawEmail, propertyAddress = "") {
   const entry = BRANCH_MAPS.find(b => b.agency.test(realEstate || ""));
   if (!entry) return null;
 
   const haystack = String(rawEmail || "");
+  const address  = String(propertyAddress || "").toLowerCase();
   const suburbs  = Object.keys(entry.branches);
   const hit      = (suburb, how) => ({ suburb, name: entry.branches[suburb], how });
 
@@ -199,7 +209,9 @@ function resolveBranch(realEstate, rawEmail) {
   );
   if (adjacent.length === 1) return hit(adjacent[0], "beside the agency name");
 
-  const anywhere = suburbs.filter(suburb => haystack.toLowerCase().includes(suburb));
+  const anywhere = suburbs.filter(suburb =>
+    haystack.toLowerCase().includes(suburb) && !address.includes(suburb)
+  );
   if (anywhere.length === 1) return hit(anywhere[0], "elsewhere in the email");
 
   return { ambiguous: adjacent.length > 1 ? adjacent : anywhere };
@@ -1132,7 +1144,7 @@ async function createArofloJob(result, rawEmail, pdfAttachment = null, emailMeta
   }
 
   let realEstate = CLIENT_NAME_MAP[result["real-estate"]?.toLowerCase()] || result["real-estate"];
-  const branchHit = resolveBranch(realEstate, rawEmail);
+  const branchHit = resolveBranch(realEstate, rawEmail, result.address);
   if (branchHit?.name) {
     console.log(`[job] Branch resolved via "${branchHit.suburb}" (${branchHit.how}) → "${branchHit.name}"`);
     realEstate = branchHit.name;

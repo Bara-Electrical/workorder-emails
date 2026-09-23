@@ -30,7 +30,7 @@ function grab(startMarker, endMarker) {
 const module_ = [
   grab("const BRANCH_MAPS = [", "\n];\n"),
   grab("const BRANCH_PROXIMITY", "= 40;"),
-  grab("function resolveBranch(realEstate, rawEmail)", "\n}\n"),
+  grab("function resolveBranch(realEstate, rawEmail", "\n}\n"),
   "export { resolveBranch, BRANCH_MAPS, BRANCH_PROXIMITY };",
 ].join("\n");
 
@@ -42,12 +42,12 @@ process.on("exit", () => fs.rmSync(tmpDir, { recursive: true, force: true }));
 
 const results = [];
 const check = (name, cond, detail = "") => results.push({ name, ok: !!cond, detail });
-const resolved = (name, extracted, email, expected) => {
-  const r = m.resolveBranch(extracted, email);
+const resolved = (name, extracted, email, expected, address = "") => {
+  const r = m.resolveBranch(extracted, email, address);
   check(name, r?.name === expected, `got ${JSON.stringify(r)}`);
 };
-const declined = (name, extracted, email) => {
-  const r = m.resolveBranch(extracted, email);
+const declined = (name, extracted, email, address = "") => {
+  const r = m.resolveBranch(extracted, email, address);
   check(name, r !== null && !r.name, `got ${JSON.stringify(r)}`);
 };
 
@@ -104,6 +104,52 @@ resolved(
   "Rental Management Australia",
   "Rental Management Australia\n" + "filler ".repeat(40) + "\n7 Sunlight Dr, Port Kennedy WA 6172",
   "RMA - Port Kennedy"
+);
+
+// ---- The property's own suburb is not evidence of a branch. ----
+//
+// A work order for a house in Booragoon says "Booragoon" whoever manages it. Far from the
+// agency name there is nothing to tell branch from property, so the address is thrown out of
+// that pass — otherwise an Austpro South Perth job books against Booragoon on the strength of
+// the address alone.
+declined(
+  "the property suburb alone is not a branch",
+  "Austpro Properties",
+  "Please attend 14 Marmion Street, Booragoon WA 6154. Regards, Ada",
+  "14 Marmion Street, Booragoon WA 6154"
+);
+declined(
+  "nor is it when the agency is named far away",
+  "Austpro Properties",
+  "Austpro Properties has sent you a work order." + " filler".repeat(30) + " 14 Marmion Street, Booragoon WA 6154",
+  "14 Marmion Street, Booragoon WA 6154"
+);
+// But beside the agency name it IS the branch, even when the property is in the same suburb —
+// an Austpro Booragoon work order for a Booragoon house is the ordinary case.
+resolved(
+  "beside the agency name it is the branch even if the property shares the suburb",
+  "Austpro Properties",
+  "Work order for 14 Marmion Street, Booragoon WA 6154. Regards, Austpro Properties Booragoon",
+  "Austpro Properties - Booragoon",
+  "14 Marmion Street, Booragoon WA 6154"
+);
+// The signature still decides when the property is in the OTHER branch's suburb — the case
+// that would book the job against the wrong office.
+resolved(
+  "the signature beats the property suburb",
+  "Austpro Properties",
+  "Work order for 12 Angelo Street, South Perth WA 6151. Regards, Austpro Properties Booragoon",
+  "Austpro Properties - Booragoon",
+  "12 Angelo Street, South Perth WA 6151"
+);
+// RMA's branch address on the work order is far from its name and is NOT the property, so it
+// must survive the address filter.
+resolved(
+  "RMA's branch address survives the address filter",
+  "Rental Management Australia (WA)",
+  "Job at 7 Sunlight Dr, Port Kennedy WA 6172. Account to: The Owners C/O Rental Management Australia (WA), 17 Drake St, Osborne Park WA 6017",
+  "RMA - Osborne Park",
+  "7 Sunlight Dr, Port Kennedy WA 6172"
 );
 
 // ---- What it must refuse. ----
