@@ -1,13 +1,9 @@
-# NOT ACTIVE. Rename this file to "Dockerfile" to switch the Railway build over to it.
+# This replaces Railway's Nixpacks auto-detection: the presence of this file is what makes
+# Railway build from it instead.
 #
-# It is parked under this name on purpose: the mere presence of a "Dockerfile" makes Railway
-# stop auto-detecting Nixpacks and build from it instead, and changing how a live service is
-# built is not something to slip in alongside an unrelated fix. Renaming it is the deliberate
-# step that turns the work-order page snapshots on.
-#
-# Why a Dockerfile at all: the service needs a real browser to print work-order pages to PDF
-# (see page-snapshot.js), and pinning that here is more predictable than persuading Nixpacks
-# to add a system package without disturbing its Node setup.
+# The service needs a real browser to print work-order pages to PDF (see page-snapshot.js),
+# and pinning that here is more predictable than persuading Nixpacks to add a system package
+# without disturbing its Node setup.
 #
 # Chromium is the system package, NOT an npm download: playwright-core never fetches a
 # browser, so the image carries one copy from Debian and the dependency stays small.

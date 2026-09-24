@@ -1,4 +1,5 @@
 import "dotenv/config";
+import { snapshotWorkOrderPage } from "./page-snapshot.js";
 import express from "express";
 import OpenAI from "openai";
 import * as pdfjsLib from "pdfjs-dist/legacy/build/pdf.mjs";
@@ -1133,7 +1134,7 @@ function buildDescription(result, airconUnitType = null, site = "") {
   return parts.join("\n");
 }
 
-async function createArofloJob(result, rawEmail, pdfAttachment = null, emailMeta = null, imageAttachments = []) {
+async function createArofloJob(result, rawEmail, pdfAttachment = null, emailMeta = null, imageAttachments = [], pageSnapshot = null) {
   console.log("[job] Creating Aroflo job...");
   const warnings = [];
 
@@ -1390,7 +1391,7 @@ async function createArofloJob(result, rawEmail, pdfAttachment = null, emailMeta
   // The job already exists by now, so nothing here may throw — every failure is a warning
   // on the alert email and the office fixes it by hand.
   if (confirmedTaskId && jobNumber !== "(see Aroflo)") {
-    await attachWorkOrderToJob(jobNumber, pdfAttachment, imageAttachments, emailMeta, warnings);
+    await attachWorkOrderToJob(jobNumber, pdfAttachment, imageAttachments, emailMeta, warnings, pageSnapshot);
   }
 
   // Post the original email as a note and set the substatus in one combined task
@@ -1713,7 +1714,7 @@ const officeSession = createOfficeSession();
 
 // Forward the original email to the job's inbound address and upload its files via v2.
 // Warnings, never throws: by the time this runs the job exists and its number is known.
-async function attachWorkOrderToJob(jobNumber, pdfAttachment, imageAttachments, emailMeta, warnings) {
+async function attachWorkOrderToJob(jobNumber, pdfAttachment, imageAttachments, emailMeta, warnings, pageSnapshot = null) {
   let v2TaskId = null;
   try {
     v2TaskId = await findTaskIdByJobNumber(jobNumber);
@@ -1742,6 +1743,8 @@ async function attachWorkOrderToJob(jobNumber, pdfAttachment, imageAttachments, 
 
   const files = [
     ...(pdfAttachment ? [{ filename: pdfAttachment.name, bytes: pdfAttachment.data, comment: "Work order" }] : []),
+    // The page as it was the day we accepted the job, for when the agency edits it later.
+    ...(pageSnapshot ? [{ filename: pageSnapshot.filename, bytes: pageSnapshot.bytes, comment: "Work order page as sent" }] : []),
     ...imageAttachments.map(img => ({ filename: img.name, bytes: img.data, comment: "Work order photo" })),
   ];
   for (const file of files) {
@@ -1931,6 +1934,7 @@ async function processMessage(message, mailbox = WORKORDERS_EMAIL, onStatus = nu
   let   pdfAttachment = null;
   let   pdfImages     = [];
   let   tapiPhotos    = [];
+  let   pageSnapshot  = null;
 
   function withEmailBody(primary) {
     return `--- WORK ORDER CONTENT (prefer this) ---\n${primary}\n\n--- EMAIL BODY (use for anything not found above) ---\n${emailBodyText}`;
@@ -1958,6 +1962,14 @@ async function processMessage(message, mailbox = WORKORDERS_EMAIL, onStatus = nu
 
         const tapiPhotoLinks = findTapiPhotoLinks(html);
         console.log(`[email] Work-order link fetched — status: ${response.status} url: ${response.url} page length: ${html.length} tapi photos matched: ${tapiPhotoLinks.length}`);
+        // Print the page as it stands right now. Agencies edit these after sending them — the
+        // scope changes, the spending limit changes — and this PDF is the only record of what
+        // we actually accepted. Navigating response.url, not the link from the email, so
+        // Chromium skips the tracking redirects fetchFollowingInky has already resolved.
+        if (response.ok) {
+          pageSnapshot = await snapshotWorkOrderPage(response.url);
+          if (pageSnapshot) console.log("[snapshot] Captured work-order page:", pageSnapshot.filename);
+        }
         if (tapiPhotoLinks.length > 0) {
           tapiPhotos = (await Promise.all(
             tapiPhotoLinks.map(async (href, i) => {
@@ -2241,7 +2253,7 @@ Return ONLY valid JSON with these exact keys:
 
   const imageAttachments = await filterRealPhotos(candidateImages);
 
-  return { result: parsed, rawEmail: rawBody, pdfAttachment, imageAttachments, emailMeta };
+  return { result: parsed, rawEmail: rawBody, pdfAttachment, imageAttachments, emailMeta, pageSnapshot };
 }
 
 // Best-effort alert email to Brandon — used for both per-job warnings and
@@ -2631,7 +2643,7 @@ async function pollInbox(mailbox) {
       continue;
     }
 
-    const { result, rawEmail, pdfAttachment, imageAttachments, emailMeta, currentCategories: getCategories } = outcome.value;
+    const { result, rawEmail, pdfAttachment, imageAttachments, emailMeta, pageSnapshot, currentCategories: getCategories } = outcome.value;
     let currentCategories = getCategories();
 
     try {
@@ -2645,7 +2657,7 @@ async function pollInbox(mailbox) {
       }
 
       currentCategories = await setJobStatus(mailbox, message.id, currentCategories, CREATING_JOB_CATEGORY);
-      const { jobNumber, jobUrl, checks, warnings: jobWarnings } = await createArofloJob(result, rawEmail, pdfAttachment, emailMeta, imageAttachments);
+      const { jobNumber, jobUrl, checks, warnings: jobWarnings } = await createArofloJob(result, rawEmail, pdfAttachment, emailMeta, imageAttachments, pageSnapshot);
       logAiOutput(result, message.subject).catch(err => console.warn("[log] logAiOutput:", err.message));
       logActivity("Job created", jobNumber).catch(err => console.warn("[log] logActivity:", err.message));
       const allWarnings = [...preWarnings, ...jobWarnings];
