@@ -880,6 +880,39 @@ async function createLocation(clientId, address, tenantName, tenantContact, tena
 // cut off a name or number mid-word. Keep the same number of tenants in both fields
 // (so name[i] still lines up with phone[i]) and report anything dropped separately.
 const SITE_FIELD_LIMIT = 50;
+
+// The lockbox code to put in the site contact, or null. Used only when the work order names
+// no tenant: the office puts the lockbox code there so it is the first thing seen when
+// booking — job 108212 (3 Marungi Way) was filled in by hand.
+function lockboxSiteContact(tenantName, accessDetails) {
+  if ((tenantName || "").trim()) return null;
+  const lockbox = extractLockboxDetails(accessDetails);
+  return lockbox ? lockbox.slice(0, SITE_FIELD_LIMIT) : null;
+}
+
+// The site-contact fields to write to an existing location. null means leave that field alone;
+// "" means clear it.
+//
+//  - A named tenant, "Vacant" included, is the authoritative current state: it replaces the
+//    contact and clears the previous tenant's phone and email, so a property going "Vacant"
+//    does not keep the old tenant's number.
+//  - A work order with NO tenant details but a lockbox code means nobody is there to let the
+//    tech in: the previous tenant is treated as moved out, so their phone and email are
+//    cleared and the lockbox code takes the contact slot.
+//  - With no tenant details and no lockbox there is no evidence either way — the agency may
+//    just have left the tenant block out — so the previous tenant is left on file untouched.
+//  - A phone or email with no name is written as given and the rest left alone.
+function locationContactUpdate(tenantName, tenantContact, tenantEmail, lockboxContact) {
+  if (tenantName) {
+    return { sitecontact: tenantName, sitephone: tenantContact ?? "", siteemail: tenantEmail ?? "" };
+  }
+  if (!tenantContact && !tenantEmail) {
+    return lockboxContact
+      ? { sitecontact: lockboxContact, sitephone: "", siteemail: "" }
+      : { sitecontact: null, sitephone: null, siteemail: null };
+  }
+  return { sitecontact: null, sitephone: tenantContact ?? null, siteemail: tenantEmail ?? null };
+}
 function fitTenantFields(tenantName, tenantContact, maxLen = SITE_FIELD_LIMIT) {
   const names  = tenantName    ? tenantName.split(",").map(s => s.trim())    : [];
   const phones = tenantContact ? tenantContact.split(",").map(s => s.trim()) : [];
@@ -934,7 +967,7 @@ function fitTenantFields(tenantName, tenantContact, maxLen = SITE_FIELD_LIMIT) {
 // update SiteContact/SitePhone if stale, or create the location if it doesn't exist yet.
 // Matches by street address locally — the locationname|like WHERE clause is not
 // supported by Aroflo.
-async function findOrUpdateLocation(clientId, locations, address, tenantName, tenantContact, tenantEmail) {
+async function findOrUpdateLocation(clientId, locations, address, tenantName, tenantContact, tenantEmail, accessDetails = null) {
   if (!address) return null;
 
   // Strip unit prefix: "1412/380 Murray Street, Perth WA" → "380 Murray Street"
@@ -978,8 +1011,10 @@ async function findOrUpdateLocation(clientId, locations, address, tenantName, te
 
   if (!location) {
     console.log("[location] No match for:", streetPart, "— creating new location:", address);
+    const newLockboxContact = lockboxSiteContact(tenantName, accessDetails);
+    if (newLockboxContact) console.log("[location] No tenant named — site contact set to the lockbox:", newLockboxContact);
     try {
-      return await createLocation(clientId, address, tenantName, tenantContact, tenantEmail);
+      return await createLocation(clientId, address, tenantName || newLockboxContact, tenantContact, tenantEmail);
     } catch (err) {
       console.warn("[location] Creation failed:", err.message);
       return null;
@@ -988,13 +1023,14 @@ async function findOrUpdateLocation(clientId, locations, address, tenantName, te
 
   console.log("[location] Found:", location.locationid, location.locationname);
 
-  if (tenantName || tenantContact || tenantEmail) {
-    // Once we have a tenant name, treat it as the authoritative current state and
-    // explicitly clear phone/email rather than omitting them when absent — e.g. a
-    // property going "Vacant" must blank out the previous tenant's number, not just
-    // leave it on file because this update didn't happen to mention a new one.
-    const sitePhoneValue = tenantName ? (tenantContact ?? "") : tenantContact;
-    const siteEmailValue = tenantName ? (tenantEmail   ?? "") : tenantEmail;
+  const lockboxContact = lockboxSiteContact(tenantName, accessDetails);
+  const { sitecontact: siteContactValue, sitephone: sitePhoneValue, siteemail: siteEmailValue } =
+    locationContactUpdate(tenantName, tenantContact, tenantEmail, lockboxContact);
+  if (lockboxContact && !tenantContact && !tenantEmail) {
+    console.log(`[location] No tenant details but a lockbox — previous tenant treated as moved out; site contact set to: ${lockboxContact}`);
+  }
+
+  if (siteContactValue != null || sitePhoneValue != null || siteEmailValue != null) {
 
     // Must be wrapped in <clients><client> — a bare <locations><location> POST to
     // zone=locations returns status "0" with no error but silently does not apply.
@@ -1003,7 +1039,7 @@ async function findOrUpdateLocation(clientId, locations, address, tenantName, te
   <clientid>${clientId}</clientid>
   <locations><location>
     <locationid>${location.locationid}</locationid>
-    ${tenantName                       ? `<sitecontact>${cdata(tenantName)}</sitecontact>` : ""}
+    ${siteContactValue != null         ? `<sitecontact>${cdata(siteContactValue)}</sitecontact>` : ""}
     ${sitePhoneValue != null           ? `<sitephone>${cdata(sitePhoneValue)}</sitephone>` : ""}
     ${siteEmailValue != null           ? `<siteemail>${cdata(siteEmailValue)}</siteemail>` : ""}
   </location></locations>
@@ -1081,6 +1117,25 @@ function extractKeyCollectionLine(taskDescription) {
     .map(l => l.trim())
     .find(l => /collect/i.test(l) && /key/i.test(l));
   return line || null;
+}
+
+// What reaches the scheduling note about getting in. A lockbox code always does: it is what
+// gets a tech into a property nobody will open, so whoever books the job needs it in front of
+// them, not only in the task description. That holds whether or not the work order says
+// "vacant" — job 108212 (3 Marungi Way) listed no tenant and a lockbox code but never used the
+// word, so it was not flagged vacant and the code only reached the scheduling note when the
+// office added it by hand. A "collect keys" instruction stays vacant-only: it is only
+// actionable when nobody is there to let the tech in.
+function schedulingAccessLines(result) {
+  const isVacant = (result["tenant-name"] || "").trim().toLowerCase() === "vacant";
+  const lines = [];
+  const lockboxDetails = extractLockboxDetails(result["access-details"]);
+  if (lockboxDetails) lines.push(isVacant ? `Vacant - ${lockboxDetails}` : lockboxDetails);
+  if (isVacant) {
+    const keyCollectionLine = extractKeyCollectionLine(result["task-description"]);
+    if (keyCollectionLine) lines.push(`Vacant - ${keyCollectionLine}`);
+  }
+  return lines;
 }
 
 function buildDescription(result, airconUnitType = null, site = "") {
@@ -1213,7 +1268,8 @@ async function createArofloJob(result, rawEmail, pdfAttachment = null, emailMeta
     result.address,
     tenantFit.keptName,
     tenantFit.keptPhone,
-    result["tenant-email"]
+    result["tenant-email"],
+    result["access-details"]
   );
   if (!location && result.address) {
     const detail = `Location not linked for "${result.address}" — address used as site name fallback`;
@@ -1279,12 +1335,13 @@ async function createArofloJob(result, rawEmail, pdfAttachment = null, emailMeta
     warnings.push({ tag: "PM not in Aroflo", detail });
   }
 
-  // Urgent/Urgent - Aircon tags need next-day attention, ASAP + ETA gives techs a couple
-  // of days — otherwise fall back to the standard 7-day due date.
+  // Urgent/Urgent - Aircon tags need next-day attention; everything else, ASAP + ETA
+  // included, gets the standard 7-day due date. ASAP + ETA was 2 days until the office asked
+  // for a week — it is kept as its own branch so it can be tuned without touching the others.
   const URGENT_SUBSTATUS_IDS = ["Iyc6UyMK", "Iyc6UywK"]; // 3 URGENT, URGENT (Air Con)
   const ASAP_SUBSTATUS_ID    = "IycqSycK";                // ASAP + ETA
   const dueDateOffsetDays = URGENT_SUBSTATUS_IDS.includes(substatusId) ? 1
-    : substatusId === ASAP_SUBSTATUS_ID ? 2
+    : substatusId === ASAP_SUBSTATUS_ID ? 7
     : 7;
   const dueDate = (() => {
     const d = new Date();
@@ -1424,31 +1481,24 @@ async function createArofloJob(result, rawEmail, pdfAttachment = null, emailMeta
       }
     }
 
-    // Vacant properties are unattended, so a lockbox code or a "collect keys" instruction
-    // needs to be visible to whoever books the job in, not just buried in the task
-    // description — surface both in the scheduling note the same way as overflow tenants.
-    let vacantAccessNote = null;
-    const isVacant = (result["tenant-name"] || "").trim().toLowerCase() === "vacant";
-    if (isVacant) {
-      const vacantLines = [];
-      const lockboxDetails    = extractLockboxDetails(result["access-details"]);
-      const keyCollectionLine = extractKeyCollectionLine(result["task-description"]);
-      if (lockboxDetails)    vacantLines.push(`Vacant - ${lockboxDetails}`);
-      if (keyCollectionLine) vacantLines.push(`Vacant - ${keyCollectionLine}`);
-
+    // Lockbox codes (always) and "collect keys" instructions (vacant only) go in the scheduling
+    // note the same way as overflow tenants — see schedulingAccessLines for why.
+    let accessNote = null;
+    const accessLines = schedulingAccessLines(result);
+    if (accessLines.length > 0) {
       const failedLines = [];
-      for (const line of vacantLines) {
+      for (const line of accessLines) {
         try {
           await appendToPinnedNoteSection(confirmedTaskId, "scheduling", `${dateStamp} ${line} - ${AI_NOTE_INITIALS}`);
         } catch (err) {
-          console.warn("[job] Could not append vacant access info to scheduling note:", err.message);
+          console.warn("[job] Could not append access info to scheduling note:", err.message);
           failedLines.push(line);
         }
       }
       if (failedLines.length > 0) {
-        vacantAccessNote = failedLines.map(line => escapeHtml(line)).join("<br/>");
+        accessNote = failedLines.map(line => escapeHtml(line)).join("<br/>");
         warnings.push({
-          tag: "Vacant access info not added to scheduling note",
+          tag: "Access info not added to scheduling note",
           detail: `Pinned scheduling note not editable — posted as a separate note instead: ${failedLines.join("; ")}`,
         });
       }
@@ -1481,7 +1531,7 @@ async function createArofloJob(result, rawEmail, pdfAttachment = null, emailMeta
 
     const notesXml = [
       additionalTenantNote ? `<note><content>${cdata(additionalTenantNote)}</content></note>` : "",
-      vacantAccessNote     ? `<note><content>${cdata(vacantAccessNote)}</content></note>`     : "",
+      accessNote           ? `<note><content>${cdata(accessNote)}</content></note>`           : "",
       vacateDateNote       ? `<note><content>${cdata(vacateDateNote)}</content></note>`       : "",
     ].join("");
 
@@ -1522,7 +1572,7 @@ async function createArofloJob(result, rawEmail, pdfAttachment = null, emailMeta
       }
 
       if (applied) {
-        console.log("[job] Task update applied — additional tenant note:", !!additionalTenantNote, "vacant access note:", !!vacantAccessNote, "vacate date note:", !!vacateDateNote, "substatus:", substatusId || "n/a");
+        console.log("[job] Task update applied — additional tenant note:", !!additionalTenantNote, "access note fallback:", !!accessNote, "vacate date note:", !!vacateDateNote, "substatus:", substatusId || "n/a");
       } else if (lastErr) {
         console.warn("[job] Combined task update failed after retry:", lastErr.message);
         if (substatusId) warnings.push({ tag: "Substatus failed", detail: `Substatus not applied: ${lastErr.message}` });
