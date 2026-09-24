@@ -1279,12 +1279,13 @@ async function createArofloJob(result, rawEmail, pdfAttachment = null, emailMeta
     warnings.push({ tag: "PM not in Aroflo", detail });
   }
 
-  // Urgent/Urgent - Aircon tags need next-day attention, ASAP + ETA gives techs a couple
-  // of days — otherwise fall back to the standard 7-day due date.
+  // Urgent/Urgent - Aircon tags need next-day attention; everything else, ASAP + ETA
+  // included, gets the standard 7-day due date. ASAP + ETA was 2 days until the office asked
+  // for a week — it is kept as its own branch so it can be tuned without touching the others.
   const URGENT_SUBSTATUS_IDS = ["Iyc6UyMK", "Iyc6UywK"]; // 3 URGENT, URGENT (Air Con)
   const ASAP_SUBSTATUS_ID    = "IycqSycK";                // ASAP + ETA
   const dueDateOffsetDays = URGENT_SUBSTATUS_IDS.includes(substatusId) ? 1
-    : substatusId === ASAP_SUBSTATUS_ID ? 2
+    : substatusId === ASAP_SUBSTATUS_ID ? 7
     : 7;
   const dueDate = (() => {
     const d = new Date();
