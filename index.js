@@ -1164,12 +1164,17 @@ function buildDescription(result, airconUnitType = null, site = "") {
     );
   }
 
-  const hasHighlights = result["expenditure-limit"] || lockboxDetails || site;
+  // What the dashboard knows is installed at the site (from compliance forms), so the tech
+  // knows what to expect before arriving. It is an aircon tally ("Site: 1× Evaporative"), so
+  // it only belongs on an aircon job, gated the same way as the Unit Type line above — on
+  // everything else it is noise: job 108163 was a bedroom light fitting carrying the
+  // property's evap unit. Empty when the dashboard has nothing on record.
+  const showSite = site && isAirconJob;
+
+  const hasHighlights = result["expenditure-limit"] || lockboxDetails || showSite;
   if (hasHighlights) parts.push(spacer);
 
-  // What the dashboard knows is installed at the site (from compliance forms), so the tech
-  // knows what to expect before arriving. Empty when the dashboard has nothing on record.
-  if (site) {
+  if (showSite) {
     parts.push(`<p><span style="background:#e0e0e0;font-weight:bold">${escapeHtml(site)}</span></p>`);
   }
 
