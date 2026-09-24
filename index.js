@@ -896,16 +896,20 @@ function lockboxSiteContact(tenantName, accessDetails) {
 //  - A named tenant, "Vacant" included, is the authoritative current state: it replaces the
 //    contact and clears the previous tenant's phone and email, so a property going "Vacant"
 //    does not keep the old tenant's number.
-//  - A work order with NO tenant details at all means the tenant no longer lives there — the
-//    office's rule, since agencies drop the tenant block once a property is empty. The old
-//    contact is cleared, and the lockbox code, if there is one, takes the contact slot.
+//  - A work order with NO tenant details but a lockbox code means nobody is there to let the
+//    tech in: the previous tenant is treated as moved out, so their phone and email are
+//    cleared and the lockbox code takes the contact slot.
+//  - With no tenant details and no lockbox there is no evidence either way — the agency may
+//    just have left the tenant block out — so the previous tenant is left on file untouched.
 //  - A phone or email with no name is written as given and the rest left alone.
 function locationContactUpdate(tenantName, tenantContact, tenantEmail, lockboxContact) {
   if (tenantName) {
     return { sitecontact: tenantName, sitephone: tenantContact ?? "", siteemail: tenantEmail ?? "" };
   }
   if (!tenantContact && !tenantEmail) {
-    return { sitecontact: lockboxContact || "", sitephone: "", siteemail: "" };
+    return lockboxContact
+      ? { sitecontact: lockboxContact, sitephone: "", siteemail: "" }
+      : { sitecontact: null, sitephone: null, siteemail: null };
   }
   return { sitecontact: null, sitephone: tenantContact ?? null, siteemail: tenantEmail ?? null };
 }
@@ -1022,8 +1026,8 @@ async function findOrUpdateLocation(clientId, locations, address, tenantName, te
   const lockboxContact = lockboxSiteContact(tenantName, accessDetails);
   const { sitecontact: siteContactValue, sitephone: sitePhoneValue, siteemail: siteEmailValue } =
     locationContactUpdate(tenantName, tenantContact, tenantEmail, lockboxContact);
-  if (!tenantName && !tenantContact && !tenantEmail) {
-    console.log(`[location] No tenant details — treating the previous tenant as moved out; site contact ${lockboxContact ? `set to the lockbox: ${lockboxContact}` : "cleared"}`);
+  if (lockboxContact && !tenantContact && !tenantEmail) {
+    console.log(`[location] No tenant details but a lockbox — previous tenant treated as moved out; site contact set to: ${lockboxContact}`);
   }
 
   if (siteContactValue != null || sitePhoneValue != null || siteEmailValue != null) {

@@ -5,10 +5,11 @@
 // functions under test are lifted out of the source text and evaluated in isolation, the same
 // way as the other tools/*.test.mjs files.
 //
-// The office's rule: a work order with no tenant details means the tenant no longer lives
-// there, so the previous tenant's name, phone and email are cleared — and when there is a
-// lockbox code it takes the contact slot (job 108212 was filled in by hand). A named tenant,
-// "Vacant" included, is written as before.
+// The office's rule: a work order with no tenant details but a lockbox code means the tenant
+// no longer lives there, so the lockbox takes the contact slot and the previous tenant's phone
+// and email are cleared (job 108212 was filled in by hand). With no lockbox there is no
+// evidence the tenant left, so nothing is touched. A named tenant, "Vacant" included, is
+// written as before.
 
 import fs from "node:fs";
 import os from "node:os";
@@ -64,16 +65,20 @@ eq("lockbox picked out of mixed details",      m.lockboxSiteContact(null, "Key: 
 }
 
 // ---- locationContactUpdate: null = leave alone, "" = clear ----
-// No tenant details at all: the previous tenant has moved out, so everything of theirs goes.
+// No tenant details but a lockbox: the previous tenant has moved out, so their details go.
 eq("108212: no tenant details, lockbox — contact is the lockbox, old details cleared",
    m.locationContactUpdate(null, undefined, undefined, LB),
    { sitecontact: LB, sitephone: "", siteemail: "" });
-eq("no tenant details, no lockbox — old tenant cleared entirely",
-   m.locationContactUpdate(null, undefined, undefined, null),
-   { sitecontact: "", sitephone: "", siteemail: "" });
 eq("empty strings count as no details",
+   m.locationContactUpdate("", "", "", LB),
+   { sitecontact: LB, sitephone: "", siteemail: "" });
+// No tenant details and no lockbox: no evidence the tenant left, so nothing is touched.
+eq("no tenant details, no lockbox — old tenant left on file",
+   m.locationContactUpdate(null, undefined, undefined, null),
+   { sitecontact: null, sitephone: null, siteemail: null });
+eq("empty strings, no lockbox — old tenant left on file",
    m.locationContactUpdate("", "", "", null),
-   { sitecontact: "", sitephone: "", siteemail: "" });
+   { sitecontact: null, sitephone: null, siteemail: null });
 
 // A named tenant is the current state and clears whatever of the old tenant it doesn't replace.
 eq("named tenant with their own details",
