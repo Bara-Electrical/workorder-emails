@@ -30,6 +30,7 @@ function grab(startMarker, endMarker) {
 
 const extracted = [
   grab("const CLIENT_NAME_MAP = {", "\n};\n") + "\n};\n",
+  grab("const EMAIL_DOMAIN_MAP = {", "\n};\n") + "\n};\n",
   grab("function normaliseClientName(name)", "\n}\n") + "\n}\n",
   grab("function clientNameForms(realEstateName)", "\n}\n") + "\n}\n",
   grab("function clientNameCandidates(realEstateName)", "\n}\n") + "\n}\n",
@@ -46,7 +47,7 @@ const clientCacheNormalised = new Map();
 const toArray = x => (Array.isArray(x) ? x : [x]);
 const arofloGet = async () => ({ clients: [] });
 ${extracted}
-export { findClient, clientCache, clientCacheNormalised, normaliseClientName, CLIENT_NAME_MAP };
+export { findClient, clientCache, clientCacheNormalised, normaliseClientName, CLIENT_NAME_MAP, EMAIL_DOMAIN_MAP };
 `;
 const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "client-match-"));
 const tmp = path.join(tmpDir, "extracted.mjs");
@@ -82,6 +83,8 @@ const CLIENTS = [
   "Morgan & Hayes Real Estate", "Michael  Hayes",
   "Century 21 Grand Alliance", "Century 21 Coast Realty Mandurah",
   "Certainty Property WA", "Certainty Property Pty LTd",
+  // Reached only by sending domain — the work order names the owner's company, never this.
+  "Coronis Now WA", "Oscar D'Souza Real Estate",
 ];
 
 for (const name of CLIENTS) m.clientCache.set(name.toLowerCase(), { clientname: name, clientid: name });
@@ -172,8 +175,49 @@ const UNMAPPED_MUST_DECLINE = [
   "Grand Alliance Property Group Pty Ltd T/As Century 21 Grand Alliance",
 ];
 
+// EMAIL_DOMAIN_MAP is the last resort in createArofloJob: when the AI's extracted name finds
+// no client, the SENDER's domain is looked up instead. It exists for agencies whose work
+// orders put a third party where the agency name belongs — an owner's company, a conveyancer —
+// which varies per property, so there is no name to alias. Its keys must be bare lowercase
+// domains to be found, so a mis-cased or @-prefixed key is silently dead. These cases run the
+// map and the matcher together, as production does.
+const DOMAIN_CASES = [
+  // 23 Sep 2026: named "Porcherealty Pty Ltd", the owner's company. 722 jobs on this card.
+  ["Rica.Velez@coronis.com.au", "Coronis Now WA"],
+  ["someone@CORONIS.COM.AU",    "Coronis Now WA"],
+  ["pm@oscardsouza.com.au",     "Oscar D'Souza Real Estate"],
+];
+
+// The names these work orders actually carry must NOT match anything, or the domain fallback
+// would never be reached and the job would land on whatever the owner's company matched.
+const DOMAIN_ONLY_NAMES_MUST_DECLINE = [
+  "Porcherealty Pty Ltd",
+  "Bellerose Property Conveyancing",
+];
+
 let pass = 0;
 const failures = [];
+
+for (const [from, expected] of DOMAIN_CASES) {
+  const domain = from.split("@")[1];
+  const mapped = m.EMAIL_DOMAIN_MAP[domain?.toLowerCase()];
+  const got = mapped ? (await m.findClient(mapped))?.clientname ?? null : null;
+  if (got === expected) pass++;
+  else failures.push(`  ${JSON.stringify(from)} (via EMAIL_DOMAIN_MAP)\n    expected: ${expected}\n    got:      ${got}`);
+}
+
+for (const name of DOMAIN_ONLY_NAMES_MUST_DECLINE) {
+  const mapped = m.CLIENT_NAME_MAP[name.toLowerCase()] || name;
+  const got = (await m.findClient(mapped))?.clientname ?? null;
+  if (got === null) pass++;
+  else failures.push(`  ${JSON.stringify(name)} (should reach the domain fallback)\n    expected: null\n    got:      ${got}`);
+}
+
+// A key that is not a bare lowercase domain can never be found by the lookup above.
+for (const key of Object.keys(m.EMAIL_DOMAIN_MAP)) {
+  if (key === key.toLowerCase().trim() && !key.includes("@") && !key.includes("/") && key.includes(".")) pass++;
+  else failures.push(`  EMAIL_DOMAIN_MAP key ${JSON.stringify(key)} is not a bare lowercase domain — it can never match`);
+}
 for (const [input, expected] of MAPPED_CASES) {
   const mapped = m.CLIENT_NAME_MAP[input.toLowerCase()] || input;
   const got = (await m.findClient(mapped))?.clientname ?? null;
@@ -193,7 +237,9 @@ for (const input of UNMAPPED_MUST_DECLINE) {
   else failures.push(`  ${JSON.stringify(input)} (unmapped)\n    expected: null\n    got:      ${got}`);
 }
 
-console.log(`findClient: ${pass}/${CASES.length + MAPPED_CASES.length + UNMAPPED_MUST_DECLINE.length} passed`);
+const total = CASES.length + MAPPED_CASES.length + UNMAPPED_MUST_DECLINE.length
+  + DOMAIN_CASES.length + DOMAIN_ONLY_NAMES_MUST_DECLINE.length + Object.keys(m.EMAIL_DOMAIN_MAP).length;
+console.log(`findClient: ${pass}/${total} passed`);
 if (failures.length) {
   console.error(`\n${failures.length} failure(s):\n${failures.join("\n")}`);
   process.exit(1);

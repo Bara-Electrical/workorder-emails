@@ -1,0 +1,42 @@
+# NOT ACTIVE. Rename this file to "Dockerfile" to switch the Railway build over to it.
+#
+# It is parked under this name on purpose: the mere presence of a "Dockerfile" makes Railway
+# stop auto-detecting Nixpacks and build from it instead, and changing how a live service is
+# built is not something to slip in alongside an unrelated fix. Renaming it is the deliberate
+# step that turns the work-order page snapshots on.
+#
+# Why a Dockerfile at all: the service needs a real browser to print work-order pages to PDF
+# (see page-snapshot.js), and pinning that here is more predictable than persuading Nixpacks
+# to add a system package without disturbing its Node setup.
+#
+# Chromium is the system package, NOT an npm download: playwright-core never fetches a
+# browser, so the image carries one copy from Debian and the dependency stays small.
+FROM node:22-slim
+
+# chromium: the browser itself.
+# fonts-liberation + fonts-dejavu-core: without fonts every PDF renders as empty boxes.
+# ca-certificates: Chromium and Node both need these to reach the agency portals over TLS.
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends \
+      chromium \
+      fonts-liberation \
+      fonts-dejavu-core \
+      ca-certificates \
+ && rm -rf /var/lib/apt/lists/*
+
+ENV CHROMIUM_PATH=/usr/bin/chromium \
+    NODE_ENV=production
+
+WORKDIR /app
+
+# Dependencies in their own layer so a code change doesn't reinstall them.
+#
+# npm install, not npm ci: package-lock.json does not yet carry playwright-core, so ci would
+# refuse the build. Regenerate the lockfile (npm install playwright-core) and this should
+# become "npm ci --omit=dev", which is the reproducible form.
+COPY package*.json ./
+RUN npm install --omit=dev
+
+COPY . .
+
+CMD ["node", "index.js"]
