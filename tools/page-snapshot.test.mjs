@@ -10,6 +10,7 @@
 // In the deployed image both are present and these run for real.
 
 import fs from "node:fs";
+import { execFileSync } from "node:child_process";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -84,27 +85,10 @@ const check = (name, cond, detail = "") => results.push({ name, ok: !!cond, deta
   check("the label is used", snap?.filename.startsWith("Issue report "), snap?.filename);
 }
 
-// Phase 2 snapshots up to POLL_BATCH_SIZE pages at once, all through ONE browser. The bound
-// is deliberately loose — reusing the browser does ten in about two seconds, while launching
-// one per snapshot does not finish inside two minutes, so anything under 30s can only be the
-// reusing implementation and no slow machine can make the reusing one fail.
+// Phase 2 snapshots up to POLL_BATCH_SIZE pages at once, through one shared browser.
 {
-  const BOUND_MS = 30000;
-  const started = Date.now();
-  // Raced against a timer so a regression fails at the bound instead of hanging the suite.
-  const many = await Promise.race([
-    Promise.all(Array.from({ length: 10 }, () => m.snapshotWorkOrderPage(pageUrl))),
-    new Promise(resolve => setTimeout(() => resolve(null), BOUND_MS).unref()),
-  ]);
-  const took = Date.now() - started;
-  check("ten at once share one browser", many !== null, `still running after ${took}ms — a browser per snapshot?`);
-  check("ten at once all succeed", many?.every(s => s?.bytes?.length > 5000), many ? `${many.filter(Boolean).length}/10` : "timed out");
-  if (!many) {
-    // The stragglers would keep the process alive; the failure is already recorded.
-    const failures = results.filter(r => !r.ok);
-    console.error(`page snapshot: ${results.length - failures.length}/${results.length} passed\n` + failures.map(f => `  ${f.name}\n    got: ${f.detail}`).join("\n"));
-    process.exit(1);
-  }
+  const many = await Promise.all(Array.from({ length: 10 }, () => m.snapshotWorkOrderPage(pageUrl)));
+  check("ten at once all succeed", many.every(s => s?.bytes?.length > 5000), `${many.filter(Boolean).length}/10`);
 }
 
 // Every failure path must warn and return null. A snapshot is a nice-to-have on a job that
@@ -131,9 +115,33 @@ const check = (name, cond, detail = "") => results.push({ name, ok: !!cond, deta
   await m.closeSnapshotBrowser();
 }
 
+// No Chromium may outlive closeSnapshotBrowser. This is the check that matters most for a
+// service that runs for weeks: a browser launched per snapshot instead of shared passes every
+// check above — it is correct, and fast enough — but it orphans a ~350MB Chromium each time,
+// and the service climbs until it runs out of memory. After everything above, a leak shows
+// up here as browsers still parented to this process once the one we know about is closed.
+{
+  const chromiumChildren = () => {
+    try {
+      return execFileSync("ps", ["-o", "pid=,args=", "--ppid", String(process.pid)], { encoding: "utf8" })
+        .split("\n").filter(line => /chrom/i.test(line));
+    } catch { return null; } // ps without --ppid (macOS): cannot tell, so do not guess
+  };
+  let left = chromiumChildren();
+  // A closed browser takes a moment to reap; give it a few seconds before calling it a leak.
+  for (let i = 0; left?.length && i < 30; i++) {
+    await new Promise(r => setTimeout(r, 100));
+    left = chromiumChildren();
+  }
+  if (left === null) console.log("page snapshot: leak check skipped (ps has no --ppid here)");
+  else check("no browser outlives closeSnapshotBrowser", left.length === 0, `${left.length} still running`);
+}
+
 const failures = results.filter(r => !r.ok);
 console.log(`page snapshot: ${results.length - failures.length}/${results.length} passed`);
 if (failures.length) {
   console.error(`\n${failures.length} failure(s):\n` + failures.map(f => `  ${f.name}${f.detail ? `\n    got: ${f.detail}` : ""}`).join("\n"));
-  process.exit(1);
 }
+// Explicit, because a leaked browser holds the event loop open: without this a leak turns
+// into a run that never finishes instead of the failure recorded above.
+process.exit(failures.length ? 1 : 0);
