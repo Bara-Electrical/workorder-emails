@@ -880,6 +880,35 @@ async function createLocation(clientId, address, tenantName, tenantContact, tena
 // cut off a name or number mid-word. Keep the same number of tenants in both fields
 // (so name[i] still lines up with phone[i]) and report anything dropped separately.
 const SITE_FIELD_LIMIT = 50;
+
+// The lockbox code to put in the site contact, or null. Used only when the work order names
+// no tenant: the office puts the lockbox code there so it is the first thing seen when
+// booking — job 108212 (3 Marungi Way) was filled in by hand.
+function lockboxSiteContact(tenantName, accessDetails) {
+  if ((tenantName || "").trim()) return null;
+  const lockbox = extractLockboxDetails(accessDetails);
+  return lockbox ? lockbox.slice(0, SITE_FIELD_LIMIT) : null;
+}
+
+// The site-contact fields to write to an existing location. null means leave that field alone;
+// "" means clear it.
+//
+//  - A named tenant, "Vacant" included, is the authoritative current state: it replaces the
+//    contact and clears the previous tenant's phone and email, so a property going "Vacant"
+//    does not keep the old tenant's number.
+//  - A work order with NO tenant details at all means the tenant no longer lives there — the
+//    office's rule, since agencies drop the tenant block once a property is empty. The old
+//    contact is cleared, and the lockbox code, if there is one, takes the contact slot.
+//  - A phone or email with no name is written as given and the rest left alone.
+function locationContactUpdate(tenantName, tenantContact, tenantEmail, lockboxContact) {
+  if (tenantName) {
+    return { sitecontact: tenantName, sitephone: tenantContact ?? "", siteemail: tenantEmail ?? "" };
+  }
+  if (!tenantContact && !tenantEmail) {
+    return { sitecontact: lockboxContact || "", sitephone: "", siteemail: "" };
+  }
+  return { sitecontact: null, sitephone: tenantContact ?? null, siteemail: tenantEmail ?? null };
+}
 function fitTenantFields(tenantName, tenantContact, maxLen = SITE_FIELD_LIMIT) {
   const names  = tenantName    ? tenantName.split(",").map(s => s.trim())    : [];
   const phones = tenantContact ? tenantContact.split(",").map(s => s.trim()) : [];
@@ -934,7 +963,7 @@ function fitTenantFields(tenantName, tenantContact, maxLen = SITE_FIELD_LIMIT) {
 // update SiteContact/SitePhone if stale, or create the location if it doesn't exist yet.
 // Matches by street address locally — the locationname|like WHERE clause is not
 // supported by Aroflo.
-async function findOrUpdateLocation(clientId, locations, address, tenantName, tenantContact, tenantEmail) {
+async function findOrUpdateLocation(clientId, locations, address, tenantName, tenantContact, tenantEmail, accessDetails = null) {
   if (!address) return null;
 
   // Strip unit prefix: "1412/380 Murray Street, Perth WA" → "380 Murray Street"
@@ -978,8 +1007,10 @@ async function findOrUpdateLocation(clientId, locations, address, tenantName, te
 
   if (!location) {
     console.log("[location] No match for:", streetPart, "— creating new location:", address);
+    const newLockboxContact = lockboxSiteContact(tenantName, accessDetails);
+    if (newLockboxContact) console.log("[location] No tenant named — site contact set to the lockbox:", newLockboxContact);
     try {
-      return await createLocation(clientId, address, tenantName, tenantContact, tenantEmail);
+      return await createLocation(clientId, address, tenantName || newLockboxContact, tenantContact, tenantEmail);
     } catch (err) {
       console.warn("[location] Creation failed:", err.message);
       return null;
@@ -988,13 +1019,14 @@ async function findOrUpdateLocation(clientId, locations, address, tenantName, te
 
   console.log("[location] Found:", location.locationid, location.locationname);
 
-  if (tenantName || tenantContact || tenantEmail) {
-    // Once we have a tenant name, treat it as the authoritative current state and
-    // explicitly clear phone/email rather than omitting them when absent — e.g. a
-    // property going "Vacant" must blank out the previous tenant's number, not just
-    // leave it on file because this update didn't happen to mention a new one.
-    const sitePhoneValue = tenantName ? (tenantContact ?? "") : tenantContact;
-    const siteEmailValue = tenantName ? (tenantEmail   ?? "") : tenantEmail;
+  const lockboxContact = lockboxSiteContact(tenantName, accessDetails);
+  const { sitecontact: siteContactValue, sitephone: sitePhoneValue, siteemail: siteEmailValue } =
+    locationContactUpdate(tenantName, tenantContact, tenantEmail, lockboxContact);
+  if (!tenantName && !tenantContact && !tenantEmail) {
+    console.log(`[location] No tenant details — treating the previous tenant as moved out; site contact ${lockboxContact ? `set to the lockbox: ${lockboxContact}` : "cleared"}`);
+  }
+
+  if (siteContactValue != null || sitePhoneValue != null || siteEmailValue != null) {
 
     // Must be wrapped in <clients><client> — a bare <locations><location> POST to
     // zone=locations returns status "0" with no error but silently does not apply.
@@ -1003,7 +1035,7 @@ async function findOrUpdateLocation(clientId, locations, address, tenantName, te
   <clientid>${clientId}</clientid>
   <locations><location>
     <locationid>${location.locationid}</locationid>
-    ${tenantName                       ? `<sitecontact>${cdata(tenantName)}</sitecontact>` : ""}
+    ${siteContactValue != null         ? `<sitecontact>${cdata(siteContactValue)}</sitecontact>` : ""}
     ${sitePhoneValue != null           ? `<sitephone>${cdata(sitePhoneValue)}</sitephone>` : ""}
     ${siteEmailValue != null           ? `<siteemail>${cdata(siteEmailValue)}</siteemail>` : ""}
   </location></locations>
@@ -1232,7 +1264,8 @@ async function createArofloJob(result, rawEmail, pdfAttachment = null, emailMeta
     result.address,
     tenantFit.keptName,
     tenantFit.keptPhone,
-    result["tenant-email"]
+    result["tenant-email"],
+    result["access-details"]
   );
   if (!location && result.address) {
     const detail = `Location not linked for "${result.address}" — address used as site name fallback`;
