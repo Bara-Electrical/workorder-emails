@@ -1083,6 +1083,25 @@ function extractKeyCollectionLine(taskDescription) {
   return line || null;
 }
 
+// What reaches the scheduling note about getting in. A lockbox code always does: it is what
+// gets a tech into a property nobody will open, so whoever books the job needs it in front of
+// them, not only in the task description. That holds whether or not the work order says
+// "vacant" — job 108212 (3 Marungi Way) listed no tenant and a lockbox code but never used the
+// word, so it was not flagged vacant and the code only reached the scheduling note when the
+// office added it by hand. A "collect keys" instruction stays vacant-only: it is only
+// actionable when nobody is there to let the tech in.
+function schedulingAccessLines(result) {
+  const isVacant = (result["tenant-name"] || "").trim().toLowerCase() === "vacant";
+  const lines = [];
+  const lockboxDetails = extractLockboxDetails(result["access-details"]);
+  if (lockboxDetails) lines.push(isVacant ? `Vacant - ${lockboxDetails}` : lockboxDetails);
+  if (isVacant) {
+    const keyCollectionLine = extractKeyCollectionLine(result["task-description"]);
+    if (keyCollectionLine) lines.push(`Vacant - ${keyCollectionLine}`);
+  }
+  return lines;
+}
+
 function buildDescription(result, airconUnitType = null, site = "") {
   const parts = [];
   const spacer = `<p>&nbsp;</p>`;
@@ -1425,31 +1444,24 @@ async function createArofloJob(result, rawEmail, pdfAttachment = null, emailMeta
       }
     }
 
-    // Vacant properties are unattended, so a lockbox code or a "collect keys" instruction
-    // needs to be visible to whoever books the job in, not just buried in the task
-    // description — surface both in the scheduling note the same way as overflow tenants.
-    let vacantAccessNote = null;
-    const isVacant = (result["tenant-name"] || "").trim().toLowerCase() === "vacant";
-    if (isVacant) {
-      const vacantLines = [];
-      const lockboxDetails    = extractLockboxDetails(result["access-details"]);
-      const keyCollectionLine = extractKeyCollectionLine(result["task-description"]);
-      if (lockboxDetails)    vacantLines.push(`Vacant - ${lockboxDetails}`);
-      if (keyCollectionLine) vacantLines.push(`Vacant - ${keyCollectionLine}`);
-
+    // Lockbox codes (always) and "collect keys" instructions (vacant only) go in the scheduling
+    // note the same way as overflow tenants — see schedulingAccessLines for why.
+    let accessNote = null;
+    const accessLines = schedulingAccessLines(result);
+    if (accessLines.length > 0) {
       const failedLines = [];
-      for (const line of vacantLines) {
+      for (const line of accessLines) {
         try {
           await appendToPinnedNoteSection(confirmedTaskId, "scheduling", `${dateStamp} ${line} - ${AI_NOTE_INITIALS}`);
         } catch (err) {
-          console.warn("[job] Could not append vacant access info to scheduling note:", err.message);
+          console.warn("[job] Could not append access info to scheduling note:", err.message);
           failedLines.push(line);
         }
       }
       if (failedLines.length > 0) {
-        vacantAccessNote = failedLines.map(line => escapeHtml(line)).join("<br/>");
+        accessNote = failedLines.map(line => escapeHtml(line)).join("<br/>");
         warnings.push({
-          tag: "Vacant access info not added to scheduling note",
+          tag: "Access info not added to scheduling note",
           detail: `Pinned scheduling note not editable — posted as a separate note instead: ${failedLines.join("; ")}`,
         });
       }
@@ -1482,7 +1494,7 @@ async function createArofloJob(result, rawEmail, pdfAttachment = null, emailMeta
 
     const notesXml = [
       additionalTenantNote ? `<note><content>${cdata(additionalTenantNote)}</content></note>` : "",
-      vacantAccessNote     ? `<note><content>${cdata(vacantAccessNote)}</content></note>`     : "",
+      accessNote           ? `<note><content>${cdata(accessNote)}</content></note>`           : "",
       vacateDateNote       ? `<note><content>${cdata(vacateDateNote)}</content></note>`       : "",
     ].join("");
 
@@ -1523,7 +1535,7 @@ async function createArofloJob(result, rawEmail, pdfAttachment = null, emailMeta
       }
 
       if (applied) {
-        console.log("[job] Task update applied — additional tenant note:", !!additionalTenantNote, "vacant access note:", !!vacantAccessNote, "vacate date note:", !!vacateDateNote, "substatus:", substatusId || "n/a");
+        console.log("[job] Task update applied — additional tenant note:", !!additionalTenantNote, "access note fallback:", !!accessNote, "vacate date note:", !!vacateDateNote, "substatus:", substatusId || "n/a");
       } else if (lastErr) {
         console.warn("[job] Combined task update failed after retry:", lastErr.message);
         if (substatusId) warnings.push({ tag: "Substatus failed", detail: `Substatus not applied: ${lastErr.message}` });

@@ -8,7 +8,7 @@
   },
   "scripts": {
     "start": "node index.js",
-    "test": "node --test aroflo-office.test.js gate.test.js && node tools/client-match.test.mjs && node tools/account-to.test.mjs && node tools/substatus-tag.test.mjs && node tools/thread-dedup.test.mjs && node tools/poll-window.test.mjs && node tools/branch-resolve.test.mjs && node tools/page-snapshot.test.mjs"
+    "test": "node --test aroflo-office.test.js gate.test.js && node tools/client-match.test.mjs && node tools/account-to.test.mjs && node tools/substatus-tag.test.mjs && node tools/thread-dedup.test.mjs && node tools/poll-window.test.mjs && node tools/branch-resolve.test.mjs && node tools/scheduling-access.test.mjs && node tools/page-snapshot.test.mjs"
   },
   "dependencies": {
     "dotenv": "^17.4.2",
