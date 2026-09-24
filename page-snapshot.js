@@ -34,9 +34,13 @@ async function getBrowser() {
   // Concurrent callers in phase 2 must not each start their own launch.
   launching ??= chromium.launch({
     executablePath: process.env.CHROMIUM_PATH || undefined,
-    // Required in a container: Chromium's sandbox needs privileges the runtime doesn't grant,
-    // and this process only ever visits work-order URLs the agencies themselves sent us.
-    args: ["--no-sandbox", "--disable-dev-shm-usage"],
+    // --no-sandbox: required in a container — Chromium's sandbox needs privileges the runtime
+    // doesn't grant, and this process only ever visits work-order URLs the agencies sent us.
+    // --disable-domain-reliability / --no-pings: a headless renderer on a server has no reason
+    // to contact Google. Playwright already turns off background networking and component
+    // updates, but Chromium still reached www.google.com and redirector.gvt1.com on launch
+    // without these (counted at the egress proxy while testing).
+    args: ["--no-sandbox", "--disable-dev-shm-usage", "--disable-domain-reliability", "--no-pings"],
   }).then(b => { browser = b; launching = null; return b; },
           err => { launching = null; throw err; });
   return launching;
