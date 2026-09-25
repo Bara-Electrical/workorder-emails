@@ -206,8 +206,11 @@ function resolveBranch(realEstate, rawEmail, propertyAddress = "") {
   const entry = BRANCH_MAPS.find(b => b.agency.test(realEstate || ""));
   if (!entry) return null;
 
-  const haystack = String(rawEmail || "");
-  const address  = String(propertyAddress || "").toLowerCase();
+  // "Mt Lawley" is how Bellcourt's own signature spells it; read it as "Mount Lawley" so the
+  // one branch key covers both without counting as two candidates in the same email.
+  const spellOut = text => String(text || "").replace(/\bmt\b\.?(?=\s)/gi, "mount");
+  const haystack = spellOut(rawEmail);
+  const address  = spellOut(propertyAddress).toLowerCase();
   const suburbs  = Object.keys(entry.branches);
   const hit      = (suburb, how) => ({ suburb, name: entry.branches[suburb], how });
 
