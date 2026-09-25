@@ -172,6 +172,25 @@ declined("a null email declines", "Austpro Properties", null);
   check("a null name returns null", m.resolveBranch(null, "anything") === null);
 }
 
+// 25 Sep: Bellcourt's signature spells the branch "MT LAWLEY" (its PO Box), which the
+// "mount lawley" key never matched, so 21 Ruby Street declined as Client not found.
+{
+  const sig = "Hi Bara, Please attend to replace the bathroom light. THE PROPERTY MANAGEMENT TEAM pmassist@bellcourtproperty.com.au P: 08 6141 7848 M: 0411 371 300 POST: PO BOX 757 MT LAWLEY WA 6929";
+  resolved("Bellcourt 'MT LAWLEY' signature resolves to Mount Lawley", "Bellcourt Property", sig,
+    "Bellcourt Property Group Mount Lawley", "21 Ruby Street, North Perth");
+  resolved("'Mt. Lawley' with a full stop resolves", "Bellcourt Property", "Bellcourt Mt. Lawley office",
+    "Bellcourt Property Group Mount Lawley");
+  resolved("'Mount Lawley' and 'Mt Lawley' in one email count as one branch", "Bellcourt Property",
+    "Bellcourt Property Group Mount Lawley ... POST: PO BOX 757 MT LAWLEY WA 6929",
+    "Bellcourt Property Group Mount Lawley");
+  declined("a Mt Lawley property address is not read as the branch", "Bellcourt Property",
+    "Bellcourt Property Group" + " ".repeat(60) + "Job at 5 Smith St, Mt Lawley", "5 Smith St, Mt Lawley");
+  declined("'Mt Lawley' beside 'South Perth' is still two branches", "Bellcourt Property",
+    "Please call Mt Lawley or South Perth office", "1 Ruby Street, North Perth");
+  declined("'mt' inside a word is not read as Mount", "Bellcourt Property",
+    "Bellcourt amt lawley", "1 Ruby Street, North Perth");
+}
+
 // Proximity must stay wide enough for the real signatures and far short of an address
 // elsewhere in a work order.
 {
