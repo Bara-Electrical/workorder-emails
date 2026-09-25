@@ -29,16 +29,20 @@ function grabFn(startMarker) {
 
 const module_ = [
   `import { PACKAGE_TEMPLATES } from ${JSON.stringify(pathToFileURL(path.join(root, "templates.js")).href)};`,
+  `import { siteLine } from ${JSON.stringify(pathToFileURL(path.join(root, "gate.js")).href)};`,
   grabFn("function escapeHtml(value)"),
   grabFn("function extractLockboxDetails(accessDetails)"),
+  grabFn("function isAirconJob(result)"),
+  grabFn("function tallyFromUnitTags(airconUnitType)"),
+  grabFn("function reconcileAircon(airconUnitType, siteAircon)"),
   grabFn("function buildDescription(result, airconUnitType = null, site = \"\")"),
-  "export { buildDescription };",
+  "export { buildDescription, reconcileAircon, tallyFromUnitTags };",
 ].join("\n");
 
 const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "description-site-"));
 const tmp = path.join(tmpDir, "extracted.mjs");
 fs.writeFileSync(tmp, module_);
-const { buildDescription } = await import(pathToFileURL(tmp).href);
+const { buildDescription, reconcileAircon, tallyFromUnitTags } = await import(pathToFileURL(tmp).href);
 process.on("exit", () => fs.rmSync(tmpDir, { recursive: true, force: true }));
 
 const SITE = "Site: 1× Evaporative";
@@ -89,6 +93,51 @@ for (const pkg of ["AC1", "AC2", "ACEC1"]) {
   check("expenditure limit still shown on a non-aircon job", html.includes("Expenditure Limit: $330"));
   check("lockbox still shown on a non-aircon job", html.includes("Access Details: Lockbox code: 214"));
   check("…and the aircon tally still is not", !hasSite(html));
+}
+
+// ---- One aircon line, and whether its two sources agree ----
+const eq = (name, got, expected) => check(`${name} (got ${JSON.stringify(got)})`, JSON.stringify(got) === JSON.stringify(expected));
+
+eq("tag: single split",            tallyFromUnitTags("Split System"),          { Split: 1, Ducted: 0, Evaporative: 0 });
+eq("tag: split x3",                tallyFromUnitTags("Split System x3"),       { Split: 3, Ducted: 0, Evaporative: 0 });
+eq("tag: evap",                    tallyFromUnitTags("Evap"),                  { Split: 0, Ducted: 0, Evaporative: 1 });
+eq("tag: two tags together",       tallyFromUnitTags("Split System x2, Ducted"), { Split: 2, Ducted: 1, Evaporative: 0 });
+eq("tag: none",                    tallyFromUnitTags(null),                    { Split: 0, Ducted: 0, Evaporative: 0 });
+
+const cases = [
+  // [name, tag, site record, expected unitType, expected site line, expected mismatch]
+  ["match: evap tagged, evap on record",            "Evap",                    { Evaporative: 1 },         "Evap",  "", false],
+  ["match: split x2 tagged, 2 splits on record",    "Split System x2",         { Split: 2 },               "Split System x2", "", false],
+  ["match: two tags, both on record",               "Split System x2, Ducted", { Split: 2, Ducted: 1 },    "Split System x2, Ducted", "", false],
+  ["match: dashboard's { units } wrapper",          "Evap",                    { units: { Evaporative: 1 } }, "Evap", "", false],
+  ["mismatch: evap tagged, splits on record",       "Evap",                    { Split: 2 },               "Evap",  "", true],
+  ["mismatch: right type, wrong count",             "Split System x2",         { Split: 3 },               "Split System x2", "", true],
+  ["mismatch: tag misses a unit on record",         "Split System",            { Split: 1, Evaporative: 1 }, "Split System", "", true],
+  ["tag only, nothing on record — no comparison",   "Evap",                    {},                         "Evap",  "", false],
+  ["record only, no tag — record is the line",      null,                      { Evaporative: 1 },         null,    "Site: 1× Evaporative", false],
+  ["neither — nothing at all",                      null,                      {},                         null,    "", false],
+];
+for (const [name, tag, site, unitType, siteText, mismatch] of cases) {
+  const r = reconcileAircon(tag, site);
+  check(`${name}: line`,     r.unitType === unitType && r.site === siteText);
+  check(`${name}: mismatch`, r.mismatch === mismatch);
+  check(`${name}: never both lines`, !(r.unitType && r.site));
+}
+check("mismatch names what the record says", reconcileAircon("Evap", { Split: 2 }).siteSummary === "2× Split");
+
+// End to end: an aircon job with both a tag and a site record carries exactly one aircon line.
+{
+  const job = { "task-type": "Real Estate Aircon Maintenance", "package": "AC1", "task-description": "Service" };
+  const r = reconcileAircon("Evap", { Evaporative: 1 });
+  const html = buildDescription(job, r.unitType, r.site);
+  check("aircon job with both sources shows the tag", html.includes("Unit Type: Evap"));
+  check("…and not the site record as well", !html.includes("Site:"));
+}
+{
+  const job = { "task-type": "Real Estate Aircon Maintenance", "package": "AC1", "task-description": "Service" };
+  const r = reconcileAircon(null, { Evaporative: 1 });
+  const html = buildDescription(job, r.unitType, r.site);
+  check("aircon job with no tag falls back to the site record", html.includes("Site: 1× Evaporative") && !html.includes("Unit Type"));
 }
 
 const failures = results.filter(r => !r.ok);
