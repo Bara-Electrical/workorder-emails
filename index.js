@@ -1138,6 +1138,44 @@ function schedulingAccessLines(result) {
   return lines;
 }
 
+// Whether a job is aircon work, so aircon information belongs on it. One rule, shared by the
+// description and the mismatch warning, so they can never disagree about which jobs count.
+function isAirconJob(result) {
+  const pkg = (result["package"] && result["package"] !== "null" ? result["package"] : null)
+    ?? (PACKAGE_TEMPLATES[result["task-type"]] ? result["task-type"] : null);
+  return ["AC1", "AC2", "ACEC1"].includes(pkg) || result["task-type"] === "Real Estate Aircon Maintenance";
+}
+
+// The unit tally an email's aircon tags describe, in the dashboard's own shape so the two can be
+// compared: "Split System x2, Ducted" -> { Split: 2, Ducted: 1, Evaporative: 0 }.
+function tallyFromUnitTags(airconUnitType) {
+  const tally = { Split: 0, Ducted: 0, Evaporative: 0 };
+  for (const tag of String(airconUnitType || "").split(",").map(t => t.trim().toLowerCase()).filter(Boolean)) {
+    const split = tag.match(/^split system(?:\s*x\s*(\d+))?$/);
+    if (split)              tally.Split       += split[1] ? Number(split[1]) : 1;
+    else if (tag === "ducted") tally.Ducted   += 1;
+    else if (tag === "evap")   tally.Evaporative += 1;
+  }
+  return tally;
+}
+
+// One aircon line for the description, never two, and whether its two sources disagree.
+//
+// The Outlook tag ("Unit Type") is the office's call for THIS job; the dashboard tally ("Site")
+// is what past compliance forms recorded at the PROPERTY. Showing both put two answers to the
+// same question on the job. The tag wins, being current and deliberate; the site record is the
+// fallback when nothing was tagged. When both exist and the counts differ, that is flagged
+// rather than silently picked, so someone checks — though a job covering fewer units than the
+// property has is a legitimate reason for a difference, so it is a prompt, not an error.
+function reconcileAircon(airconUnitType, siteAircon) {
+  const site = siteAircon?.units ?? siteAircon ?? {};
+  const siteHasUnits = ["Split", "Ducted", "Evaporative"].some(t => site[t] > 0);
+  if (!airconUnitType) return { unitType: null, site: siteLine(site), mismatch: false };
+  const tagged = tallyFromUnitTags(airconUnitType);
+  const mismatch = siteHasUnits && ["Split", "Ducted", "Evaporative"].some(t => (site[t] || 0) !== tagged[t]);
+  return { unitType: airconUnitType, site: "", mismatch, siteSummary: siteHasUnits ? siteLine(site).replace(/^Site: /, "") : "" };
+}
+
 function buildDescription(result, airconUnitType = null, site = "") {
   const parts = [];
   const spacer = `<p>&nbsp;</p>`;
@@ -1146,8 +1184,8 @@ function buildDescription(result, airconUnitType = null, site = "") {
   // Fall back to task-type if AI forgot to set package (e.g. task-type is EC1 but package is null)
   const pkg = (result["package"] && result["package"] !== "null" ? result["package"] : null)
     ?? (PACKAGE_TEMPLATES[result["task-type"]] ? result["task-type"] : null);
-  const isAirconJob = ["AC1", "AC2", "ACEC1"].includes(pkg) || result["task-type"] === "Real Estate Aircon Maintenance";
-  if (airconUnitType && isAirconJob) {
+  const airconJob = isAirconJob(result);
+  if (airconUnitType && airconJob) {
     parts.push(`<p><span style="background:#ffe0b3;font-weight:bold">Unit Type: ${escapeHtml(airconUnitType)}</span></p>`);
     parts.push(spacer);
   }
@@ -1164,12 +1202,17 @@ function buildDescription(result, airconUnitType = null, site = "") {
     );
   }
 
-  const hasHighlights = result["expenditure-limit"] || lockboxDetails || site;
+  // What the dashboard knows is installed at the site (from compliance forms), so the tech
+  // knows what to expect before arriving. It is an aircon tally ("Site: 1× Evaporative"), so
+  // it only belongs on an aircon job, gated the same way as the Unit Type line above — on
+  // everything else it is noise: job 108163 was a bedroom light fitting carrying the
+  // property's evap unit. Empty when the dashboard has nothing on record.
+  const showSite = site && airconJob;
+
+  const hasHighlights = result["expenditure-limit"] || lockboxDetails || showSite;
   if (hasHighlights) parts.push(spacer);
 
-  // What the dashboard knows is installed at the site (from compliance forms), so the tech
-  // knows what to expect before arriving. Empty when the dashboard has nothing on record.
-  if (site) {
+  if (showSite) {
     parts.push(`<p><span style="background:#e0e0e0;font-weight:bold">${escapeHtml(site)}</span></p>`);
   }
 
@@ -1367,6 +1410,15 @@ async function createArofloJob(result, rawEmail, pdfAttachment = null, emailMeta
     warnings.push({ tag: "Task name truncated", detail });
   }
 
+  // One aircon line, from the tag or else the site record, and a warning when the two disagree.
+  // Only on aircon jobs — on anything else neither line is shown, so there is nothing to check.
+  const aircon = reconcileAircon(emailMeta?.airconUnitType, checks.aircon);
+  if (aircon.mismatch && isAirconJob(result)) {
+    const detail = `Tagged "${aircon.unitType}" but the site record has ${aircon.siteSummary} — check which is right`;
+    console.warn("[job] Aircon mismatch:", detail);
+    warnings.push({ tag: "Aircon mismatch", detail });
+  }
+
   const xml =
 `<tasks>
   <task>
@@ -1378,7 +1430,7 @@ async function createArofloJob(result, rawEmail, pdfAttachment = null, emailMeta
     ${location ? `<location><locationid>${location.locationid}</locationid></location>` : ""}
     ${result.address && !location  ? `<sitename>${cdata(result.address)}</sitename>`          : ""}
     <taskname>${cdata(taskName)}</taskname>
-    <description>${cdata(buildDescription(result, emailMeta?.airconUnitType, siteLine(checks.aircon)))}</description>
+    <description>${cdata(buildDescription(result, aircon.unitType, aircon.site))}</description>
     <duedate>${dueDate}</duedate>
     ${result["order-number"] ? `<custon>${cdata(result["order-number"])}</custon>` : ""}
     ${(result["account-to"] || realEstate) ? `<customfields><customfield><name><![CDATA[ Account To: ]]></name><type><![CDATA[ text ]]></type><value>${cdata(result["account-to"] || realEstate)}</value></customfield></customfields>` : ""}
