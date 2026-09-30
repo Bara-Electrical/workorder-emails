@@ -35,6 +35,7 @@ const module_ = [
   grabFn("function isAirconJob(result)"),
   grabFn("function tallyFromUnitTags(airconUnitType)"),
   grabFn("function reconcileAircon(airconUnitType, siteAircon)"),
+  grabFn("function limitWithGst(limit)"),
   grabFn("function buildDescription(result, airconUnitType = null, site = \"\")"),
   "export { buildDescription, reconcileAircon, tallyFromUnitTags };",
 ].join("\n");
@@ -90,9 +91,22 @@ for (const pkg of ["AC1", "AC2", "ACEC1"]) {
     { "task-type": "Real Estate General Maintenance", "task-description": "Fix light",
       "expenditure-limit": "$330", "access-details": "Lockbox code: 214" },
     null, SITE);
-  check("expenditure limit still shown on a non-aircon job", html.includes("Expenditure Limit: $330"));
+  check("expenditure limit still shown on a non-aircon job", html.includes("Expenditure Limit: $330 inc GST"));
   check("lockbox still shown on a non-aircon job", html.includes("Access Details: Lockbox code: 214"));
   check("…and the aircon tally still is not", !hasSite(html));
+}
+
+// Expenditure limits read "inc GST", unless the work order already qualified the GST.
+{
+  const limitLine = limit => (buildDescription(
+    { "task-type": "Real Estate General Maintenance", "task-description": "Fix light", "expenditure-limit": limit },
+    null, "").match(/Expenditure Limit: ([^<]*)/) || [])[1];
+  check("a bare limit gets inc GST", limitLine("$500") === "$500 inc GST", limitLine("$500"));
+  check("a padded limit gets inc GST once", limitLine(" $500.00 ") === "$500.00 inc GST", limitLine(" $500.00 "));
+  check("'+ GST' is left as written", limitLine("$500 + GST") === "$500 + GST", limitLine("$500 + GST"));
+  check("'ex GST' is not contradicted", limitLine("$450 ex GST") === "$450 ex GST", limitLine("$450 ex GST"));
+  check("'inc gst' is not doubled", limitLine("$330 inc gst") === "$330 inc gst", limitLine("$330 inc gst"));
+  check("no limit, no line", limitLine(null) === undefined);
 }
 
 // ---- One aircon line, and whether its two sources agree ----
