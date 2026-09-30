@@ -1179,6 +1179,14 @@ function reconcileAircon(airconUnitType, siteAircon) {
   return { unitType: airconUnitType, site: "", mismatch, siteSummary: siteHasUnits ? siteLine(site).replace(/^Site: /, "") : "" };
 }
 
+// The office reads every expenditure limit as inc GST, so the description says so. A limit
+// the work order already qualifies ("$500 + GST", "$450 ex GST") is left as written rather
+// than contradicted.
+function limitWithGst(limit) {
+  const text = String(limit).trim();
+  return /gst/i.test(text) ? text : `${text} inc GST`;
+}
+
 function buildDescription(result, airconUnitType = null, site = "") {
   const parts = [];
   const spacer = `<p>&nbsp;</p>`;
@@ -1220,7 +1228,7 @@ function buildDescription(result, airconUnitType = null, site = "") {
   }
 
   if (result["expenditure-limit"]) {
-    parts.push(`<p><span style="background:#cce5ff;font-weight:bold">Expenditure Limit: ${escapeHtml(result["expenditure-limit"])}</span></p>`);
+    parts.push(`<p><span style="background:#cce5ff;font-weight:bold">Expenditure Limit: ${escapeHtml(limitWithGst(result["expenditure-limit"]))}</span></p>`);
   }
 
   if (lockboxDetails) {
