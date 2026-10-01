@@ -224,7 +224,8 @@ function resolveBranch(realEstate, rawEmail, propertyAddress = "") {
   );
   if (anywhere.length === 1) return hit(anywhere[0], "elsewhere in the email");
 
-  return { ambiguous: adjacent.length > 1 ? adjacent : anywhere };
+  const ambiguous = adjacent.length > 1 ? adjacent : anywhere;
+  return { ambiguous, candidates: ambiguous.map(suburb => entry.branches[suburb]) };
 }
 
 const TRIGGER_CATEGORY          = "Bara AI";
@@ -970,7 +971,9 @@ function fitTenantFields(tenantName, tenantContact, maxLen = SITE_FIELD_LIMIT) {
 // update SiteContact/SitePhone if stale, or create the location if it doesn't exist yet.
 // Matches by street address locally — the locationname|like WHERE clause is not
 // supported by Aroflo.
-async function findOrUpdateLocation(clientId, locations, address, tenantName, tenantContact, tenantEmail, accessDetails = null) {
+// The existing, unarchived location for an address, or null. Shared by findOrUpdateLocation
+// and the branch tie-break, which asks the same question of each candidate branch card.
+function matchLocation(locations, address) {
   if (!address) return null;
 
   // Strip unit prefix: "1412/380 Murray Street, Perth WA" → "380 Murray Street"
@@ -978,9 +981,7 @@ async function findOrUpdateLocation(clientId, locations, address, tenantName, te
   const incomingUnit = address.match(/^(\d+)\//)?.[1] || null;
   const { suburb: incomingSuburb } = parseAustralianAddress(address);
 
-  const forClient = locations;
-  const active = forClient.filter(l => l.archived?.toUpperCase() !== "TRUE");
-  console.log(`[location] Search — client ${clientId}: ${forClient.length} location(s) (${active.length} active), searching for "${streetPart}"${incomingSuburb ? ` in "${incomingSuburb}"` : ""}`);
+  const active = locations.filter(l => l.archived?.toUpperCase() !== "TRUE");
   // A street-only match isn't enough when a building has multiple numbered units on
   // file — "10/27 X" contains "27 x" as a substring, so it would wrongly match an
   // incoming "9/27 X" and silently attach the job to a different unit's tenant.
@@ -1011,6 +1012,19 @@ async function findOrUpdateLocation(clientId, locations, address, tenantName, te
     if (incomingSuburb && l.suburb && incomingSuburb.toLowerCase() !== l.suburb.toLowerCase()) return false;
     return true;
   });
+
+  return location || null;
+}
+
+async function findOrUpdateLocation(clientId, locations, address, tenantName, tenantContact, tenantEmail, accessDetails = null) {
+  if (!address) return null;
+
+  const streetPart = address.replace(/^\d+\//, "").split(",")[0].trim().toLowerCase();
+  const { suburb: incomingSuburb } = parseAustralianAddress(address);
+  const activeCount = locations.filter(l => l.archived?.toUpperCase() !== "TRUE").length;
+  console.log(`[location] Search — client ${clientId}: ${locations.length} location(s) (${activeCount} active), searching for "${streetPart}"${incomingSuburb ? ` in "${incomingSuburb}"` : ""}`);
+
+  const location = matchLocation(locations, address);
 
   if (!location) {
     console.log("[location] No match for:", streetPart, "— creating new location:", address);
@@ -1243,6 +1257,20 @@ function buildDescription(result, airconUnitType = null, site = "") {
   return parts.join("\n");
 }
 
+// When the email names more than one branch, the agency's own records can still say which
+// office it is. RMA's work orders now list both office addresses side by side, so the text
+// alone cannot. The branch card that already holds this property wins; failing that, the
+// one whose contacts include the PM. Only a single answer is used — two cards both holding
+// the property, or neither, still declines rather than guessing.
+function pickBranchFromHistory(candidates, address, pmName) {
+  const byProperty = candidates.filter(c => matchLocation(c.locations, address));
+  if (byProperty.length === 1) return { name: byProperty[0].name, how: "property already on this card" };
+  if (byProperty.length > 1) return null;
+  const byPm = candidates.filter(c => matchContact(c.contacts, pmName));
+  if (byPm.length === 1) return { name: byPm[0].name, how: "PM is a contact on this card" };
+  return null;
+}
+
 async function createArofloJob(result, rawEmail, pdfAttachment = null, emailMeta = null, imageAttachments = [], pageSnapshot = null) {
   console.log("[job] Creating Aroflo job...");
   const warnings = [];
@@ -1265,14 +1293,28 @@ async function createArofloJob(result, rawEmail, pdfAttachment = null, emailMeta
     console.log(`[job] Branch resolved via "${branchHit.suburb}" (${branchHit.how}) → "${branchHit.name}"`);
     realEstate = branchHit.name;
   } else if (branchHit) {
-    // Left as the group name, which will not match a branch card — the client-not-found tag
-    // and its alert are the right outcome, with the reason in the log.
-    console.warn(
-      `[job] Branch not resolved for "${realEstate}" — ` +
-      (branchHit.ambiguous.length
-        ? `more than one branch named in the email: ${branchHit.ambiguous.join(", ")}`
-        : "no branch named in the email")
-    );
+    const historyHit = branchHit.candidates.length > 1
+      ? pickBranchFromHistory(
+          await Promise.all(branchHit.candidates.map(async name => {
+            const card = await findClient(name);
+            return { name, ...(card ? await findLocationsAndContacts(card.clientid) : { locations: [], contacts: [] }) };
+          })),
+          result.address,
+          result["property-manager"])
+      : null;
+    if (historyHit) {
+      console.log(`[job] Branch resolved by history (${historyHit.how}) → "${historyHit.name}" — email named: ${branchHit.ambiguous.join(", ")}`);
+      realEstate = historyHit.name;
+    } else {
+      // Left as the group name, which will not match a branch card — the client-not-found tag
+      // and its alert are the right outcome, with the reason in the log.
+      console.warn(
+        `[job] Branch not resolved for "${realEstate}" — ` +
+        (branchHit.ambiguous.length
+          ? `more than one branch named in the email, and no single card holds the property or the PM: ${branchHit.ambiguous.join(", ")}`
+          : "no branch named in the email")
+      );
+    }
   }
   console.log(`[job] Client lookup — AI extracted real-estate: "${result["real-estate"]}", resolved to: "${realEstate}", from: "${emailMeta?.from}"`);
   let client = await findClient(realEstate);

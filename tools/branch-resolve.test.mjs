@@ -191,6 +191,19 @@ declined("a null email declines", "Austpro Properties", null);
     "Bellcourt amt lawley", "1 Ruby Street, North Perth");
 }
 
+// An ambiguous result hands back the candidate cards, for the tie-break by history.
+{
+  const r = m.resolveBranch("Rental Management Australia (WA)",
+    // Verbatim from the 1 Oct work order's HTML.
+    'Melinda Burmas <br />C/O Rental Management Australia (WA) </p><p style="display:block;font-size:12px;text-align:center">23/397 Warnbro Sound Avenue, Port Kennedy WA 6172 ; 17 Drake Street, Osborne Park WA 6017 </p>',
+    "284 Hamilton Road, Spearwood WA 6163");
+  check("RMA's two-office address line is ambiguous", r && !r.name, JSON.stringify(r));
+  check("…and names both cards as candidates",
+    JSON.stringify([...(r?.candidates || [])].sort()) === JSON.stringify(["RMA - Osborne Park", "RMA - Port Kennedy"]), JSON.stringify(r));
+  const none = m.resolveBranch("Bellcourt Property", "nothing here", "1 Ruby Street, North Perth");
+  check("no branch named gives no candidates", Array.isArray(none?.candidates) && none.candidates.length === 0, JSON.stringify(none));
+}
+
 // Proximity must stay wide enough for the real signatures and far short of an address
 // elsewhere in a work order.
 {
