@@ -1856,8 +1856,44 @@ async function filterRealPhotos(images) {
   }
 }
 
+// Elements styled display:none, children included. Nobody reading the email in Outlook sees
+// them, so the AI should not either: Bricks & Agent ships a hidden "Property Manager Details"
+// block naming an office placeholder (Peak Central's is always "Jodie Mordacz",
+// admin@peakcentral.com.au) while the visible "Maintenance Request Posted By" names the real
+// PM, and the AI was taking the hidden one. The last display declaration in the style wins,
+// as in CSS, so "display:none;display:block" stays.
+const VOID_TAGS = new Set(["area", "base", "br", "col", "embed", "hr", "img", "input", "link", "meta", "source", "track", "wbr"]);
+function stripHiddenElements(html) {
+  const open = /<([a-z][a-z0-9]*)\b[^>]*\bstyle\s*=\s*("[^"]*"|'[^']*')[^>]*>/gi;
+  let out = "";
+  let pos = 0;
+  let m;
+  while ((m = open.exec(html))) {
+    const displays = [...m[2].matchAll(/display\s*:\s*([a-z-]+)/gi)];
+    if (!displays.length || displays[displays.length - 1][1].toLowerCase() !== "none") continue;
+    const tag = m[1].toLowerCase();
+    let end = m.index + m[0].length;
+    if (!VOID_TAGS.has(tag) && !m[0].endsWith("/>")) {
+      const tags = new RegExp(`<(/?)${tag}\\b[^>]*>`, "gi");
+      tags.lastIndex = end;
+      let depth = 1;
+      let t;
+      while (depth > 0 && (t = tags.exec(html))) {
+        if (t[1]) depth--;
+        else if (!t[0].endsWith("/>")) depth++;
+        end = tags.lastIndex;
+      }
+      if (depth > 0) end = html.length; // unclosed: hidden to the end, as a browser renders it
+    }
+    out += html.slice(pos, m.index);
+    pos = end;
+    open.lastIndex = end;
+  }
+  return out + html.slice(pos);
+}
+
 function cleanHtml(html) {
-  return html
+  return stripHiddenElements(html)
     .replace(/<script[\s\S]*?<\/script>/gi, "")
     .replace(/<style[\s\S]*?<\/style>/gi, "")
     .replace(/<[^>]*>/g, " ")
@@ -2224,7 +2260,7 @@ CRITICAL RULES:
 - notes is any concerns, ambiguities, or flags worth mentioning — e.g. missing fields, conflicting info, unusual job details. Leave null if nothing to flag.
 - tenant-contact must contain phone numbers ONLY — no names, no labels, just the numbers. Only use a number if it is explicitly and unambiguously tied to the tenant (e.g. appears in a Tenant section, is labelled "Tenant Phone"/"Tenant Mobile"/"Contact Number", or immediately follows an inline "contact tenant <name>" style phrase). If you are unsure whether a number belongs to the tenant, leave tenant-contact null. If there are multiple confirmed tenant numbers, separate with commas. Prefer mobile over home numbers. Australian numbers always start with 0 (e.g. 0412 345 678) — always include the leading 0.
 - tenant-email is the tenant's email address. Only include if explicitly labelled as the tenant's email. Leave null if not present or uncertain.
-- property-manager comes from the Property Manager section, OR from an Agency Details section where the manager is listed (e.g. "Manager: Jane Smith"). If there is no dedicated Property Manager/Agency Details section, use whoever issued/sent the work order instead — e.g. an "Issued by NAME" line, or an email sign-off ("Regards, NAME") — since that person is the PM contact even without a labelled section. Use the person's name only, not the agency name.
+- property-manager comes from the Property Manager section, OR from an Agency Details section where the manager is listed (e.g. "Manager: Jane Smith"). If there is no dedicated Property Manager/Agency Details section, use whoever issued/sent the work order instead — e.g. an "Issued by NAME" line, a "Maintenance Request Posted By" contact, or an email sign-off ("Regards, NAME") — since that person is the PM contact even without a labelled section. Use the person's name only, not the agency name.
 - account-to: when the work order names the owner(s), include ALL of them exactly as written, in the format "owners c/o real estate". When it does NOT name an owner, account-to is just the real-estate name on its own — no "c/o", and never a placeholder standing in for the missing name. Writing "Owners c/o Smith Realty", "Owner c/o ...", or "The Owner c/o ..." when no owner was actually given is wrong; the answer there is simply "Smith Realty".
 - real-estate must always be a company or agency name — never a URL or domain. If the source contains something like "aussieproperty.com.au", convert it to a readable name (e.g. "Aussie Property") by stripping the domain extension and formatting as a proper name. If you cannot find it directly, look for it in account-to after the c/o. The sender's email address is provided at the top of the input — use the domain as an additional hint to identify real-estate if the company name is not clearly stated in the content (e.g. "noreply@raywhite.com.au" → "Ray White").
 - order-number is the job/work order number.
