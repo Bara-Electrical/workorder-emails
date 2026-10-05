@@ -1856,6 +1856,37 @@ async function filterRealPhotos(images) {
   }
 }
 
+// Bricks + Agent work orders link to the job ("Review Work Order") as
+// trade.bricksandagent.com/external/overview/<userId>/<jobId>, usually wrapped in a Safe Links
+// redirect, so the slashes may arrive encoded. The page behind it is a script-rendered app that
+// reads its data from the jobdetails call below.
+const BRICKS_AGENT_LINK = /trade\.bricksandagent\.com(?:\/|%2F)external(?:\/|%2F)overview(?:\/|%2F)([0-9a-f-]{36})(?:\/|%2F)([0-9a-f-]{36})/i;
+function bricksAgentIds(html) {
+  const m = String(html || "").match(BRICKS_AGENT_LINK);
+  return m ? { userId: m[1], jobId: m[2] } : null;
+}
+
+// The PM Bricks + Agent has assigned to the job, from the same data the link shows, or null.
+// Authoritative where the email is not: one template hides an office placeholder as the PM
+// (Peak Central's "Jodie Mordacz"), another names no PM at all (Professionals: The Wright
+// Team). Read-only, and any failure just leaves the AI's answer in place.
+async function bricksAgentAssignedPm(html) {
+  const ids = bricksAgentIds(html);
+  if (!ids) return null;
+  try {
+    const res = await fetch(
+      `https://services.bricksandagent.com/external/jobdetails?jobId=${ids.jobId}&userId=${ids.userId}`,
+      { signal: AbortSignal.timeout(10000) }
+    );
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const name = String((await res.json())?.job?.assignedPmName || "").trim();
+    return name || null;
+  } catch (err) {
+    console.warn("[job] Bricks + Agent PM lookup failed:", err.message);
+    return null;
+  }
+}
+
 // The person named on a Bricks + Agent payer line ("Alyssa Radmore-Collard - Paid via rental
 // funds on behalf of owner"), or null. Some agencies put their own name there instead ("Peak
 // Central - Paid via ..."), so a name that is the agency's is not a PM.
@@ -2370,9 +2401,15 @@ Return ONLY valid JSON with these exact keys:
   }
 
   // Bricks + Agent's newer template (Professionals: The Wright Team, since late Sep) has no
-  // Property Manager section at all: the only place the PM is named is the PDF's payer line,
-  // "Franziska Scharl- Paid via rental funds on behalf of owner", which the AI does not read
-  // as the PM, so these came through as "No PM in email" and were filled in by hand.
+  // Property Manager section at all: these came through as "No PM in email" and were filled
+  // in by hand. The job's own record names the PM; failing that (the lookup is down, or the
+  // email lost its link), the PDF's payer line does — "Franziska Scharl- Paid via rental funds
+  // on behalf of owner" — which the AI does not read as the PM.
+  const assignedPm = await bricksAgentAssignedPm(rawBody);
+  if (assignedPm && assignedPm !== parsed["property-manager"]) {
+    console.log(`[job] property-manager: Bricks + Agent has "${assignedPm}" assigned — AI read "${parsed["property-manager"] || "nothing"}"`);
+    parsed["property-manager"] = assignedPm;
+  }
   if (!parsed["property-manager"]) {
     const payer = payerLinePm(textForAI, parsed["real-estate"]);
     if (payer) {
