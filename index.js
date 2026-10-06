@@ -1996,31 +1996,58 @@ async function attachWorkOrderToJob(jobNumber, pdfAttachment, imageAttachments, 
 
 
 // Known work order portal domains
-const WORKORDER_DOMAINS = /tapihq\.com|propertytree\.com|propertyme\.com\.au|console\.net\.au|inspection\.express|ailo\.io/i;
+// ailousercontent.com: Ailo (Ray White) serves the work order PDF and photos from there, and
+// has since at least late Sep. Without it none of those PDFs were opened, so every Ray White
+// job lost its tenants, key number and invoice-to (111 Dulwich Street, job 108887).
+const WORKORDER_DOMAINS = /tapihq\.com|propertytree\.com|propertyme\.com\.au|console\.net\.au|inspection\.express|ailo\.io|ailousercontent\.com/i;
+
+// Buttons that DO something to the job rather than show it. Bricks + Agent's "Reject Work
+// Order" link (?isWorkOrderReject=1) matched the "work order" text search and was being
+// fetched; a plain fetch is harmless, but the page snapshot opens the link in a real browser,
+// which runs the page's script. It only escaped because that page answers 404. Never follow
+// one of these.
+// The flag check is case-sensitive on purpose: "isWorkOrderReject", "isSchedule", "isStart" are
+// camel-cased, and an ordinary "?issue=" must not look like one.
+function isActionLink(text, dest) {
+  return /\b(reject|decline|cancel|accept|schedule|start|complete|unable)\b/i.test(text)
+    || /[?&](?:is[A-Z]\w*|unableToContact\w*)=/.test(dest)
+    || /reject|decline/i.test(dest);
+}
+
+// Where a wrapped link really goes. Safe Links carries it in ?url=; Inky wraps links as
+// shared.outlook.inky.com/link?domain=<real-destination-domain>&t=... — the real domain is right
+// there in the query string, no redirect needed to check it.
+function linkDestination(href) {
+  if (/safelinks\.protection\.outlook\.com/i.test(href)) {
+    try { return decodeURIComponent(new URL(href).searchParams.get("url") || href); } catch { return href; }
+  }
+  if (/shared\.outlook\.inky\.com/i.test(href)) {
+    try { return new URL(href).searchParams.get("domain") || href; } catch { return href; }
+  }
+  return href;
+}
 
 // Search raw HTML anchor tags — match on link text containing "work order" or "workorder".
 function findWorkOrderLink(rawHtml) {
   const unescaped = rawHtml.replace(/&amp;/g, "&");
 
-  // Extract <a href="...">text</a> pairs
-  const anchors = [...unescaped.matchAll(/<a\s[^>]*href="([^"]+)"[^>]*>([\s\S]*?)<\/a>/gi)];
+  // Extract <a href="...">text</a> pairs, dropping anything that acts on the job
+  const anchors = [...unescaped.matchAll(/<a\s[^>]*href="([^"]+)"[^>]*>([\s\S]*?)<\/a>/gi)]
+    .map(([, href, rawText]) => ({ href, text: rawText.replace(/<[^>]*>/g, "").trim(), dest: linkDestination(href) }))
+    .filter(a => a.href.startsWith("https://") && !isActionLink(a.text, a.dest));
 
-  for (const [, href, rawText] of anchors) {
-    if (!href.startsWith("https://")) continue;
-    const text = rawText.replace(/<[^>]*>/g, "").trim();
+  for (const { href, text } of anchors) {
     if (/work\s*order/i.test(text)) return href;
   }
 
+  // A PDF on a known portal — Ailo lists its files by name ("WO-2230-111-Dulwich-Street-
+  // Beckenham.pdf") beside photos on the same domain, so the PDF is picked out by name first.
+  for (const { href, text, dest } of anchors) {
+    if (/\.pdf$/i.test(text) && WORKORDER_DOMAINS.test(dest)) return href;
+  }
+
   // Fallback: known portal domains or "workorder" in the URL itself
-  for (const [, href] of anchors) {
-    if (!href.startsWith("https://")) continue;
-    const dest = /safelinks\.protection\.outlook\.com/i.test(href)
-      ? (() => { try { return decodeURIComponent(new URL(href).searchParams.get("url") || href); } catch { return href; } })()
-      // Inky wraps links as shared.outlook.inky.com/link?domain=<real-destination-domain>&t=...
-      // — the real domain is right there in the query string, no redirect needed to check it.
-      : /shared\.outlook\.inky\.com/i.test(href)
-      ? (() => { try { return new URL(href).searchParams.get("domain") || href; } catch { return href; } })()
-      : href;
+  for (const { href, dest } of anchors) {
     if (/workorder/i.test(dest) || WORKORDER_DOMAINS.test(dest)) return href;
   }
 
@@ -2054,12 +2081,7 @@ function findLinkedPhotoLinks(rawHtml) {
     if (!href.startsWith("https://")) continue;
     const name = rawText.replace(/<[^>]*>/g, "").trim();
     if (!/\.(jpe?g|png|gif|bmp|webp)$/i.test(name)) continue;
-    const dest = /safelinks\.protection\.outlook\.com/i.test(href)
-      ? (() => { try { return decodeURIComponent(new URL(href).searchParams.get("url") || href); } catch { return href; } })()
-      : /shared\.outlook\.inky\.com/i.test(href)
-      ? (() => { try { return new URL(href).searchParams.get("domain") || href; } catch { return href; } })()
-      : href;
-    if (WORKORDER_DOMAINS.test(dest)) links.push({ href, name });
+    if (WORKORDER_DOMAINS.test(linkDestination(href))) links.push({ href, name });
   }
   return links;
 }
