@@ -85,6 +85,8 @@ const CLIENTS = [
   "Certainty Property WA", "Certainty Property Pty LTd",
   // Reached only by sending domain — the work order names the owner's company, never this.
   "Coronis Now WA", "Oscar D'Souza Real Estate",
+  // RMA's two branch cards; every RMA job goes to Osborne Park for now (6 Oct).
+  "RMA - Osborne Park", "RMA - Port Kennedy",
 ];
 
 for (const name of CLIENTS) m.clientCache.set(name.toLowerCase(), { clientname: name, clientid: name });
@@ -186,6 +188,9 @@ const DOMAIN_CASES = [
   ["Rica.Velez@coronis.com.au", "Coronis Now WA"],
   ["someone@CORONIS.COM.AU",    "Coronis Now WA"],
   ["pm@oscardsouza.com.au",     "Oscar D'Souza Real Estate"],
+  // 6 Oct 2026: if the AI names RMA some way the branch pin cannot see, the sender still
+  // lands it on the Osborne Park card, never Port Kennedy.
+  ["maintenance@rmaproperty.com.au", "RMA - Osborne Park"],
 ];
 
 // The names these work orders actually carry must NOT match anything, or the domain fallback
