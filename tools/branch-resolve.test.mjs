@@ -34,10 +34,18 @@ const module_ = [
   "export { resolveBranch, BRANCH_MAPS, BRANCH_PROXIMITY };",
 ].join("\n");
 
+// RMA is pinned to one card for now (pinTo in BRANCH_MAPS), which switches its branch-reading
+// off. That logic is kept for when the pin comes out, so the cases below run against a copy
+// with the pin removed (`m`); `live` is the map exactly as shipped.
 const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "branch-resolve-"));
 const tmp = path.join(tmpDir, "extracted.mjs");
-fs.writeFileSync(tmp, module_);
+const tmpLive = path.join(tmpDir, "live.mjs");
+const unpinned = module_.replace(/^\s*pinTo:.*\n/gm, "");
+if (unpinned === module_) throw new Error("expected a pinTo line in BRANCH_MAPS to strip");
+fs.writeFileSync(tmp, unpinned);
+fs.writeFileSync(tmpLive, module_);
 const m = await import(pathToFileURL(tmp).href);
+const live = await import(pathToFileURL(tmpLive).href);
 process.on("exit", () => fs.rmSync(tmpDir, { recursive: true, force: true }));
 
 const results = [];
@@ -202,6 +210,21 @@ declined("a null email declines", "Austpro Properties", null);
     JSON.stringify([...(r?.candidates || [])].sort()) === JSON.stringify(["RMA - Osborne Park", "RMA - Port Kennedy"]), JSON.stringify(r));
   const none = m.resolveBranch("Bellcourt Property", "nothing here", "1 Ruby Street, North Perth");
   check("no branch named gives no candidates", Array.isArray(none?.candidates) && none.candidates.length === 0, JSON.stringify(none));
+}
+
+// ---- As shipped: every RMA job goes to RMA - Osborne Park for now (office's call, 6 Oct). ----
+{
+  const HAMMERSMITH = 'Amanda Jane, Damian Cummins <br />C/O Rental Management Australia (WA) </p><p style="display:block;font-size:12px;text-align:center">23/397 Warnbro Sound Avenue, Port Kennedy WA 6172 ; 17 Drake Street, Osborne Park WA 6017 </p>';
+  const pinned = (name, extracted, email, address = "") => {
+    const r = live.resolveBranch(extracted, email, address);
+    check(name, r?.name === "RMA - Osborne Park", JSON.stringify(r));
+  };
+  pinned("9/16 Hammersmith Court (both offices listed) goes to Osborne Park", "Rental Management Australia (WA)", HAMMERSMITH, "9/16 Hammersmith Court, Joondalup WA 6027");
+  pinned("an email naming only Port Kennedy still goes to Osborne Park", "Rental Management Australia", "C/O Rental Management Australia, 23/397 Warnbro Sound Avenue, Port Kennedy WA 6172");
+  pinned("an email naming no office goes to Osborne Park", "Rental Management Australia (WA)", "Hi Bara Electrical");
+  const austpro = live.resolveBranch("Austpro Properties", "Regards, Austpro Properties Booragoon");
+  check("the pin is RMA's alone: Austpro still reads its branch", austpro?.name === "Austpro Properties - Booragoon", JSON.stringify(austpro));
+  check("a pinned result is not ambiguous", !live.resolveBranch("Rental Management Australia", "x").ambiguous);
 }
 
 // Proximity must stay wide enough for the real signatures and far short of an address

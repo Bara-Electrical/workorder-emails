@@ -142,6 +142,9 @@ const EMAIL_DOMAIN_MAP = {
   // to alias — but every one of these comes from @coronis.com.au, and the Aroflo card has
   // always been "Coronis Now WA" (722 jobs since 2021).
   "coronis.com.au": "Coronis Now WA",
+  // In case the AI writes RMA's name some other way: the branch entry pins it to Osborne Park
+  // for now (see BRANCH_MAPS), and this is the same card.
+  "rmaproperty.com.au": "RMA - Osborne Park",
 };
 
 // Agencies whose Aroflo cards are per-branch while the work order names only the group, so
@@ -156,6 +159,11 @@ const BRANCH_MAPS = [
   {
     agency:   /rental management australia/i,
     near:     /rental management australia|\brma\b/i,
+    // Every RMA job goes on the Osborne Park card for now, on the office's instruction (6 Oct).
+    // RMA's work orders list both offices side by side, and the Port Kennedy and Osborne Park
+    // cards share PMs, suburbs and office numbers, so nothing in the email reliably tells them
+    // apart (9/16 Hammersmith Court, Joondalup). Delete this line to read the branch again.
+    pinTo:    "RMA - Osborne Park",
     branches: {
       "osborne park": "RMA - Osborne Park",
       "port kennedy": "RMA - Port Kennedy",
@@ -205,6 +213,7 @@ const BRANCH_PROXIMITY = 40;
 function resolveBranch(realEstate, rawEmail, propertyAddress = "") {
   const entry = BRANCH_MAPS.find(b => b.agency.test(realEstate || ""));
   if (!entry) return null;
+  if (entry.pinTo) return { suburb: null, name: entry.pinTo, how: "every job for this agency goes to one card" };
 
   // "Mt Lawley" is how Bellcourt's own signature spells it; read it as "Mount Lawley" so the
   // one branch key covers both without counting as two candidates in the same email.
@@ -1290,7 +1299,7 @@ async function createArofloJob(result, rawEmail, pdfAttachment = null, emailMeta
   let realEstate = CLIENT_NAME_MAP[result["real-estate"]?.toLowerCase()] || result["real-estate"];
   const branchHit = resolveBranch(realEstate, rawEmail, result.address);
   if (branchHit?.name) {
-    console.log(`[job] Branch resolved via "${branchHit.suburb}" (${branchHit.how}) → "${branchHit.name}"`);
+    console.log(`[job] Branch resolved${branchHit.suburb ? ` via "${branchHit.suburb}"` : ""} (${branchHit.how}) → "${branchHit.name}"`);
     realEstate = branchHit.name;
   } else if (branchHit) {
     const historyHit = branchHit.candidates.length > 1
