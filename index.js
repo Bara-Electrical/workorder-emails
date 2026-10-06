@@ -1856,6 +1856,51 @@ async function filterRealPhotos(images) {
   }
 }
 
+// Bricks + Agent work orders link to the job ("Review Work Order") as
+// trade.bricksandagent.com/external/overview/<userId>/<jobId>, usually wrapped in a Safe Links
+// redirect, so the slashes may arrive encoded. The page behind it is a script-rendered app that
+// reads its data from the jobdetails call below.
+const BRICKS_AGENT_LINK = /trade\.bricksandagent\.com(?:\/|%2F)external(?:\/|%2F)overview(?:\/|%2F)([0-9a-f-]{36})(?:\/|%2F)([0-9a-f-]{36})/i;
+function bricksAgentIds(html) {
+  const m = String(html || "").match(BRICKS_AGENT_LINK);
+  return m ? { userId: m[1], jobId: m[2] } : null;
+}
+
+// The PM Bricks + Agent has assigned to the job, from the same data the link shows, or null.
+// Authoritative where the email is not: one template hides an office placeholder as the PM
+// (Peak Central's "Jodie Mordacz"), another names no PM at all (Professionals: The Wright
+// Team). Read-only, and any failure just leaves the AI's answer in place.
+async function bricksAgentAssignedPm(html) {
+  const ids = bricksAgentIds(html);
+  if (!ids) return null;
+  try {
+    const res = await fetch(
+      `https://services.bricksandagent.com/external/jobdetails?jobId=${ids.jobId}&userId=${ids.userId}`,
+      { signal: AbortSignal.timeout(10000) }
+    );
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const name = String((await res.json())?.job?.assignedPmName || "").trim();
+    return name || null;
+  } catch (err) {
+    console.warn("[job] Bricks + Agent PM lookup failed:", err.message);
+    return null;
+  }
+}
+
+// The person named on a Bricks + Agent payer line ("Alyssa Radmore-Collard - Paid via rental
+// funds on behalf of owner"), or null. Some agencies put their own name there instead ("Peak
+// Central - Paid via ..."), so a name that is the agency's is not a PM.
+function payerLinePm(text, agencyName) {
+  // The section heading is cut out first, or it would read as part of the name.
+  const m = String(text || "").replace(/Payer Information/gi, "|").match(/([A-Z][A-Za-z'’]+(?:[ -][A-Z][A-Za-z'’]+){1,3})\s*-\s*Paid via rental funds/);
+  if (!m) return null;
+  const squash = s => String(s || "").toLowerCase().replace(/[^a-z]/g, "");
+  const name = squash(m[1]);
+  const agency = squash(agencyName);
+  if (agency && (agency.includes(name) || name.includes(agency))) return null;
+  return m[1];
+}
+
 // Elements styled display:none, children included. Nobody reading the email in Outlook sees
 // them, so the AI should not either: Bricks & Agent ships a hidden "Property Manager Details"
 // block naming an office placeholder (Peak Central's is always "Jodie Mordacz",
@@ -2260,7 +2305,7 @@ CRITICAL RULES:
 - notes is any concerns, ambiguities, or flags worth mentioning — e.g. missing fields, conflicting info, unusual job details. Leave null if nothing to flag.
 - tenant-contact must contain phone numbers ONLY — no names, no labels, just the numbers. Only use a number if it is explicitly and unambiguously tied to the tenant (e.g. appears in a Tenant section, is labelled "Tenant Phone"/"Tenant Mobile"/"Contact Number", or immediately follows an inline "contact tenant <name>" style phrase). If you are unsure whether a number belongs to the tenant, leave tenant-contact null. If there are multiple confirmed tenant numbers, separate with commas. Prefer mobile over home numbers. Australian numbers always start with 0 (e.g. 0412 345 678) — always include the leading 0.
 - tenant-email is the tenant's email address. Only include if explicitly labelled as the tenant's email. Leave null if not present or uncertain.
-- property-manager comes from the Property Manager section, OR from an Agency Details section where the manager is listed (e.g. "Manager: Jane Smith"). If there is no dedicated Property Manager/Agency Details section, use whoever issued/sent the work order instead — e.g. an "Issued by NAME" line, a "Maintenance Request Posted By" contact, or an email sign-off ("Regards, NAME") — since that person is the PM contact even without a labelled section. Use the person's name only, not the agency name.
+- property-manager comes from the Property Manager section, OR from an Agency Details section where the manager is listed (e.g. "Manager: Jane Smith"). If there is no dedicated Property Manager/Agency Details section, use whoever issued/sent the work order instead — e.g. an "Issued by NAME" line, a "Maintenance Request Posted By" contact, a person named on a payer line ("NAME - Paid via rental funds on behalf of owner"), or an email sign-off ("Regards, NAME") — since that person is the PM contact even without a labelled section. Use the person's name only, not the agency name.
 - account-to: when the work order names the owner(s), include ALL of them exactly as written, in the format "owners c/o real estate". When it does NOT name an owner, account-to is just the real-estate name on its own — no "c/o", and never a placeholder standing in for the missing name. Writing "Owners c/o Smith Realty", "Owner c/o ...", or "The Owner c/o ..." when no owner was actually given is wrong; the answer there is simply "Smith Realty".
 - real-estate must always be a company or agency name — never a URL or domain. If the source contains something like "aussieproperty.com.au", convert it to a readable name (e.g. "Aussie Property") by stripping the domain extension and formatting as a proper name. If you cannot find it directly, look for it in account-to after the c/o. The sender's email address is provided at the top of the input — use the domain as an additional hint to identify real-estate if the company name is not clearly stated in the content (e.g. "noreply@raywhite.com.au" → "Ray White").
 - order-number is the job/work order number.
@@ -2352,6 +2397,24 @@ Return ONLY valid JSON with these exact keys:
     if (withoutPlaceholder && withoutPlaceholder !== parsed["account-to"].trim()) {
       console.log(`[job] account-to: dropped placeholder owner — "${parsed["account-to"]}" -> "${withoutPlaceholder}"`);
       parsed["account-to"] = withoutPlaceholder;
+    }
+  }
+
+  // Bricks + Agent's newer template (Professionals: The Wright Team, since late Sep) has no
+  // Property Manager section at all: these came through as "No PM in email" and were filled
+  // in by hand. The job's own record names the PM; failing that (the lookup is down, or the
+  // email lost its link), the PDF's payer line does — "Franziska Scharl- Paid via rental funds
+  // on behalf of owner" — which the AI does not read as the PM.
+  const assignedPm = await bricksAgentAssignedPm(rawBody);
+  if (assignedPm && assignedPm !== parsed["property-manager"]) {
+    console.log(`[job] property-manager: Bricks + Agent has "${assignedPm}" assigned — AI read "${parsed["property-manager"] || "nothing"}"`);
+    parsed["property-manager"] = assignedPm;
+  }
+  if (!parsed["property-manager"]) {
+    const payer = payerLinePm(textForAI, parsed["real-estate"]);
+    if (payer) {
+      console.log(`[job] property-manager: none extracted — using the payer line: "${payer}"`);
+      parsed["property-manager"] = payer;
     }
   }
 
