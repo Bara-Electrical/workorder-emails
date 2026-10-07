@@ -11,7 +11,7 @@ import { createOfficeSession, ensureTaskEmail, findTaskIdByJobNumber, uploadTask
 // The office UI's job page, completed by the task's `webappEncodedID` token verbatim.
 const OFFICE_TASK_URL = "https://office.aroflo.com/ims/Site/Service/workrequest/index.cfm?viewonly=1&viewexist=1&wrCoded=";
 import {
-  GateHold, gateMode, gateApplies, propertyCheck, upsertGateRecord, pendingDecisions, siteLine, duplicatePrompt,
+  GateHold, gateMode, gateApplies, carryGateContinue, propertyCheck, upsertGateRecord, pendingDecisions, siteLine, duplicatePrompt,
   NEEDS_DECISION_CATEGORY, STOPPED_CATEGORY, GATE_CONTINUE_CATEGORY,
 } from "./gate.js";
 
@@ -1387,15 +1387,19 @@ async function createArofloJob(result, rawEmail, pdfAttachment = null, emailMeta
   // tally for the description. Without a linked location there is nothing to ask about.
   // The check itself is best effort — an unreachable dashboard must never lose a work
   // order — but a hold, once decided, is not: the throw below stops the task being made.
+  // The order number is asked about even without a linked location: the same order already
+  // in AroFlo is a duplicate wherever it was filed.
   let checks = { recentJobs: [], aircon: {} };
-  if (location?.locationid) {
+  const orderNumber = result["order-number"] || null;
+  if (location?.locationid || orderNumber) {
     try {
       checks = await propertyCheck({
-        aroFloLocationId: location.locationid, clientAroFloId: client.clientid,
-        street: location.locationname, suburb: location.suburb,
+        aroFloLocationId: location?.locationid, clientAroFloId: client.clientid,
+        street: location?.locationname, suburb: location?.suburb, orderNumber,
       });
       // The plugin's question names the site; the dashboard's record has no address of its own.
-      checks.site = [location.locationname, location.suburb].filter(Boolean).join(", ");
+      checks.site = location ? [location.locationname, location.suburb].filter(Boolean).join(", ") : (result.address || "");
+      if (orderNumber) checks.orderNumber = orderNumber;
     } catch (err) {
       const detail = `Dashboard property check failed — duplicate check and Site line skipped: ${err.message}`;
       console.warn("[job]", detail);
@@ -1405,7 +1409,7 @@ async function createArofloJob(result, rawEmail, pdfAttachment = null, emailMeta
   const gateRecord = {
     messageId: emailMeta?.messageId, conversationId: emailMeta?.conversationId,
     subject: emailMeta?.subject, fromAddress: emailMeta?.from,
-    aroFloLocationId: location?.locationid ?? null, locationId: checks.locationId ?? null, checks, warnings,
+    aroFloLocationId: location?.locationid ?? null, locationId: checks.locationId ?? null, orderNumber, checks, warnings,
   };
   if (emailMeta?.messageId) {
     await upsertGateRecord({ ...gateRecord, status: "CHECKED" }).catch(err => console.warn("[gate] record CHECKED:", err.message));
@@ -2613,7 +2617,10 @@ function recordGateFailure(message, err) {
 // skipped correctly, so the thread state was fine — only this one lookup failed.
 const THREAD_LOOKUP_FAILED = Symbol("thread lookup failed");
 
-async function findJobTagInThread(mailbox, conversationId, excludeMessageId) {
+// `continued`: the message being looked up for carries "Gate: Continue". The office has
+// already decided this thread is a new job, so a sibling still wearing "Needs Decision"
+// (it inherited the hold) is not a reason to park it again.
+async function findJobTagInThread(mailbox, conversationId, excludeMessageId, { continued = false } = {}) {
   const filter = encodeURIComponent(`conversationId eq '${conversationId}'`);
   try {
     const res = await graphFetch(
@@ -2629,7 +2636,7 @@ async function findJobTagInThread(mailbox, conversationId, excludeMessageId) {
       // A held or stopped sibling counts as thread state too: while one message of a thread
       // waits on the plugin, no other message of it may become a job of its own.
       const tag = (m.categories || []).find(c =>
-        c.startsWith("Job created") || c.startsWith("Existing job") || c === NEEDS_DECISION_CATEGORY || c === STOPPED_CATEGORY
+        c.startsWith("Job created") || c.startsWith("Existing job") || (c === NEEDS_DECISION_CATEGORY && !continued) || c === STOPPED_CATEGORY
       );
       if (tag) return tag;
     }
@@ -2830,8 +2837,9 @@ async function pollInbox(mailbox) {
   // rest as "Reading" up front. Order doesn't matter here — it's just Graph metadata calls.
   const candidates = [];
   for (const message of messages) {
+    const continued = (message.categories || []).includes(GATE_CONTINUE_CATEGORY);
     const siblingTag = message.conversationId
-      ? await findJobTagInThread(mailbox, message.conversationId, message.id)
+      ? await findJobTagInThread(mailbox, message.conversationId, message.id, { continued })
       : null;
     if (siblingTag === THREAD_LOOKUP_FAILED) {
       // Can't tell whether this thread already has a job, so do nothing at all: leave the
@@ -2877,6 +2885,9 @@ async function pollInbox(mailbox) {
       console.warn("[poll] Could not read message body, retrying next tick:", message.subject, err.message);
       continue;
     }
+    // setJobStatus above stripped "Gate: Continue" with the other status categories, so the
+    // full message no longer carries it. Put it back, or the gate holds the email again.
+    full.categories = carryGateContinue(message.categories, full.categories || []);
     candidates.push({ message: full, currentCategories });
     if (candidates.length >= POLL_BATCH_SIZE) {
       // Bounds the work of one tick, not what the poll can see. The rest keeps its place at

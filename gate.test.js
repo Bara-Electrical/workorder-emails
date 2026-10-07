@@ -2,7 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
   gateMode, gateApplies, siteLine, propertyCheck, upsertGateRecord, pendingDecisions, GateHold, duplicatePrompt,
-  GATE_TEST_CATEGORY, GATE_CONTINUE_CATEGORY,
+  GATE_TEST_CATEGORY, GATE_CONTINUE_CATEGORY, carryGateContinue,
 } from "./gate.js";
 
 const env = { DASHBOARD_URL: "https://dash.test/", DASHBOARD_API_SECRET: "s3cret" };
@@ -99,4 +99,26 @@ test("GateHold is an Error carrying the checks", () => {
   assert.equal(hold.recentJobs.length, 1);
   assert.deepEqual(hold.aircon, { Split: 1 });
   assert.match(hold.message, /1 recent job/);
+});
+
+test("carryGateContinue: a Continue on the picked-up email survives the status strip", () => {
+  const picked = ["Bara AI", GATE_CONTINUE_CATEGORY];
+  const fetched = ["Bara AI", "Reading email"];
+  const carried = carryGateContinue(picked, fetched);
+  assert.deepEqual(carried, ["Bara AI", "Reading email", GATE_CONTINUE_CATEGORY]);
+  assert.equal(gateApplies("on", carried), false);
+  assert.deepEqual(carryGateContinue(["Bara AI"], fetched), fetched);
+  assert.deepEqual(carryGateContinue(picked, carried), carried);
+});
+
+test("duplicatePrompt names the order number when the same order is already a job", () => {
+  const p = duplicatePrompt({ orderNumber: "8252", sameOrder: [{ jobNumber: "107305" }], recentJobs: [{ jobNumber: "107305" }] });
+  assert.match(p.question, /^Job 107305 already has order number 8252\./);
+  assert.equal(p.answers.find(a => a.id === "STOP").then, "Not created — treated as the same job as 107305.");
+});
+
+test("propertyCheck passes the order number", async () => {
+  let asked = "";
+  await propertyCheck({ street: "1 Main St", orderNumber: "8252" }, { env, fetchImpl: async (url) => { asked = url; return { ok: true, json: async () => ({}) }; } });
+  assert.match(asked, /orderNumber=8252/);
 });

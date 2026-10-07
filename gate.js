@@ -48,6 +48,17 @@ export function gateApplies(mode, categories = []) {
   return false;
 }
 
+// The poller strips every status category, "Gate: Continue" included, the moment it picks
+// an email up ("Reading email"), and only then reads the full message. So the Continue that
+// put the email back in the queue is gone by the time the gate looks for it, and the gate
+// held the email again — every "New job — create it" click looped straight back to Needs
+// Decision. The poller remembers the Continue from the candidate it picked up and puts it
+// back on the full message's categories with this.
+export function carryGateContinue(pickedUp = [], fetched = []) {
+  if (!pickedUp.includes(GATE_CONTINUE_CATEGORY) || fetched.includes(GATE_CONTINUE_CATEGORY)) return fetched;
+  return [...fetched, GATE_CONTINUE_CATEGORY];
+}
+
 // What the plugin asks the office, and the buttons it offers, for an email held because
 // the property had a job lately. Lives on the record (checks.prompt) so the wording and
 // the answers are this service's to change — the plugin draws whatever is here.
@@ -63,14 +74,17 @@ export function duplicatePrompt(checks, now = new Date()) {
   const first = recent[0];
   const site = checks?.site ? ` at ${checks.site}` : " at this property";
   const when = first?.requestedAt ? ` on ${perthDate(first.requestedAt)}` : "";
-  const question = first
+  const sameOrder = Array.isArray(checks?.sameOrder) ? checks.sameOrder.filter(j => j?.jobNumber) : [];
+  const question = sameOrder.length && checks?.orderNumber
+    ? `Job ${sameOrder[0].jobNumber} already has order number ${checks.orderNumber}${sameOrder.length > 1 ? ` (and ${sameOrder.length - 1} more)` : ""}. Is this work order for a new job, or the same one?`
+    : first
     ? `I found job ${first.jobNumber}${first.taskType ? ` (${first.taskType})` : ""}${site}, raised${when}${recent.length > 1 ? `, and ${recent.length - 1} more` : ""}. Is this work order for a new job, or the same one?`
     : `Something needs checking before I create this job${site}. Create it, or leave it?`;
   return {
     question,
     answers: [
       { id: "CONTINUE", label: "New job — create it", effect: "CONTINUE", primary: true, then: "Creating the job now…" },
-      { id: "STOP", label: "Same job — don't create", effect: "STOP", then: first ? `Not created — treated as the same job as ${first.jobNumber}.` : "Not created." },
+      { id: "STOP", label: "Same job — don't create", effect: "STOP", then: (sameOrder[0] ?? first) ? `Not created — treated as the same job as ${(sameOrder[0] ?? first).jobNumber}.` : "Not created." },
     ],
   };
 }
@@ -111,8 +125,13 @@ async function dashboardFetch(path, init, label, { fetchImpl = fetch, env = proc
 // location id — the reports never include one), and uses the v1 location id only to match
 // its own earlier gate records. An unknown site is a 200 with empty lists, so a throw here
 // means the dashboard itself is unreachable or refusing us.
-export function propertyCheck({ aroFloLocationId, clientAroFloId, street, suburb }, opts) {
+//
+// `orderNumber` (the agency's job number off the email) also brings back the client's jobs
+// with that number in AroFlo's Cust ON, from the last year, wherever they are — a follow-up
+// sent as a new thread is the same job.
+export function propertyCheck({ aroFloLocationId, clientAroFloId, street, suburb, orderNumber }, opts) {
   const q = new URLSearchParams();
+  if (orderNumber) q.set("orderNumber", orderNumber);
   if (aroFloLocationId) q.set("aroFloLocationId", aroFloLocationId);
   if (clientAroFloId) q.set("clientAroFloId", clientAroFloId);
   if (street) q.set("street", street);
