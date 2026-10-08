@@ -2148,6 +2148,37 @@ async function findThreadWorkOrderPdf(mailbox, conversationId, excludeMessageId)
   }
 }
 
+// The same look-back for a work order that came as a LINK rather than an attachment. Ailo,
+// Tapi, Bricks + Agent and PropertyMe all send the work order as a link in the first email;
+// when the office replies with a question and the PM answers ("Please call the tenants"), the
+// PM's answer is the newest message and the one processed, and its quoted history rarely
+// keeps the link. 4 Montague Lane (job 109026, 8 Oct) was exactly that: the tenant details
+// sat in the Ailo PDF on the first email, the AI only ever saw the reply, and the job was
+// flagged "No tenant info". Oldest message first: the original work order is the first one.
+async function findThreadWorkOrderLink(mailbox, conversationId, excludeMessageId) {
+  try {
+    const res = await graphFetch(
+      `/users/${mailbox}/messages?$filter=${encodeURIComponent(`conversationId eq '${conversationId}'`)}` +
+      `&$select=id,receivedDateTime&$top=25`
+    );
+    const data = await res.json();
+    if (!res.ok) return null;
+    const others = (data.value || [])
+      .filter(m => m.id !== excludeMessageId)
+      .sort((a, b) => new Date(a.receivedDateTime) - new Date(b.receivedDateTime));
+    for (const m of others) {
+      const bodyRes = await graphFetch(`/users/${mailbox}/messages/${m.id}?$select=body`);
+      if (!bodyRes.ok) continue;
+      const link = findWorkOrderLink((await bodyRes.json()).body?.content || "");
+      if (link) return link;
+    }
+    return null;
+  } catch (err) {
+    console.warn("[email] Thread-wide work-order link search failed:", err.message);
+    return null;
+  }
+}
+
 // Only the newest untagged message in a thread is ever processed (see pollInbox) — so a
 // photo attached to an earlier reply (e.g. the original work order, before someone sent a
 // quick follow-up that ended up being the message that actually triggered job creation)
@@ -2211,8 +2242,15 @@ async function processMessage(message, mailbox = WORKORDERS_EMAIL, onStatus = nu
     return `--- WORK ORDER CONTENT (prefer this) ---\n${primary}\n\n--- EMAIL BODY (use for anything not found above) ---\n${emailBodyText}`;
   }
 
-  // Work order link detection
-  const workOrderLink = findWorkOrderLink(rawBody);
+  // Work order link detection. A reply with neither a link nor a PDF of its own takes the
+  // link from earlier in its thread (see findThreadWorkOrderLink); an attached PDF anywhere
+  // in the thread is still picked up below.
+  let workOrderLink = findWorkOrderLink(rawBody);
+  const hasOwnPdf = attachments.some(a => (a.name || "").toLowerCase().endsWith(".pdf"));
+  if (!workOrderLink && !hasOwnPdf && message.conversationId) {
+    workOrderLink = await findThreadWorkOrderLink(mailbox, message.conversationId, message.id);
+    if (workOrderLink) console.log("[email] No work order on this message — using the work-order link from earlier in the thread");
+  }
 
   if (workOrderLink) {
     try {
