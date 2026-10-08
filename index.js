@@ -126,6 +126,14 @@ const CLIENT_NAME_MAP = {
   // Work orders almost always omit the branch — default to the residential branch
   // (Commercial is a separate Aroflo client and needs to be named explicitly).
   "lj hooker victoria park": "LJ Hooker Victoria Park - Belmont",
+  // Client-not-found alerts of 8 Oct 2026. Both names come off the work order's bill-to
+  // line ("… c/o Canquan Pty Ltd", "… C/O Haiven North"), which the prompt falls back to
+  // when the agency isn't named elsewhere. Canquan Pty Ltd is Steven Davis Real Estate's
+  // company on every Console work order they send (3378, 3394, 3408, 3415, 3424); Haiven
+  // North is a Haiven Property branch with no card of its own.
+  "canquan pty ltd": "SDRE Steven Davis Real Estate",
+  "canquan": "SDRE Steven Davis Real Estate",
+  "haiven north": "Haiven Property",
 };
 
 // Sender email domain → Aroflo client name (fallback when AI can't extract name from compound domains)
