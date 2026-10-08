@@ -72,6 +72,7 @@ const CLIENTS = [
   "cam .", "Cameron Burchell", "Cameron  Best", // junk single-name records
   "emma .", "Emma Smith",
   "Steven  .", "SDRE Steven Davis Real Estate", // work order 3378: junk card vs real agency
+  "Haiven Property", // 8 Oct 2026: reached only through the "haiven north" alias
   "Scott .", "Regina .",
   "M Property", "M Property Management", "CC Property Advisory", // legal vs trading name
   "First National Swans Residential", "Oscar D'Souza Real Estate",
@@ -161,6 +162,10 @@ const MAPPED_CASES = [
   ["raine & horne landsdale", "Raine and Horne Landsdale"],
   ["Morgan and Hayes Real Estate", "Morgan & Hayes Real Estate"],
   ["Grand Alliance Property Group Pty Ltd T/As Century 21 Grand Alliance", "Century 21 Grand Alliance"],
+  // Client-not-found alerts of 8 Oct 2026: the agency's company name off the bill-to line.
+  ["Canquan Pty Ltd", "SDRE Steven Davis Real Estate"],
+  ["CANQUAN PTY LTD", "SDRE Steven Davis Real Estate"],
+  ["Haiven North", "Haiven Property"],
 ];
 
 // Without its alias the legal name is genuinely ambiguous — it starts-with matches both
