@@ -45,6 +45,16 @@ const DULWICH = `<p><b>Files</b></p><p><a href="${AILO_PHOTO}">IMG_1234.jpg</a><
   check("Ailo: the photo is still picked up as a photo", photos.length === 1 && photos[0].name === "IMG_1234.jpg", JSON.stringify(photos.map(p => p.name)));
 }
 
+// ---- 9 Oct: 40A Brixton Street (job 109092). The PM's reply only sends a photo, listed
+// under "Files" on the Ailo domain with no PDF beside it. It must not be taken as the work
+// order — with no link, processMessage looks back up the thread for the original PDF. ----
+{
+  const BRIXTON = `<p>Good morning, Please see attached.</p><p><b>Files</b></p><p><a href="${AILO_PHOTO}">5febd4db-Kitchen-Meals-Doors-walls-ceiling-2026-01-30T07-11-47-736Z.jpeg</a></p>`;
+  check("Ailo: a photo alone is not the work order", findWorkOrderLink(BRIXTON) === null, String(findWorkOrderLink(BRIXTON)).slice(0, 120));
+  check("Ailo: …but is still picked up as a photo", findLinkedPhotoLinks(BRIXTON).length === 1);
+  check("a portal photo by URL is not the work order either", findWorkOrderLink('<a href="https://my.propertyme.com.au/files/kitchen.JPG?sig=1">Open</a>') === null);
+}
+
 // ---- Bricks + Agent action buttons must never be followed. Verbatim from Peak Central. ----
 const BNA = "https://aus01.safelinks.protection.outlook.com/?url=https%3A%2F%2Ftrade.bricksandagent.com%2Fexternal%2Foverview%2Fb386e634-5afe-4952-a6d3-09da98096cec%2Fb223e1b3-c75f-4cdd-22f2-08df1f805407";
 const PEAK = [
