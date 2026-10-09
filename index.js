@@ -2067,8 +2067,15 @@ function findWorkOrderLink(rawHtml) {
     if (/\.pdf$/i.test(text) && WORKORDER_DOMAINS.test(dest)) return href;
   }
 
-  // Fallback: known portal domains or "workorder" in the URL itself
-  for (const { href, dest } of anchors) {
+  // Fallback: known portal domains or "workorder" in the URL itself — but never a photo.
+  // Ailo lists photos by file name on the same domain as its PDFs, and a PM's reply that
+  // only sends a photo ("Please see attached", 40A Brixton Street, job 109092, 9 Oct) has
+  // no PDF beside it. That photo was taken as the work order: its JPEG bytes went to the AI
+  // as the work order text, and the job came out "No tenant info". With no link here the
+  // caller looks back up the thread, where the original email has the real PDF.
+  const isPhoto = (s) => /\.(jpe?g|png|gif|bmp|webp|heic)(?:[?#]|$)/i.test(s);
+  for (const { href, text, dest } of anchors) {
+    if (isPhoto(text) || isPhoto(dest)) continue;
     if (/workorder/i.test(dest) || WORKORDER_DOMAINS.test(dest)) return href;
   }
 
@@ -2264,7 +2271,11 @@ async function processMessage(message, mailbox = WORKORDERS_EMAIL, onStatus = nu
     try {
       const response = await fetchFollowingInky(workOrderLink);
       const contentType = response.headers.get("content-type") || "";
-      if (contentType.includes("pdf")) {
+      if (contentType.startsWith("image/")) {
+        // A photo is never the work order (see findWorkOrderLink) — don't read its bytes
+        // as text or print it as the "work order page".
+        console.warn(`[email] Work-order link is an image (${contentType}), not a work order — ignored`);
+      } else if (contentType.includes("pdf")) {
         const buffer  = await response.arrayBuffer();
         const data    = new Uint8Array(buffer);
         const urlName = decodeURIComponent(response.url.split("/").pop().split("?")[0] || "");
