@@ -591,6 +591,42 @@ const SUBSTATUS_TAG_MAP = {
   "send to awaiting confirmation": "Iyc6LycK", // 3 Awaiting confirmation (Client)
 };
 
+// "After hours" on the email (an Outlook category the office applies) makes the job an After
+// Hours Callout, due today. The task type's id isn't one of TASK_TYPE_MAP's six, so it's
+// looked up by name from Aroflo's TaskTypes zone the first time it's needed and kept.
+const AFTER_HOURS_CATEGORY = "after hours";
+
+function isAfterHoursEmail(categories) {
+  return (categories || []).some(c => String(c).trim().toLowerCase() === AFTER_HOURS_CATEGORY);
+}
+
+// "After Hours Callout" (993 jobs) or "After Hours Call Out" (8), never an archived one.
+function pickAfterHoursTaskType(taskTypes) {
+  const live = (taskTypes || []).filter(t => String(t.archived) !== "true");
+  const name = (t) => String(t.tasktype || "").trim().toLowerCase();
+  const norm = (t) => name(t).replace(/[^a-z]/g, "");
+  return (
+    live.find(t => name(t) === "after hours callout") ||
+    live.find(t => norm(t) === "afterhourscallout") ||
+    live.find(t => norm(t).startsWith("afterhours"))
+  )?.tasktypeid || null;
+}
+
+let afterHoursTaskTypeIdCache = null;
+async function afterHoursTaskTypeId() {
+  if (afterHoursTaskTypeIdCache) return afterHoursTaskTypeIdCache;
+  const zone = await arofloGet("zone=tasktypes&page=1");
+  afterHoursTaskTypeIdCache = pickAfterHoursTaskType(toArray(zone?.tasktypes));
+  return afterHoursTaskTypeIdCache;
+}
+
+// Today's date in Perth as Aroflo wants it (YYYY/MM/DD). The server runs on UTC, so a plain
+// new Date() puts a callout logged at 2am Perth on yesterday.
+function perthDateString(date = new Date()) {
+  const ymd = new Intl.DateTimeFormat("en-CA", { timeZone: "Australia/Perth", year: "numeric", month: "2-digit", day: "2-digit" }).format(date);
+  return ymd.replace(/-/g, "/");
+}
+
 // In-memory client cache: lowercase clientname → client object.
 // Populated at startup and updated via the /aroflo-webhook endpoint.
 const clientCache = new Map();
@@ -1294,7 +1330,22 @@ async function createArofloJob(result, rawEmail, pdfAttachment = null, emailMeta
 
   if (!result.address) throw new Error("No address found in work order");
 
-  const taskTypeId  = TASK_TYPE_MAP[result["task-type"]];
+  let taskTypeId  = TASK_TYPE_MAP[result["task-type"]];
+  // Tagged "After hours" on the email: an After Hours Callout, whatever the work order says.
+  const afterHours = !!emailMeta?.afterHours;
+  if (afterHours) {
+    try {
+      const id = await afterHoursTaskTypeId();
+      if (id) {
+        taskTypeId = id;
+        console.log("[job] Tagged After hours — task type After Hours Callout, due today");
+      } else {
+        warnings.push({ tag: "After hours task type not found", detail: "Tagged After hours, but no After Hours Callout task type in Aroflo — kept the work order's task type" });
+      }
+    } catch (err) {
+      warnings.push({ tag: "After hours task type not found", detail: `Couldn't read Aroflo's task types: ${err.message}` });
+    }
+  }
   // An email-level scheduling-priority tag (Urgent/Urgent - Air Con/ASAP + ETA/Ready to
   // schedule (Specialised)) overrides the task-type default.
   const substatusId = emailMeta?.substatusTagId || SUBSTATUS_MAP[result["task-type"]] || "Iyc6LyYK"; // default: Ready to schedule
@@ -1460,7 +1511,7 @@ async function createArofloJob(result, rawEmail, pdfAttachment = null, emailMeta
   const dueDateOffsetDays = URGENT_SUBSTATUS_IDS.includes(substatusId) ? 1
     : substatusId === ASAP_SUBSTATUS_ID ? 7
     : 7;
-  const dueDate = (() => {
+  const dueDate = afterHours ? perthDateString() : (() => {
     const d = new Date();
     d.setDate(d.getDate() + dueDateOffsetDays);
     return `${d.getFullYear()}/${String(d.getMonth() + 1).padStart(2, "0")}/${String(d.getDate()).padStart(2, "0")}`;
@@ -2557,6 +2608,7 @@ Return ONLY valid JSON with these exact keys:
     subject: message.subject || null,
     airconUnitType: airconUnitTags.join(", ") || null,
     substatusTagId,
+    afterHours: isAfterHoursEmail(message.categories),
   };
 
   // Download image attachments in parallel. Deliberately not pre-filtering on isInline
