@@ -547,19 +547,22 @@ async function appendToPinnedNoteSection(taskId, section, text) {
   }
 }
 
-// Task type IDs sourced from live Aroflo system on 2026-06-24
+// Task type IDs sourced from live Aroflo system on 2026-06-24. Aroflo renamed them for the
+// 1 Oct 2026 price rise (same ids); the names in the comments are the current ones.
+// EV1 and EVEC1 aren't here: their ids are looked up by name — see evapTaskTypeId().
 const TASK_TYPE_MAP = {
-  "EC1":                            "JCYqLyBSQCAgCg==", // $120 Standard Electrical Compliance
-  "AC1":                            "JCYqWyVQUCAgCg==", // $180 Standard Air Con Service
-  "AC2":                            "JCYqLyNRMCAgCg==", // $270 Deluxe Air Con Service
-  "ACEC1":                          "JCYqLyBRMCAgCg==", // $240 Air Con & Electrical Compliance
+  "EC1":                            "JCYqLyBSQCAgCg==", // $140+ Standard Electrical Compliance
+  "AC1":                            "JCYqWyVQUCAgCg==", // $200+ Standard Air Con Service
+  "AC2":                            "JCYqLyNRMCAgCg==", // $310+ Deluxe Air Con Service
+  "ACEC1":                          "JCYqLyBRMCAgCg==", // $290+ Air Con & Electrical Compliance
   "Real Estate Aircon Maintenance":  "JCZaSyBSQCAgCg==", // Real-Estate Air Con Maintenance
   "Real Estate General Maintenance": "JCYqWyVQICAgCg==", // Real-Estate General Maintenance
 };
 
 // Admin applies one of these as an Outlook category on the work order email to record
 // what aircon unit(s) are on site — surfaced in the task description for aircon jobs
-// since AC1/ACEC1 only cover up to 3x wall splits/1x evap/1x ducted before extra charges apply.
+// since AC1/ACEC1 only cover up to 3x wall splits/1x ducted before extra charges apply, and an
+// evap is its own package (EV1/EVEC1).
 const AIRCON_UNIT_TYPE_CATEGORIES = ["Split System", "Split System x2", "Split System x3", "Split System x4", "Ducted", "Evap"];
 
 const SUBSTATUS_MAP = {
@@ -567,6 +570,8 @@ const SUBSTATUS_MAP = {
   "AC1":                            "IyQ6SyYK", // Ready to schedule PPM1
   "AC2":                            "Iyc6LyUK", // Ready to schedule (Specialised)
   "ACEC1":                          "IyQ6SyYK", // Ready to schedule PPM1
+  "EV1":                            "IyQ6SyYK", // Ready to schedule PPM1
+  "EVEC1":                          "IyQ6SyYK", // Ready to schedule PPM1
   "Real Estate Aircon Maintenance":  "Iyc6LyYK", // Ready to schedule
   "Real Estate General Maintenance": "Iyc6LyYK", // Ready to schedule
 };
@@ -612,12 +617,59 @@ function pickAfterHoursTaskType(taskTypes) {
   )?.tasktypeid || null;
 }
 
+// Aroflo's task types, read once and kept for a few hours, so a task type the office adds
+// later (as EV1/EVEC1 were) is picked up without a restart.
+const TASK_TYPES_TTL_MS = 6 * 60 * 60 * 1000;
+let taskTypesCache = null;
+async function arofloTaskTypes() {
+  if (taskTypesCache && Date.now() - taskTypesCache.at < TASK_TYPES_TTL_MS) return taskTypesCache.list;
+  const zone = await arofloGet("zone=tasktypes&page=1");
+  taskTypesCache = { at: Date.now(), list: toArray(zone?.tasktypes) };
+  return taskTypesCache.list;
+}
+
 let afterHoursTaskTypeIdCache = null;
 async function afterHoursTaskTypeId() {
   if (afterHoursTaskTypeIdCache) return afterHoursTaskTypeIdCache;
-  const zone = await arofloGet("zone=tasktypes&page=1");
-  afterHoursTaskTypeIdCache = pickAfterHoursTaskType(toArray(zone?.tasktypes));
+  afterHoursTaskTypeIdCache = pickAfterHoursTaskType(await arofloTaskTypes());
   return afterHoursTaskTypeIdCache;
+}
+
+// The evap packages from 1 Oct 2026: EV1 (evap service, "$300+ Evap Service") and EVEC1
+// (evap service & electrical compliance, "$390+ Evap & Electrical Compliance."). Their ids
+// weren't to hand, so they're found by name: a live, non-private evap type, with
+// "compliance" in the name for EVEC1 and without it for EV1. The separately priced
+// 2 Story Evap Service is never EV1.
+function pickEvapTaskType(taskTypes, pkg) {
+  const name = (t) => String(t.tasktype || "").trim().toLowerCase();
+  const evap = (taskTypes || []).filter(t =>
+    String(t.archived) !== "true" &&
+    /\bevap/.test(name(t)) &&
+    !/^private\b/.test(name(t)) &&
+    !/\b(2|two|double)[\s-]*stor/.test(name(t)));
+  const compliance = (t) => /compliance/.test(name(t));
+  const match = pkg === "EVEC1" ? evap.find(compliance) : pkg === "EV1" ? evap.find(t => !compliance(t)) : null;
+  return match?.tasktypeid || null;
+}
+
+async function evapTaskTypeId(pkg) {
+  return pickEvapTaskType(await arofloTaskTypes(), pkg);
+}
+
+// The office's Outlook unit tag says what is actually on site. A service tagged only "Evap"
+// is an evap package whatever the work order called it, since AC1/ACEC1 no longer cover an
+// evap; a job with a reverse-cycle unit tagged as well stays as it is.
+const EVAP_TASK_TYPES = ["EV1", "EVEC1"];
+const EVAP_PACKAGE_FOR = { AC1: "EV1", ACEC1: "EVEC1" };
+function applyEvapTag(result, airconUnitType) {
+  const tags = String(airconUnitType || "").split(",").map(t => t.trim().toLowerCase()).filter(Boolean);
+  if (!tags.length || tags.some(t => t !== "evap")) return null;
+  const changed = [];
+  for (const key of ["package", "task-type"]) {
+    const to = EVAP_PACKAGE_FOR[result[key]];
+    if (to) { changed.push(`${result[key]} → ${to}`); result[key] = to; }
+  }
+  return changed.length ? changed[0] : null;
 }
 
 // Today's date in Perth as Aroflo wants it (YYYY/MM/DD). The server runs on UTC, so a plain
@@ -1213,7 +1265,7 @@ function schedulingAccessLines(result) {
 function isAirconJob(result) {
   const pkg = (result["package"] && result["package"] !== "null" ? result["package"] : null)
     ?? (PACKAGE_TEMPLATES[result["task-type"]] ? result["task-type"] : null);
-  return ["AC1", "AC2", "ACEC1"].includes(pkg) || result["task-type"] === "Real Estate Aircon Maintenance";
+  return ["AC1", "AC2", "ACEC1", "EV1", "EVEC1"].includes(pkg) || result["task-type"] === "Real Estate Aircon Maintenance";
 }
 
 // The unit tally an email's aircon tags describe, in the dashboard's own shape so the two can be
@@ -1330,7 +1382,24 @@ async function createArofloJob(result, rawEmail, pdfAttachment = null, emailMeta
 
   if (!result.address) throw new Error("No address found in work order");
 
+  const evapSwitch = applyEvapTag(result, emailMeta?.airconUnitType);
+  if (evapSwitch) console.log(`[job] Tagged Evap only — package ${evapSwitch}`);
+
   let taskTypeId  = TASK_TYPE_MAP[result["task-type"]];
+  if (EVAP_TASK_TYPES.includes(result["task-type"])) {
+    // Falls back to the reverse-cycle package's type, as evaps went before 1 Oct, so the job
+    // still gets created — with a warning so the office fixes the type.
+    const fallback = result["task-type"] === "EVEC1" ? "ACEC1" : "AC1";
+    try {
+      taskTypeId = await evapTaskTypeId(result["task-type"]);
+    } catch (err) {
+      console.warn(`[job] Couldn't read Aroflo's task types: ${err.message}`);
+    }
+    if (!taskTypeId) {
+      taskTypeId = TASK_TYPE_MAP[fallback];
+      warnings.push({ tag: `${result["task-type"]} task type not found`, detail: `No ${result["task-type"]} task type found in Aroflo — created as ${fallback}; change the task type by hand` });
+    }
+  }
   // Tagged "After hours" on the email: an After Hours Callout, whatever the work order says.
   const afterHours = !!emailMeta?.afterHours;
   if (afterHours) {
@@ -2460,19 +2529,22 @@ CRITICAL RULES:
 - Do NOT guess missing fields — if missing return null.
 - The text may be a structured form (with clear sections) OR plain prose in an email. Extract the same fields either way — don't return null just because sections aren't labelled.
 - If the input contains both a PDF CONTENT section and an EMAIL BODY section, prefer the PDF for all fields but check the email body for anything not found in the PDF.
-- For task-type: if the text explicitly mentions EC1, AC1, AC2, or ACEC1 anywhere, use that — it takes priority over everything else, even if other work is also mentioned. If a compliance check or aircon service is recommended or suggested (e.g. "recommend compliance check", "suggest an EC1"), treat it as that task type — recommendations from a PM or owner should be acted on. EXCEPTION: if the work order includes a package (EC1/AC1/AC2/ACEC1) AND additional work beyond the package, set task-type to "Real Estate General Maintenance" (or "Real Estate Aircon Maintenance" if the extra work is aircon-related) — but still set the package field to the package code. "Additional work" means a SPECIFIC, separately described issue/task (e.g. "also repair the broken power point in the kitchen", "and fix the leaking tap"). A generic instruction to quote for whatever else is found during the check (e.g. "if any other electrical issues are found, please provide a quote", "quote for any additional work required") is standard EC1/AC1/AC2/ACEC1 scope, NOT additional work — do not trigger this exception for that alone; keep task-type as the package's own type. NOTE: testing, repairing, replacing or supplying EITHER of the two things an EC1 covers — smoke alarms AND RCDs/safety switches — is already included within EC1. Never treat either as additional work beyond the package. This includes a standing instruction to fix one on the spot if it fails the check ("if any smoke alarms or RCDs require repair/replacement, please proceed while onsite"), which is normal EC1 scope, not a separate job.
-- package: set to "EC1", "AC1", "AC2", or "ACEC1" if the job involves one of these standard packages — even if task-type has been set to general/aircon maintenance due to extra work being present. Only return null if there is genuinely no package involved at all (e.g. a pure repair or general maintenance job with no compliance check or aircon service).
+- For task-type: if the text explicitly mentions EC1, AC1, AC2, ACEC1, EV1 or EVEC1 anywhere, use that — it takes priority over everything else, even if other work is also mentioned. If a compliance check or aircon service is recommended or suggested (e.g. "recommend compliance check", "suggest an EC1"), treat it as that task type — recommendations from a PM or owner should be acted on. EXCEPTION: if the work order includes a package (EC1/AC1/AC2/ACEC1/EV1/EVEC1) AND additional work beyond the package, set task-type to "Real Estate General Maintenance" (or "Real Estate Aircon Maintenance" if the extra work is aircon-related) — but still set the package field to the package code. "Additional work" means a SPECIFIC, separately described issue/task (e.g. "also repair the broken power point in the kitchen", "and fix the leaking tap"). A generic instruction to quote for whatever else is found during the check (e.g. "if any other electrical issues are found, please provide a quote", "quote for any additional work required") is standard EC1/AC1/AC2/ACEC1/EV1/EVEC1 scope, NOT additional work — do not trigger this exception for that alone; keep task-type as the package's own type. NOTE: testing, repairing, replacing or supplying EITHER of the two things an EC1 covers — smoke alarms AND RCDs/safety switches — is already included within EC1. Never treat either as additional work beyond the package. This includes a standing instruction to fix one on the spot if it fails the check ("if any smoke alarms or RCDs require repair/replacement, please proceed while onsite"), which is normal EC1 scope, not a separate job.
+- package: set to "EC1", "AC1", "AC2", "ACEC1", "EV1" or "EVEC1" if the job involves one of these standard packages — even if task-type has been set to general/aircon maintenance due to extra work being present. Only return null if there is genuinely no package involved at all (e.g. a pure repair or general maintenance job with no compliance check or aircon service).
 - Recognising an EC1 by the WORK DESCRIBED, not the label: an electrical compliance check is, in practice, the periodic test of the property's RCDs (safety switches) AND its smoke alarms. Any work order asking for that routine testing IS an EC1 — set task-type AND package to "EC1" — however it is worded and even when the term "EC1" never appears anywhere. "SA" means smoke alarm in this context, and agencies commonly write it as "annual RCD/SA service", "RCD & smoke alarm check", "smoke alarm and safety switch testing", "annual safety compliance", or "SA/RCD test". Never require the literal token "EC1" before setting the package. A request covering only ONE of the two (e.g. smoke alarm testing alone) still counts as EC1, since both are within the one package.
-- Recognising AC1/AC2 by the WORK DESCRIBED, not the label: ANY request to service or clean an air conditioner is a package job. Set task-type AND package to "AC1" for a standard/annual service, or "AC2" only when a deluxe/premium/detailed clean is specified. This holds regardless of unit type — split, wall, ducted, reverse-cycle or evaporative are all the same package — and regardless of how many units. "Evap Service", "Service the ducted system", "Service the 2 split systems", "Annual AC service as per your promotion", "air con service is due", and a bare "Service the air con" are ALL AC1. Never require the literal token "AC1" or "AC2" to appear. A quoted price of $180+GST indicates AC1; $270+GST indicates AC2.
-- If a service or clean is requested AND a fault or symptom is also reported, the package is STILL AC1/AC2 — the reported symptom gets investigated during that service. Only leave package null when there is no service or clean requested at all.
-- COUNTER-EXAMPLE — a pure aircon FAULT with no service requested is NOT AC1/AC2: "AC not working", "displaying an error code", "won't turn on", "trips the breaker", "leaking", "making a noise", "inspect and repair", "fault-find and quote". Those are task-type "Real Estate Aircon Maintenance" with package null.
+- Recognising AC1/AC2 by the WORK DESCRIBED, not the label: ANY request to service or clean a reverse-cycle air conditioner (split, wall, ducted) is a package job. Set task-type AND package to "AC1" for a standard/annual service, or "AC2" only when a deluxe/premium/detailed clean is specified. This holds regardless of how many units. "Service the ducted system", "Service the 2 split systems", "Annual AC service as per your promotion", "air con service is due", and a bare "Service the air con" are ALL AC1. Never require the literal token "AC1" or "AC2" to appear. A quoted price of $180 or $200+GST indicates AC1; $270 or $310+GST indicates AC2.
+- EVAPORATIVE units are their own packages, never AC1/ACEC1/AC2: a service of an evaporative cooler ("evap", "evaporative", "evap cooler", "Breezair", "Coolair", "Braemar evaporative") is "EV1", and an evap service together with an electrical compliance check is "EVEC1". Set task-type AND package the same way as for AC1/ACEC1. "Evap Service", "Service the evaporative air conditioner", "annual evap service due" are ALL EV1; "evap service and smoke alarm/RCD check" is EVEC1. A quoted price of $300+GST indicates EV1; $390+GST indicates EVEC1. If the work order asks to service BOTH an evap and a reverse-cycle unit, use the reverse-cycle package (AC1, or ACEC1 with a compliance check) and say in notes that an evap service is also requested. If the unit type isn't stated, it is AC1/ACEC1.
+- If a service or clean is requested AND a fault or symptom is also reported, the package is STILL AC1/AC2/EV1 — the reported symptom gets investigated during that service. Only leave package null when there is no service or clean requested at all.
+- COUNTER-EXAMPLE — a pure aircon FAULT with no service requested is NOT AC1/AC2/EV1: "AC not working", "displaying an error code", "won't turn on", "trips the breaker", "leaking", "making a noise", "inspect and repair", "fault-find and quote". Those are task-type "Real Estate Aircon Maintenance" with package null.
 - COUNTER-EXAMPLE — a reported FAULT involving an RCD is NOT an EC1: "RCD keeps tripping", "no power, safety switch won't reset", "the oven trips the RCD", "replace faulty RCD". Those are diagnose-and-repair jobs, so task-type "Real Estate General Maintenance" and package null. The test is routine periodic compliance testing (EC1) versus fixing something that is broken (general maintenance) — the word "annual", "periodic", "compliance" or "due" alongside RCD/smoke alarm points to EC1; a tenant-reported symptom points to general maintenance.
 
 TASK TYPES:
 EC1 = Electrical Compliance Check only (the annual RCD/safety-switch test plus smoke alarm test)
-AC1 = Aircon Servicing only (standard/annual service of any unit type — split, ducted or evaporative)
+AC1 = Aircon Servicing only (standard/annual service of a reverse-cycle unit — split or ducted)
 AC2 = Deluxe Aircon Clean (only when a deluxe/premium clean is specified)
-ACEC1 = Aircon service AND electrical compliance check combined
+ACEC1 = Reverse-cycle aircon service AND electrical compliance check combined
+EV1 = Evaporative aircon service only
+EVEC1 = Evaporative aircon service AND electrical compliance check combined
 Real Estate Aircon Maintenance = aircon related jobs
 Real Estate General Maintenance = everything else
 
@@ -2491,7 +2563,7 @@ Return ONLY valid JSON with these exact keys:
   "order-number": "",
   "access-details": "",
   "expenditure-limit": "",
-  "package": "EC1 | AC1 | AC2 | ACEC1 | null",
+  "package": "EC1 | AC1 | AC2 | ACEC1 | EV1 | EVEC1 | null",
   "confidence": 0.0,
   "notes": ""
 }`,
