@@ -70,7 +70,7 @@ const hasSite = html => html.includes(SITE);
 }
 
 // Every aircon job still gets it.
-for (const pkg of ["AC1", "AC2", "ACEC1"]) {
+for (const pkg of ["AC1", "AC2", "ACEC1", "EV1", "EVEC1"]) {
   const html = buildDescription({ "task-type": "Real Estate General Maintenance", "package": pkg, "task-description": "Service" }, null, SITE);
   check(`${pkg} carries the aircon tally`, hasSite(html));
 }
