@@ -136,6 +136,15 @@ const CLIENT_NAME_MAP = {
   "haiven north": "Haiven Property",
 };
 
+// Sender email address → Aroflo client name, for agencies with many branch cards whose
+// emails name only the group. Checked before the extracted name, since that name matches no
+// single card. Jaidyn Wood's emails say only "Ray White" (the office is in a signature image)
+// and AroFlo has 15 Ray White cards; her jobs (106687, 109268, 109269) all go on Ray White
+// ELG — 15/150 Mill Point Road was tagged client not found on 14 Oct 2026.
+const SENDER_CLIENT_MAP = {
+  "jaidyn.wood@raywhite.com": "Ray White ELG",
+};
+
 // Sender email domain → Aroflo client name (fallback when AI can't extract name from compound domains)
 const EMAIL_DOMAIN_MAP = {
   "platinumelectricians.com.au": "Platinum Electricians",
@@ -1469,6 +1478,11 @@ async function createArofloJob(result, rawEmail, pdfAttachment = null, emailMeta
           : "no branch named in the email")
       );
     }
+  }
+  const senderName = SENDER_CLIENT_MAP[String(emailMeta?.from || "").trim().toLowerCase()];
+  if (senderName) {
+    console.log(`[job] Sender ${emailMeta.from} always goes on "${senderName}" (was "${realEstate}")`);
+    realEstate = senderName;
   }
   console.log(`[job] Client lookup — AI extracted real-estate: "${result["real-estate"]}", resolved to: "${realEstate}", from: "${emailMeta?.from}"`);
   let client = await findClient(realEstate);
@@ -3126,7 +3140,7 @@ async function pollInbox(mailbox) {
         console.log("[poll] Tagged as client not found:", message.subject);
         await sendAlertEmail(
           `Action required — client not found: "${message.subject}"`,
-          `<p style="font-family:sans-serif;font-size:14px">Couldn't match this email to an Aroflo client.</p><p style="font-family:sans-serif;font-size:14px">${escapeHtml(err.message)}</p><p style="font-family:sans-serif;font-size:12px;color:#888">Add a mapping in CLIENT_NAME_MAP or EMAIL_DOMAIN_MAP, then remove the "Client not found" category on the email to retry.</p>`,
+          `<p style="font-family:sans-serif;font-size:14px">Couldn't match this email to an Aroflo client.</p><p style="font-family:sans-serif;font-size:14px">${escapeHtml(err.message)}</p><p style="font-family:sans-serif;font-size:12px;color:#888">Add a mapping in CLIENT_NAME_MAP, SENDER_CLIENT_MAP or EMAIL_DOMAIN_MAP, then remove the "Client not found" category on the email to retry.</p>`,
           "client not found"
         );
       } else if (err.message.startsWith("No address found")) {
