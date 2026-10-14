@@ -902,6 +902,21 @@ const STATE_NAMES = {
 };
 const STATE_PATTERN = `NSW|VIC|QLD|SA|WA|TAS|ACT|NT|${Object.keys(STATE_NAMES).join("|")}`;
 
+// Brandon doesn't want the word "Unit" in job addresses (14 Oct 2026). Work orders write units
+// every which way — "Unit 22/80 Eighth Avenue" (job 109235), "Unit 7 / 46 King George Street"
+// (109292), "Unit 3, 12 Smith Street" — and all of them become the plain "22/80 Eighth Avenue"
+// form the rest of this file already assumes for unit matching. Also applied to existing AroFlo
+// location names when matching, so a site already saved as "Unit 22/80 ..." still matches a new
+// "22/80 ..." job instead of getting a duplicate.
+function stripUnitWord(address) {
+  return String(address || "")
+    // "Unit 22/80 X", "Unit 7 / 46 X", "Unit 3, 12 X", "Unit 5 169 X" → "22/80 X" etc.
+    .replace(/^\s*unit\s+(\w+)\s*(?:[\/,]\s*|\s+(?=\d+[a-z]?\s+[a-z]))(\d)/i, "$1/$2")
+    // Anything left, e.g. "Unit 803, Floor 8/9 Victoria Avenue" → "803, Floor 8/9 Victoria Avenue"
+    .replace(/\bunit\b\.?\s*/gi, "")
+    .trim();
+}
+
 function parseAustralianAddress(address) {
   const parts = address.split(",").map(p => p.trim());
   const street = parts[0] || "";
@@ -1079,6 +1094,7 @@ function fitTenantFields(tenantName, tenantContact, maxLen = SITE_FIELD_LIMIT) {
 // The existing, unarchived location for an address, or null. Shared by findOrUpdateLocation
 // and the branch tie-break, which asks the same question of each candidate branch card.
 function matchLocation(locations, address) {
+  address = stripUnitWord(address);
   if (!address) return null;
 
   // Strip unit prefix: "1412/380 Murray Street, Perth WA" → "380 Murray Street"
@@ -1101,9 +1117,10 @@ function matchLocation(locations, address) {
   const incomingStreetNumber = leadingNumber(streetPart);
 
   const location = active.find(l => {
-    const locNameLower = l.locationname?.toLowerCase() || "";
+    const locName = stripUnitWord(l.locationname);
+    const locNameLower = locName.toLowerCase();
     if (!locNameLower.includes(streetPart)) return false;
-    const storedUnit = l.locationname?.match(/^(\d+)\//)?.[1] || null;
+    const storedUnit = locName.match(/^(\d+)\//)?.[1] || null;
     // If either side specifies a unit number, require an exact match — a location
     // stored without a unit prefix (e.g. created before the property was known to be
     // multi-unit) must not silently absorb every unit at that street number.
@@ -2590,6 +2607,9 @@ Return ONLY valid JSON with these exact keys:
     for (const [abbr, full] of Object.entries(streetAbbr)) {
       parsed.address = parsed.address.replace(new RegExp(abbr, "gi"), full);
     }
+    // No "Unit" in job addresses — this is the address the task name, site name and any new
+    // AroFlo location are all built from.
+    parsed.address = stripUnitWord(parsed.address);
   }
 
   // If AI returned a URL/domain for real-estate, strip the TLD and convert to a readable name
