@@ -28,17 +28,18 @@ function grab(startMarker, endMarker) {
 const module_ = [
   grab("const STATE_NAMES = {", "\n};\n"),
   grab("const STATE_PATTERN", ";\n"),
+  grab("function stripUnitWord(address)", "\n}\n"),
   grab("function parseAustralianAddress(address)", "\n}\n"),
   grab("function matchContact(contacts, pmName)", "\n}\n"),
   grab("function matchLocation(locations, address)", "\n}\n"),
   grab("function pickBranchFromHistory(candidates, address, pmName)", "\n}\n"),
-  "export { pickBranchFromHistory, matchLocation };",
+  "export { pickBranchFromHistory, matchLocation, stripUnitWord };",
 ].join("\n");
 
 const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "branch-history-"));
 const tmp = path.join(tmpDir, "extracted.mjs");
 fs.writeFileSync(tmp, module_);
-const { pickBranchFromHistory, matchLocation } = await import(pathToFileURL(tmp).href);
+const { pickBranchFromHistory, matchLocation, stripUnitWord } = await import(pathToFileURL(tmp).href);
 process.on("exit", () => fs.rmSync(tmpDir, { recursive: true, force: true }));
 
 const results = [];
@@ -159,6 +160,35 @@ const SPEARWOOD = "284 Hamilton Road, Spearwood WA 6163";
   check("matchLocation finds the property", matchLocation(locs, SPEARWOOD)?.locationname === "284 Hamilton Road");
   check("matchLocation with no address is null", matchLocation(locs, "") === null);
   check("matchLocation with no locations is null", matchLocation([], SPEARWOOD) === null);
+}
+
+// ---- No "Unit" in job addresses (Brandon, 14 Oct 2026) ----
+{
+  const cases = [
+    ["Unit 22/80 Eighth Avenue, Maylands WA 6051", "22/80 Eighth Avenue, Maylands WA 6051"], // job 109235
+    ["Unit 7 / 46 King George Street, Victoria Park WA", "7/46 King George Street, Victoria Park WA"], // 109292
+    ["Unit 3, 12 Smith Street, Bentley WA 6102", "3/12 Smith Street, Bentley WA 6102"],
+    ["Unit 5 169 Hubert Street, East Victoria Park", "5/169 Hubert Street, East Victoria Park"],
+    ["Unit 8E/66 Great Eastern Highway, Rivervale", "8E/66 Great Eastern Highway, Rivervale"],
+    ["unit 17/45-47 Stuart Street, Perth", "17/45-47 Stuart Street, Perth"],
+    ["Unit 803, Floor 8/9 Victoria Avenue, Perth", "803, Floor 8/9 Victoria Avenue, Perth"], // 107263
+    ["22/80 Eighth Avenue, Maylands", "22/80 Eighth Avenue, Maylands"],
+    ["12 Unity Avenue, Bentley", "12 Unity Avenue, Bentley"],
+    ["", ""],
+  ];
+  for (const [input, want] of cases) {
+    const got = stripUnitWord(input);
+    check(`stripUnitWord: ${JSON.stringify(input)}`, got === want, `got ${JSON.stringify(got)}, want ${JSON.stringify(want)}`);
+  }
+
+  // An AroFlo site saved before this change ("Unit 22/80 ...") still takes the new job,
+  // rather than the job creating a duplicate "22/80 ..." site.
+  const old = [loc("Unit 22/80 Eighth Avenue", "Maylands"), loc("Unit 21/80 Eighth Avenue", "Maylands")];
+  check("old \"Unit\" site matches the new address", matchLocation(old, "22/80 Eighth Avenue, Maylands WA 6051")?.locationname === "Unit 22/80 Eighth Avenue");
+  check("old \"Unit\" site for another unit does not", matchLocation([old[1]], "22/80 Eighth Avenue, Maylands WA 6051") === null);
+  const plain = [loc("22/80 Eighth Avenue", "Maylands")];
+  check("a \"Unit\" address matches a plain site", matchLocation(plain, "Unit 22/80 Eighth Avenue, Maylands WA 6051")?.locationname === "22/80 Eighth Avenue");
+  check("a unit address never takes the whole-street site", matchLocation([loc("80 Eighth Avenue", "Maylands")], "22/80 Eighth Avenue, Maylands") === null);
 }
 
 const failures = results.filter(r => !r.ok);
