@@ -134,6 +134,10 @@ const CLIENT_NAME_MAP = {
   "canquan pty ltd": "SDRE Steven Davis Real Estate",
   "canquan": "SDRE Steven Davis Real Estate",
   "haiven north": "Haiven Property",
+  // Client-not-found alert of 20 Oct 2026 (Console work order #443, 30 Prosser Way, Myaree).
+  // Cooling Pty Ltd is Cooling Real Estate's company on the bill-to line; the Prosser Way
+  // site is already on the Cooling Real Estate card.
+  "cooling pty ltd": "Cooling Real Estate",
 };
 
 // Sender email address → Aroflo client name, for agencies with many branch cards whose
