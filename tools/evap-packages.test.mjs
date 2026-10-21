@@ -24,12 +24,20 @@ const module_ = [
   grab("const EVAP_PACKAGE_FOR", ";\n"),
   grab("function applyEvapTag(result, airconUnitType)", "\n}\n"),
   grab("const SUBSTATUS_MAP", "\n};\n"),
-  "export { pickEvapTaskType, applyEvapTag, SUBSTATUS_MAP };",
+  grab("function arofloRateLimit(data)", "\n}\n"),
+  // arofloTaskTypes with Aroflo stubbed out, so a failed refresh can be played.
+  "const toArray = (v) => (v == null ? [] : Array.isArray(v) ? v : [v]);",
+  "let getImpl = null; const arofloGet = (q) => getImpl(q);",
+  grab("const TASK_TYPES_TTL_MS", ";\n"),
+  grab("let taskTypesCache", ";\n"),
+  grab("async function arofloTaskTypes()", "\n}\n"),
+  "const stubAroflo = (f) => { getImpl = f; }; const expireTaskTypes = () => { taskTypesCache.at = 0; };",
+  "export { pickEvapTaskType, applyEvapTag, SUBSTATUS_MAP, arofloRateLimit, arofloTaskTypes, stubAroflo, expireTaskTypes };",
 ].join("\n");
 const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "evap-packages-"));
 const tmp = path.join(tmpDir, "extracted.mjs");
 fs.writeFileSync(tmp, module_);
-const { pickEvapTaskType, applyEvapTag, SUBSTATUS_MAP } = await import(pathToFileURL(tmp).href);
+const { pickEvapTaskType, applyEvapTag, SUBSTATUS_MAP, arofloRateLimit, arofloTaskTypes, stubAroflo, expireTaskTypes } = await import(pathToFileURL(tmp).href);
 const { PACKAGE_TEMPLATES } = await import(pathToFileURL(path.join(root, "templates.js")).href);
 process.on("exit", () => fs.rmSync(tmpDir, { recursive: true, force: true }));
 
@@ -86,6 +94,30 @@ for (const pkg of ["EV1", "EVEC1"]) {
 check("EVEC1 carries the compliance check", PACKAGE_TEMPLATES.EVEC1.includes("Smoke Alarm Testing") && PACKAGE_TEMPLATES.EVEC1.includes("Evap Service."));
 for (const pkg of ["AC1", "ACEC1"]) {
   check(`${pkg} no longer covers an evap`, !/evaporative/i.test(PACKAGE_TEMPLATES[pkg]));
+}
+
+// ---- Aroflo's rate-limit replies are retried, other failures aren't ----
+check("per-minute limit (status 6) is retried", arofloRateLimit({ status: "6", statusmessage: "Exceeded Rate Limit - Requests per Minute" }) === "minute");
+check("per-second limit is retried", arofloRateLimit({ status: "11", statusmessage: "Exceeded Rate Limit - Requests per Second" }) === "second");
+check("daily limit isn't retried", arofloRateLimit({ status: "7", statusmessage: "Exceeded Rate Limit - Daily" }) === null);
+check("size limit isn't retried", arofloRateLimit({ status: "8", statusmessage: "Exceeded Size Rate Limit - Please try filtering your request down" }) === null);
+check("a good reply isn't a rate limit", arofloRateLimit({ status: "0", statusmessage: "Login OK" }) === null);
+
+// ---- A failed task type refresh keeps the last list ----
+{
+  let threw = null;
+  stubAroflo(async () => { throw new Error("Aroflo GET failed: Exceeded Rate Limit - Requests per Minute"); });
+  try { await arofloTaskTypes(); } catch (err) { threw = err; }
+  check("with no list yet, a failed read still fails", threw && /Rate Limit/.test(threw.message));
+
+  stubAroflo(async () => ({ tasktypes: TYPES }));
+  check("a good read gives the list", (await arofloTaskTypes()).length === TYPES.length);
+
+  expireTaskTypes();
+  stubAroflo(async () => { throw new Error("Aroflo GET failed: Exceeded Rate Limit - Requests per Minute"); });
+  const warn = console.warn; console.warn = () => {};
+  let stale; try { stale = await arofloTaskTypes(); } finally { console.warn = warn; }
+  check("a failed refresh keeps the last list, so EVEC1 is still found", pickEvapTaskType(stale, "EVEC1") === "EVEC1");
 }
 
 const failures = results.filter(r => !r.ok);

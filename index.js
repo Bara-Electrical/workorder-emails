@@ -411,11 +411,23 @@ function arofloSign(method, query, ts) {
     .digest("hex");
 }
 
+// Aroflo turns a request away with status 6 when it goes over 120 a minute or 3 a second
+// (the per-second one has no number in their docs, so the message is matched too). The
+// request never ran, so it's safe to send again, POSTs included. The daily limit (status 7)
+// isn't retried: waiting seconds won't lift it.
+function arofloRateLimit(data) {
+  const message = String(data?.statusmessage || "");
+  if (String(data?.status) !== "6" && !/exceeded rate limit/i.test(message)) return null;
+  if (/daily/i.test(message)) return null;
+  return /second/i.test(message) ? "second" : "minute";
+}
+
 // Aroflo's HMAC signature is tied to a specific timestamp, so a retry can't reuse the
 // same signed request — each attempt re-signs with a fresh timestamp. Only network
-// errors and 429/5xx are retried; a clean HTTP response with a non-"0" Aroflo status is
-// a completed request (possibly already applied server-side for POSTs), so it's surfaced
-// immediately rather than retried to avoid duplicating side effects like job/note creation.
+// errors, 429/5xx and Aroflo's rate-limit replies are retried; any other clean HTTP
+// response with a non-"0" Aroflo status is a completed request (possibly already applied
+// server-side for POSTs), so it's surfaced immediately rather than retried to avoid
+// duplicating side effects like job/note creation.
 async function arofloRequest(method, urlSuffix, body, label, attempt = 1) {
   const query = method === "GET" ? urlSuffix : body;
   const ts    = new Date().toISOString();
@@ -459,6 +471,14 @@ async function arofloRequest(method, urlSuffix, body, label, attempt = 1) {
     data = await res.json();
   } catch {
     throw new Error(`${label} returned non-JSON response (HTTP ${res.status})`);
+  }
+  const rateLimit = arofloRateLimit(data);
+  if (rateLimit && attempt < 3) {
+    // The per-minute window needs real waiting; the per-second one clears almost at once.
+    const delay = rateLimit === "minute" ? 20000 * attempt : 1000 * attempt;
+    console.warn(`${label} rate limited per ${rateLimit} (attempt ${attempt}/3) — retrying in ${delay}ms`);
+    await new Promise(r => setTimeout(r, delay));
+    return arofloRequest(method, urlSuffix, body, label, attempt + 1);
   }
   if (data.status !== "0") throw new Error(`${label} failed: ${data.statusmessage}`);
   return data.zoneresponse;
@@ -631,12 +651,21 @@ function pickAfterHoursTaskType(taskTypes) {
 }
 
 // Aroflo's task types, read once and kept for a few hours, so a task type the office adds
-// later (as EV1/EVEC1 were) is picked up without a restart.
+// later (as EV1/EVEC1 were) is picked up without a restart. If a refresh fails, the last
+// list read is used rather than none: task types rarely change, and a failed read used to
+// make EV1/EVEC1 jobs go in as AC1/ACEC1 (job 109696, 21 Oct 2026).
 const TASK_TYPES_TTL_MS = 6 * 60 * 60 * 1000;
 let taskTypesCache = null;
 async function arofloTaskTypes() {
   if (taskTypesCache && Date.now() - taskTypesCache.at < TASK_TYPES_TTL_MS) return taskTypesCache.list;
-  const zone = await arofloGet("zone=tasktypes&page=1");
+  let zone;
+  try {
+    zone = await arofloGet("zone=tasktypes&page=1");
+  } catch (err) {
+    if (!taskTypesCache) throw err;
+    console.warn(`[job] Couldn't refresh Aroflo's task types, using the list from ${new Date(taskTypesCache.at).toISOString()}: ${err.message}`);
+    return taskTypesCache.list;
+  }
   taskTypesCache = { at: Date.now(), list: toArray(zone?.tasktypes) };
   return taskTypesCache.list;
 }
@@ -1419,15 +1448,22 @@ async function createArofloJob(result, rawEmail, pdfAttachment = null, emailMeta
   if (EVAP_TASK_TYPES.includes(result["task-type"])) {
     // Falls back to the reverse-cycle package's type, as evaps went before 1 Oct, so the job
     // still gets created — with a warning so the office fixes the type.
-    const fallback = result["task-type"] === "EVEC1" ? "ACEC1" : "AC1";
+    const pkg = result["task-type"];
+    const fallback = pkg === "EVEC1" ? "ACEC1" : "AC1";
+    let readError = null;
     try {
-      taskTypeId = await evapTaskTypeId(result["task-type"]);
+      taskTypeId = await evapTaskTypeId(pkg);
     } catch (err) {
+      readError = err;
       console.warn(`[job] Couldn't read Aroflo's task types: ${err.message}`);
     }
     if (!taskTypeId) {
       taskTypeId = TASK_TYPE_MAP[fallback];
-      warnings.push({ tag: `${result["task-type"]} task type not found`, detail: `No ${result["task-type"]} task type found in Aroflo — created as ${fallback}; change the task type by hand` });
+      // A failed read isn't a missing task type — say which it was, so nobody goes looking
+      // for an EV1/EVEC1 type that is there.
+      warnings.push(readError
+        ? { tag: "Task types not read", detail: `Couldn't read Aroflo's task types (${readError.message}) — created as ${fallback}; change the task type to ${pkg} by hand` }
+        : { tag: `${pkg} task type not found`, detail: `No ${pkg} task type found in Aroflo — created as ${fallback}; change the task type to ${pkg} by hand` });
     }
   }
   // Tagged "After hours" on the email: an After Hours Callout, whatever the work order says.
