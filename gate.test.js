@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import {
   gateMode, gateApplies, siteLine, propertyCheck, upsertGateRecord, pendingDecisions, GateHold, duplicatePrompt,
   GATE_TEST_CATEGORY, GATE_CONTINUE_CATEGORY, carryGateContinue,
+  ClientHold, clientPickPrompt, carryClientPicked, CLIENT_PICKED_CATEGORY, dashboardClients, clientContext, gateRecord,
 } from "./gate.js";
 
 const env = { DASHBOARD_URL: "https://dash.test/", DASHBOARD_API_SECRET: "s3cret" };
@@ -121,4 +122,54 @@ test("propertyCheck passes the order number", async () => {
   let asked = "";
   await propertyCheck({ street: "1 Main St", orderNumber: "8252" }, { env, fetchImpl: async (url) => { asked = url; return { ok: true, json: async () => ({}) }; } });
   assert.match(asked, /orderNumber=8252/);
+});
+
+test("carryClientPicked: a pick on the picked-up email survives the status strip", () => {
+  const fetched = ["Bara AI"];
+  assert.deepEqual(carryClientPicked(["Bara AI", CLIENT_PICKED_CATEGORY], fetched), ["Bara AI", CLIENT_PICKED_CATEGORY]);
+  assert.deepEqual(carryClientPicked(["Bara AI"], fetched), fetched);
+  assert.deepEqual(carryClientPicked([CLIENT_PICKED_CATEGORY], [CLIENT_PICKED_CATEGORY]), [CLIENT_PICKED_CATEGORY]);
+});
+
+test("clientPickPrompt asks about the AI pick and keeps it out of the suggestions", () => {
+  const ai = { aroFloId: "c", name: "Cooling Real Estate", reason: "letterhead" };
+  const p = clientPickPrompt({
+    extractedName: "Cooling Pty Ltd", from: "x@y", ai,
+    suggestions: [{ aroFloId: "c", name: "Cooling Real Estate" }, { aroFloId: "1", name: "A" }, { aroFloId: "2", name: "B" }, { aroFloId: "3", name: "C" }, { aroFloId: "4", name: "D" }],
+  });
+  assert.equal(p.question, 'No client card is called "Cooling Pty Ltd". Is it Cooling Real Estate?');
+  assert.deepEqual(p.suggestions.map(s => s.aroFloId), ["1", "2", "3"]);
+  assert.equal(p.extractedName, "Cooling Pty Ltd");
+});
+
+test("clientPickPrompt: no AI pick, and a sender picked onto two cards before", () => {
+  assert.match(clientPickPrompt({ extractedName: "Olifents" }).question, /Which client is this work order for\?$/);
+  const twice = clientPickPrompt({ extractedName: "Austpro", askedBefore: [{ aroFloId: "1", name: "A" }, { aroFloId: "2", name: "B" }] });
+  assert.match(twice.question, /put on 2 different cards before/);
+});
+
+test("ClientHold is an Error carrying the name, the AI pick and whether it was asked before", () => {
+  const e = new ClientHold({ extractedName: "X", aiPick: "Y", alreadyAsked: true });
+  assert.ok(e instanceof Error);
+  assert.equal(e.name, "ClientHold");
+  assert.deepEqual([e.extractedName, e.aiPick, e.alreadyAsked], ["X", "Y", true]);
+});
+
+test("dashboardClients and clientContext ask the dashboard with the secret", async () => {
+  const { f, log } = scripted([
+    { status: 200, body: JSON.stringify({ clients: [{ aroFloId: "a", name: "A", category: "Real Estate" }] }) },
+    { status: 200, body: JSON.stringify({ picks: [], propertyCards: [] }) },
+  ]);
+  assert.deepEqual(await dashboardClients({ fetchImpl: f, env }), [{ aroFloId: "a", name: "A", category: "Real Estate" }]);
+  await clientContext({ from: "pm@a.com", name: "A & B", street: "1 X St", suburb: "Como" }, { fetchImpl: f, env });
+  assert.equal(log[0].url, "https://dash.test/api/workorder-gate/clients");
+  assert.equal(log[1].url, "https://dash.test/api/workorder-gate/client-context?from=pm%40a.com&name=A+%26+B&street=1+X+St&suburb=Como");
+  assert.equal(log[1].headers.Authorization, "Bearer s3cret");
+});
+
+test("gateRecord: a 404 is no record, other failures throw", async () => {
+  const { f } = scripted([{ status: 404, body: "no record" }, { status: 200, body: JSON.stringify({ id: "r", clientAroFloId: "c" }) }, { status: 500, body: "boom" }]);
+  assert.equal(await gateRecord("m1", { fetchImpl: f, env }), null);
+  assert.equal((await gateRecord("m1", { fetchImpl: f, env })).clientAroFloId, "c");
+  await assert.rejects(gateRecord("m1", { fetchImpl: f, env }), /500/);
 });

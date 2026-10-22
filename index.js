@@ -13,7 +13,10 @@ const OFFICE_TASK_URL = "https://office.aroflo.com/ims/Site/Service/workrequest/
 import {
   GateHold, gateMode, gateApplies, carryGateContinue, propertyCheck, upsertGateRecord, pendingDecisions, siteLine, duplicatePrompt,
   NEEDS_DECISION_CATEGORY, STOPPED_CATEGORY, GATE_CONTINUE_CATEGORY,
+  ClientHold, clientPickPrompt, dashboardClients, clientContext, gateRecord, carryClientPicked,
+  PICK_CLIENT_CATEGORY, CLIENT_PICKED_CATEGORY,
 } from "./gate.js";
+import { aiPickClient, closestClients } from "./clientPick.js";
 
 const REQUIRED_ENV = [
   "OPENAI_API_KEY",
@@ -281,7 +284,7 @@ const STATUS_CATEGORIES = [
 // The gate's categories are transient too. Added after the literal rather than inside it
 // because tools/thread-dedup.test.mjs evaluates the block above on its own, where an
 // imported name would be undefined.
-STATUS_CATEGORIES.push(NEEDS_DECISION_CATEGORY, STOPPED_CATEGORY, GATE_CONTINUE_CATEGORY);
+STATUS_CATEGORIES.push(NEEDS_DECISION_CATEGORY, STOPPED_CATEGORY, GATE_CONTINUE_CATEGORY, PICK_CLIENT_CATEGORY, CLIENT_PICKED_CATEGORY);
 
 let pollRunning = false;
 
@@ -289,6 +292,12 @@ const app = express();
 app.use(express.json({ limit: "25mb" }));
 
 const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
+// Its own key so OpenAI's usage page shows what the client picker costs on its own. Optional:
+// without it a held email still gets the plugin's client dropdown, just no AI suggestion.
+const openaiClientPick = process.env.OPENAI_API_KEY_WORKORDER_CLIENT_PICK
+  ? new OpenAI({ apiKey: process.env.OPENAI_API_KEY_WORKORDER_CLIENT_PICK })
+  : null;
+if (!openaiClientPick) console.warn("[startup] OPENAI_API_KEY_WORKORDER_CLIENT_PICK not set — held emails get no AI client suggestion");
 
 // Gate the debug/introspection endpoints behind a shared secret, checked as either an
 // x-api-key header or a ?key= query param (so it can be embedded directly in a webhook
@@ -721,9 +730,17 @@ function perthDateString(date = new Date()) {
   return ymd.replace(/-/g, "/");
 }
 
-// In-memory client cache: lowercase clientname → client object.
-// Populated at startup and updated via the /aroflo-webhook endpoint.
+// In-memory client cache: lowercase clientname → client object. Built from two lists by
+// rebuildClientCache: AroFlo's own (arofloClients, pulled at startup, at 3am and on the
+// /aroflo-webhook), and the dashboard's active cards (dashboardClientList, every hour, no
+// AroFlo API cost), which only adds names AroFlo's pull did not have yet. So a card the office
+// makes in AroFlo is matched within the hour instead of after the next 3am pull.
 const clientCache = new Map();
+const arofloClients = new Map();
+// [{ clientid, clientname, category }] — the dashboard's aroFloId is the same v1 clientid.
+let dashboardClientList = [];
+let dashboardClientsLastLoaded = null;
+const DASHBOARD_CLIENTS_REFRESH_MS = 60 * 60 * 1000;
 // Secondary index: clientname with all punctuation and spacing removed → the clients
 // sharing that form. Bridges how an agency writes its own name on a work order versus how
 // it was typed into Aroflo — "Rightly Realestate" against the Aroflo client
@@ -758,27 +775,59 @@ async function loadClientCache() {
       const raw  = zone?.clients;
       if (!raw) break;
       const arr  = toArray(raw);
-      for (const c of arr) clientCache.set(c.clientname.toLowerCase(), c);
+      for (const c of arr) arofloClients.set(c.clientname.toLowerCase(), c);
       loaded += arr.length;
       const current = parseInt(zone.currentpageresults ?? 0);
       const max     = parseInt(zone.maxpageresults ?? 500);
       if (current < max) break;
       page++;
     }
-    // Rebuilt from scratch rather than appended to, so a daily refresh can't stack repeat
-    // copies of the same client under one key and make every name look ambiguous.
-    clientCacheNormalised.clear();
-    for (const c of clientCache.values()) {
-      const key = normaliseClientName(c.clientname);
-      if (!key) continue;
-      const bucket = clientCacheNormalised.get(key);
-      if (bucket) bucket.push(c); else clientCacheNormalised.set(key, [c]);
-    }
+    rebuildClientCache();
     clientCacheLastLoaded = new Date().toISOString();
-    console.log(`[client] Cache loaded: ${clientCache.size} unique clients across ${page} page(s)`);
+    console.log(`[client] Cache loaded: ${arofloClients.size} unique clients across ${page} page(s)`);
   } catch (err) {
     console.error("[client] Failed to load cache — fuzzy matching unavailable:", err.message);
   }
+}
+
+// The dashboard's active client cards (filled from AroFlo's client report). A failed or empty
+// read keeps the last list: an outage must not make every agency look unknown.
+async function loadDashboardClients() {
+  try {
+    const rows = await dashboardClients();
+    if (!rows.length) return;
+    dashboardClientList = rows
+      .filter(r => r?.aroFloId && r?.name)
+      .map(r => ({ clientid: r.aroFloId, clientname: r.name, category: r.category ?? null }));
+    dashboardClientsLastLoaded = new Date().toISOString();
+    const added = rebuildClientCache();
+    console.log(`[client] Dashboard list loaded: ${dashboardClientList.length} active cards, ${added} not in AroFlo's last pull`);
+  } catch (err) {
+    console.warn("[client] Dashboard client list failed — keeping the last one:", err.message);
+  }
+}
+
+// → how many names came from the dashboard alone. AroFlo's own record wins a shared name.
+function rebuildClientCache() {
+  clientCache.clear();
+  for (const [key, c] of arofloClients) clientCache.set(key, c);
+  let added = 0;
+  for (const c of dashboardClientList) {
+    const key = c.clientname.toLowerCase();
+    if (clientCache.has(key)) continue;
+    clientCache.set(key, c);
+    added++;
+  }
+  // Rebuilt from scratch rather than appended to, so a refresh can't stack repeat copies of
+  // the same client under one key and make every name look ambiguous.
+  clientCacheNormalised.clear();
+  for (const c of clientCache.values()) {
+    const key = normaliseClientName(c.clientname);
+    if (!key) continue;
+    const bucket = clientCacheNormalised.get(key);
+    if (bucket) bucket.push(c); else clientCacheNormalised.set(key, [c]);
+  }
+  return added;
 }
 
 // Milliseconds from now until the next CLIENT_CACHE_REFRESH_HOUR in CLIENT_CACHE_TZ.
@@ -1435,6 +1484,87 @@ function pickBranchFromHistory(candidates, address, pmName) {
   return null;
 }
 
+// The card the office picked in the plugin for this email, if it has picked one. The pick
+// stays on the gate record through the rest of the run (a duplicate hold and its Continue
+// included), so it is read back whenever the email is run again.
+function clientFromRecord(record) {
+  if (!record?.clientAroFloId) return null;
+  return {
+    client: { clientid: record.clientAroFloId, clientname: record.clientName || record.clientAroFloId },
+    via: "the office's pick in the plugin",
+  };
+}
+
+async function pickedClient(messageId) {
+  try {
+    return clientFromRecord(await gateRecord(messageId));
+  } catch (err) {
+    console.warn("[client-pick] Could not read the pick:", err.message);
+    return null;
+  }
+}
+
+// Every name matcher missed. In order:
+//   1. a card already picked for this email (it comes back here on a re-run);
+//   2. the one card the office has picked before for this sender and agency name;
+//   3. otherwise hold the email: the AI suggests a card from the active list, the plugin asks
+//      the office to confirm it or search for another, and ClientHold is thrown.
+// → { client, via }, or null when the dashboard cannot be reached, which keeps the old
+// "Client not found" tag and alert rather than holding an email nobody could release.
+async function resolveClientByPick({ result, rawEmail, emailMeta }) {
+  if (!emailMeta?.messageId) return null;
+  const extractedName = result["real-estate"] || null;
+  let record, context;
+  try {
+    record = await gateRecord(emailMeta.messageId);
+    const picked = clientFromRecord(record);
+    if (picked) return picked;
+    const { street, suburb } = parseAustralianAddress(stripUnitWord(result.address || ""));
+    context = await clientContext({ from: emailMeta.from, name: extractedName, street, suburb });
+  } catch (err) {
+    console.warn("[client-pick] Dashboard unavailable — falling back to Client not found:", err.message);
+    return null;
+  }
+
+  // A saved pick whose card has since gone from the active list is not offered: a job on an
+  // archived card fails in AroFlo.
+  const active = new Set(dashboardClientList.map(c => c.clientid));
+  const picks = (context?.picks ?? []).filter(p => !active.size || active.has(p.aroFloId));
+  if (picks.length === 1) {
+    return { client: { clientid: picks[0].aroFloId, clientname: picks[0].name }, via: `the office's earlier pick for ${emailMeta.from} / "${extractedName}"` };
+  }
+
+  // Private/domestic cards are never the sender of a work order.
+  const cards = dashboardClientList.filter(c => c.category !== "Private/Domestic");
+  const ai = await aiPickClient({
+    openai: openaiClientPick,
+    cards,
+    evidence: {
+      extractedName, from: emailMeta.from, fromName: emailMeta.fromName, subject: emailMeta.subject,
+      address: result.address, propertyCards: (context?.propertyCards ?? []).map(c => c.name), emailText: rawEmail,
+    },
+  });
+  const prompt = clientPickPrompt({
+    extractedName,
+    from: emailMeta.from,
+    ai: ai ? { aroFloId: ai.client.clientid, name: ai.client.clientname, reason: ai.reason } : null,
+    suggestions: closestClients(extractedName, cards).map(c => ({ aroFloId: c.clientid, name: c.clientname })),
+    askedBefore: picks.length > 1 ? picks.map(p => ({ aroFloId: p.aroFloId, name: p.name })) : [],
+  });
+  try {
+    await upsertGateRecord({
+      messageId: emailMeta.messageId, conversationId: emailMeta.conversationId,
+      subject: emailMeta.subject, fromAddress: emailMeta.from,
+      status: "NEEDS_CLIENT", checks: { clientPick: prompt }, warnings: [],
+    });
+  } catch (err) {
+    console.warn("[client-pick] Could not record the hold — falling back to Client not found:", err.message);
+    return null;
+  }
+  console.log(`[client-pick] Holding "${emailMeta.subject}" — "${extractedName}" matched no card; AI: ${ai ? `"${ai.client.clientname}" (${ai.reason})` : "none"}`);
+  throw new ClientHold({ extractedName, aiPick: ai?.client.clientname ?? null, alreadyAsked: record?.status === "NEEDS_CLIENT" });
+}
+
 async function createArofloJob(result, rawEmail, pdfAttachment = null, emailMeta = null, imageAttachments = [], pageSnapshot = null) {
   console.log("[job] Creating Aroflo job...");
   const warnings = [];
@@ -1525,8 +1655,15 @@ async function createArofloJob(result, rawEmail, pdfAttachment = null, emailMeta
     realEstate = senderName;
   }
   console.log(`[job] Client lookup — AI extracted real-estate: "${result["real-estate"]}", resolved to: "${realEstate}", from: "${emailMeta?.from}"`);
-  let client = await findClient(realEstate);
+  let client = null;
   let clientFoundVia = "name";
+  // A card picked in the plugin wins over the name matchers, which could land elsewhere on a
+  // re-read of the same email.
+  if (emailMeta?.messageId && emailMeta.categories?.includes(CLIENT_PICKED_CATEGORY)) {
+    const picked = await pickedClient(emailMeta.messageId);
+    if (picked) ({ client, via: clientFoundVia } = picked);
+  }
+  if (!client) client = await findClient(realEstate);
   if (!client && emailMeta?.from) {
     const domain = emailMeta.from.split("@")[1];
     const domainName = domain && EMAIL_DOMAIN_MAP[domain.toLowerCase()];
@@ -1541,6 +1678,10 @@ async function createArofloJob(result, rawEmail, pdfAttachment = null, emailMeta
       }
       clientFoundVia = `email domain (${domainName})`;
     }
+  }
+  if (!client) {
+    const picked = await resolveClientByPick({ result, rawEmail, emailMeta });
+    if (picked) ({ client, via: clientFoundVia } = picked);
   }
   if (!client) throw new Error(`Client not found in Aroflo: name="${realEstate}", from="${emailMeta?.from}"`);
   console.log(`[job] Client (via ${clientFoundVia}):`, client.clientid, client.clientname);
@@ -2750,6 +2891,7 @@ Return ONLY valid JSON with these exact keys:
     // The gate reads "Gate Test" / "Gate: Continue" off the email itself.
     categories: message.categories || [],
     from:    message.from?.emailAddress?.address || null,
+    fromName: message.from?.emailAddress?.name || null,
     to:      (message.toRecipients || []).map(r => r.emailAddress?.address).filter(Boolean).join(", ") || null,
     subject: message.subject || null,
     airconUnitType: airconUnitTags.join(", ") || null,
@@ -2874,8 +3016,10 @@ const THREAD_LOOKUP_FAILED = Symbol("thread lookup failed");
 
 // `continued`: the message being looked up for carries "Gate: Continue". The office has
 // already decided this thread is a new job, so a sibling still wearing "Needs Decision"
-// (it inherited the hold) is not a reason to park it again.
-async function findJobTagInThread(mailbox, conversationId, excludeMessageId, { continued = false } = {}) {
+// (it inherited the hold) is not a reason to park it again. `picked`: the same for
+// "Client: Picked" and a sibling still wearing "Pick Client". Either answer releases a
+// "Pick Client" sibling, since a Continue can only follow a pick on the same email.
+async function findJobTagInThread(mailbox, conversationId, excludeMessageId, { continued = false, picked = false } = {}) {
   const filter = encodeURIComponent(`conversationId eq '${conversationId}'`);
   try {
     const res = await graphFetch(
@@ -2891,7 +3035,8 @@ async function findJobTagInThread(mailbox, conversationId, excludeMessageId, { c
       // A held or stopped sibling counts as thread state too: while one message of a thread
       // waits on the plugin, no other message of it may become a job of its own.
       const tag = (m.categories || []).find(c =>
-        c.startsWith("Job created") || c.startsWith("Existing job") || (c === NEEDS_DECISION_CATEGORY && !continued) || c === STOPPED_CATEGORY
+        c.startsWith("Job created") || c.startsWith("Existing job") || (c === NEEDS_DECISION_CATEGORY && !continued) || c === STOPPED_CATEGORY ||
+        (c === PICK_CLIENT_CATEGORY && !continued && !picked)
       );
       if (tag) return tag;
     }
@@ -2953,8 +3098,12 @@ async function tagWholeConversation(mailbox, conversationId, excludeMessageId, t
 // "Stopped", which keeps it out for good. The dashboard already holds the final status for
 // both, so nothing is written back. Best effort: a failure here just delays the decision to
 // the next tick.
+//
+// A client picked for an email held on "Pick Client" (CLIENT_CHOSEN) works the same way as a
+// Continue: "Client: Picked" puts it back in the queue, and createArofloJob reads the pick off
+// the record.
 async function applyGateDecisions(mailbox) {
-  for (const [status, category] of [["CONTINUED", GATE_CONTINUE_CATEGORY], ["STOPPED", STOPPED_CATEGORY]]) {
+  for (const [status, category] of [["CONTINUED", GATE_CONTINUE_CATEGORY], ["STOPPED", STOPPED_CATEGORY], ["CLIENT_CHOSEN", CLIENT_PICKED_CATEGORY]]) {
     let records;
     try {
       records = await pendingDecisions(status);
@@ -2969,13 +3118,13 @@ async function applyGateDecisions(mailbox) {
         const current = (await res.json()).categories || [];
         // Re-reading the categories rather than trusting the poller's last write: an admin
         // may have tagged the email while it sat waiting.
-        const categories = [...current.filter(c => c !== NEEDS_DECISION_CATEGORY && c !== category), category];
+        const categories = [...current.filter(c => c !== NEEDS_DECISION_CATEGORY && c !== PICK_CLIENT_CATEGORY && c !== category), category];
         await graphFetch(`/users/${mailbox}/messages/${record.messageId}`, { method: "PATCH", body: JSON.stringify({ categories }) });
         // Tell the dashboard the email is re-tagged, or this row comes back every tick.
         await upsertGateRecord({ messageId: record.messageId, applied: true });
         // record.decision is the answer id from the prompt (gate.js duplicatePrompt); today
         // every answer maps to one of these two statuses, so it is logged, not branched on.
-        console.log(`[gate] ${status} (${record.decision ?? "?"} by ${record.decidedBy ?? "?"}): "${record.subject ?? record.messageId}" → "${category}"`);
+        console.log(`[gate] ${status} (${record.decision ?? "?"}${record.clientName ? ` ${record.clientName}` : ""} by ${record.decidedBy ?? "?"}): "${record.subject ?? record.messageId}" → "${category}"`);
       } catch (err) {
         console.warn(`[gate] Could not apply ${status} to ${record.messageId}:`, err.message);
       }
@@ -3061,6 +3210,7 @@ async function pollInbox(mailbox) {
     ` and not categories/any(c:c eq '${PROCESSING_CATEGORY}')` +
     ` and not categories/any(c:c eq '${FAILED_CATEGORY}')` +
     ` and not categories/any(c:c eq '${NEEDS_DECISION_CATEGORY}')` +
+    ` and not categories/any(c:c eq '${PICK_CLIENT_CATEGORY}')` +
     ` and not categories/any(c:c eq '${STOPPED_CATEGORY}')` +
     ` and not categories/any(c:c eq '${READING_EMAIL_CATEGORY}')` +
     ` and not categories/any(c:c eq '${SENDING_TO_AI_CATEGORY}')` +
@@ -3093,8 +3243,9 @@ async function pollInbox(mailbox) {
   const candidates = [];
   for (const message of messages) {
     const continued = (message.categories || []).includes(GATE_CONTINUE_CATEGORY);
+    const picked = (message.categories || []).includes(CLIENT_PICKED_CATEGORY);
     const siblingTag = message.conversationId
-      ? await findJobTagInThread(mailbox, message.conversationId, message.id, { continued })
+      ? await findJobTagInThread(mailbox, message.conversationId, message.id, { continued, picked })
       : null;
     if (siblingTag === THREAD_LOOKUP_FAILED) {
       // Can't tell whether this thread already has a job, so do nothing at all: leave the
@@ -3103,7 +3254,7 @@ async function pollInbox(mailbox) {
       console.warn("[poll] Skipping until thread state is known:", message.subject);
       continue;
     }
-    if (siblingTag === NEEDS_DECISION_CATEGORY || siblingTag === STOPPED_CATEGORY) {
+    if (siblingTag === NEEDS_DECISION_CATEGORY || siblingTag === STOPPED_CATEGORY || siblingTag === PICK_CLIENT_CATEGORY) {
       // The thread is parked on a decision (or was stopped). This message inherits that
       // state and stays out of the candidate query until the decision lands; the sweep
       // after job creation clears it along with the other status categories.
@@ -3142,7 +3293,8 @@ async function pollInbox(mailbox) {
     }
     // setJobStatus above stripped "Gate: Continue" with the other status categories, so the
     // full message no longer carries it. Put it back, or the gate holds the email again.
-    full.categories = carryGateContinue(message.categories, full.categories || []);
+    // "Client: Picked" likewise, or the job could go on a card other than the one picked.
+    full.categories = carryClientPicked(message.categories, carryGateContinue(message.categories, full.categories || []));
     candidates.push({ message: full, currentCategories });
     if (candidates.length >= POLL_BATCH_SIZE) {
       // Bounds the work of one tick, not what the poll can see. The rest keeps its place at
@@ -3260,6 +3412,23 @@ async function pollInbox(mailbox) {
         console.log("[poll] Held for decision:", message.subject, "—", err.message);
         continue;
       }
+      if (err instanceof ClientHold) {
+        // Not a failure either: the record says NEEDS_CLIENT and the plugin asks the office
+        // to pick the card. Unlike a duplicate hold the job waits on someone opening the
+        // email, so the alert goes out — once per email, not on every retry.
+        await setJobStatus(mailbox, message.id, currentCategories, PICK_CLIENT_CATEGORY);
+        console.log("[poll] Held for a client pick:", message.subject, "—", err.message);
+        if (!err.alreadyAsked) {
+          const named = err.extractedName ? `"${escapeHtml(err.extractedName)}"` : "The agency";
+          const suggestion = err.aiPick ? ` The AI thinks it is <strong>${escapeHtml(err.aiPick)}</strong>.` : "";
+          await sendAlertEmail(
+            `Action required — pick the client: "${message.subject}"`,
+            `<p style="font-family:sans-serif;font-size:14px">${named} matched no client card.${suggestion}</p><p style="font-family:sans-serif;font-size:14px">Open the email in Outlook and pick the client in the Bara panel under it. If the card doesn't exist yet, make it in AroFlo; it shows in the list within the hour.</p>`,
+            "client pick"
+          );
+        }
+        continue;
+      }
       console.error("[poll] Error processing message:", message.subject, err.message);
       recordGateFailure(message, err);
       if (err.message.startsWith("Client not found")) {
@@ -3309,6 +3478,8 @@ app.get("/clients", requireApiKey, (req, res) => {
   res.json({
     count: clientCache.size,
     lastLoaded: clientCacheLastLoaded,
+    dashboardCount: dashboardClientList.length,
+    dashboardLastLoaded: dashboardClientsLastLoaded,
     clients: [...clientCache.values()].map(c => ({ clientid: c.clientid, clientname: c.clientname })),
   });
 });
@@ -3356,8 +3527,9 @@ app.listen(process.env.PORT || 3000, async () => {
   // Wait for the client cache before polling — otherwise a work order sitting
   // in the inbox at deploy time gets processed against an empty cache and
   // falls back to a less reliable single-candidate live API lookup.
-  await loadClientCache();
+  await Promise.all([loadClientCache(), loadDashboardClients()]);
   scheduleClientCacheRefresh();
+  setInterval(loadDashboardClients, DASHBOARD_CLIENTS_REFRESH_MS);
 
   pollEmails();
   setInterval(pollEmails, POLL_INTERVAL_MS);

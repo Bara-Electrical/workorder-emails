@@ -47,6 +47,24 @@ is parked on the same category until the answer lands.
 
 Design: `dashboard/docs/superpowers/specs/2026-09-12-workorder-gate-design.md`.
 
+### Picking the client
+
+The client list comes from the dashboard every hour (its client table, filled from AroFlo's
+client report, so no AroFlo API calls) on top of AroFlo's own list pulled at startup and 3am.
+A card made in AroFlo is matched within the hour.
+
+When no name matcher finds the agency's card, the email is held on **Pick Client** with no
+job, and Brandon gets one alert. In order:
+
+1. a card the office already picked for this sender and agency name is used without asking
+   (picked onto two or more cards before, it always asks);
+2. otherwise the AI (`OPENAI_API_KEY_WORKORDER_CLIENT_PICK`) suggests a card from the active
+   non-private cards, and the plugin asks the office to confirm it or search for another.
+
+The pick reaches this service through the dashboard's pending list (`CLIENT_CHOSEN`): the
+email is re-run on the category `Client: Picked` and the job goes on the picked card. If the
+dashboard cannot be reached, the old **Client not found** tag and alert are used instead.
+
 ### The AroFlo office login
 
 AroFlo only mints a task's inbound email address from a button in the office UI; neither
@@ -79,6 +97,7 @@ Optional:
 | `AROFLO_OFFICE_TOTP_SECRET` | authenticator secret for the service user; without it MFA fails |
 | `DASHBOARD_URL`, `DASHBOARD_API_SECRET` | the property check and gate records; without them jobs are created with a "Property check unavailable" warning |
 | `WORKORDER_GATE` | `off` / `tagged` / `on`, see above |
+| `OPENAI_API_KEY_WORKORDER_CLIENT_PICK` | the AI's client suggestion on a held email; without it the plugin offers the dropdown only |
 | `ADMIN_API_KEY` | protects `/clients`, `/find-client`, `/aroflo-webhook`; unset means open |
 | `LOG_API_SECRET` | the activity and AI logs written to the dashboard, best effort |
 

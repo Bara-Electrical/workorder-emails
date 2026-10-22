@@ -37,7 +37,7 @@ const statusCatsSrc = grab("const TRIGGER_CATEGORY", "];");
 function build(graphFetch) {
   return new Function("graphFetch", "console", `
     // Imported from gate.js in index.js; the function under test only compares against them.
-    const NEEDS_DECISION_CATEGORY = "Needs Decision", STOPPED_CATEGORY = "Stopped";
+    const NEEDS_DECISION_CATEGORY = "Needs Decision", STOPPED_CATEGORY = "Stopped", PICK_CLIENT_CATEGORY = "Pick Client";
     ${sentinelSrc}
     ${fnSrc}
     return { findJobTagInThread, THREAD_LOOKUP_FAILED };
@@ -90,6 +90,29 @@ const CASES = [
     expect: (r, S) => r === "Stopped",
   },
   {
+    name: "a sibling held for a client pick parks the thread",
+    graphFetch: ok([{ id: "other", categories: ["Bara AI", "Pick Client"] }]),
+    expect: (r, S) => r === "Pick Client",
+  },
+  {
+    name: "the picked message itself is not parked by a sibling still on Pick Client",
+    graphFetch: ok([{ id: "other", categories: ["Bara AI", "Pick Client"] }]),
+    opts: { picked: true },
+    expect: (r, S) => r === null,
+  },
+  {
+    name: "a Continue after a pick is not parked by a sibling still on Pick Client",
+    graphFetch: ok([{ id: "other", categories: ["Bara AI", "Pick Client"] }]),
+    opts: { continued: true },
+    expect: (r, S) => r === null,
+  },
+  {
+    name: "a pick does not release a sibling waiting on a duplicate decision",
+    graphFetch: ok([{ id: "other", categories: ["Bara AI", "Needs Decision"] }]),
+    opts: { picked: true },
+    expect: (r, S) => r === "Needs Decision",
+  },
+  {
     name: "genuinely untagged thread — returns null so a job IS created",
     graphFetch: ok([{ id: "other", categories: ["Bara AI"] }]),
     expect: (r, S) => r === null,
@@ -122,7 +145,7 @@ for (const c of CASES) {
   const { findJobTagInThread, THREAD_LOOKUP_FAILED } = build(c.graphFetch);
   let result;
   try {
-    result = await findJobTagInThread("mb", "conv", "self");
+    result = await findJobTagInThread("mb", "conv", "self", c.opts);
   } catch (err) {
     failures.push(`  ${c.name}\n    threw: ${err.message}`);
     continue;

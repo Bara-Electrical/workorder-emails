@@ -12,6 +12,13 @@ export const NEEDS_DECISION_CATEGORY = "Needs Decision";
 export const STOPPED_CATEGORY        = "Stopped";
 export const GATE_CONTINUE_CATEGORY  = "Gate: Continue";
 export const GATE_TEST_CATEGORY      = "Gate Test";
+// An email whose agency name matched no client card waits under this until someone picks
+// the card in the plugin. Taking the tag off by hand also retries it, as "Client not found"
+// always did.
+export const PICK_CLIENT_CATEGORY    = "Pick Client";
+// What a pick puts on the email in place of "Pick Client", so it comes back through the
+// candidate query and the job is made on the picked card. Same role as "Gate: Continue".
+export const CLIENT_PICKED_CATEGORY  = "Client: Picked";
 
 // Thrown by createArofloJob in place of creating the task. Carries the checks so the poll
 // loop can log what the hold was decided on.
@@ -22,6 +29,44 @@ export class GateHold extends Error {
     this.recentJobs = recentJobs;
     this.aircon = aircon;
   }
+}
+
+// Thrown by createArofloJob when the agency name matched no client card and the email is held
+// for the office to pick one (the record is already NEEDS_CLIENT).
+// `alreadyAsked`: the email was held for a pick before (its tag was taken off to retry), so
+// the office has had its alert already.
+export class ClientHold extends Error {
+  constructor({ extractedName = null, aiPick = null, alreadyAsked = false } = {}) {
+    super(`Held for a client pick: "${extractedName ?? ""}" matched no client card${aiPick ? ` (AI suggests ${aiPick})` : ""}`);
+    this.name = "ClientHold";
+    this.extractedName = extractedName;
+    this.aiPick = aiPick;
+    this.alreadyAsked = alreadyAsked;
+  }
+}
+
+// What the plugin shows on an email held for a client pick. Lives on the record
+// (checks.clientPick) like the duplicate prompt, so the wording is this service's to change.
+//
+//   { question, extractedName, from, ai: { aroFloId, name, reason } | null,
+//     suggestions: [{ aroFloId, name }], askedBefore: [{ aroFloId, name }] }
+//
+// `extractedName` is also the key the dashboard remembers the pick under, with the sender.
+export function clientPickPrompt({ extractedName, from, ai = null, suggestions = [], askedBefore = [] }) {
+  const named = extractedName ? `"${extractedName}"` : "this agency";
+  const question = askedBefore.length > 1
+    ? `${named} has been put on ${askedBefore.length} different cards before. Which one is this work order for?`
+    : ai
+    ? `No client card is called ${named}. Is it ${ai.name}?`
+    : `No client card is called ${named}. Which client is this work order for?`;
+  return {
+    question,
+    extractedName: extractedName || null,
+    from: from || null,
+    ai,
+    suggestions: suggestions.filter(c => c.aroFloId !== ai?.aroFloId).slice(0, 3),
+    askedBefore,
+  };
 }
 
 const GATE_MODES = ["off", "tagged", "on"];
@@ -55,8 +100,18 @@ export function gateApplies(mode, categories = []) {
 // Decision. The poller remembers the Continue from the candidate it picked up and puts it
 // back on the full message's categories with this.
 export function carryGateContinue(pickedUp = [], fetched = []) {
-  if (!pickedUp.includes(GATE_CONTINUE_CATEGORY) || fetched.includes(GATE_CONTINUE_CATEGORY)) return fetched;
-  return [...fetched, GATE_CONTINUE_CATEGORY];
+  return carry(GATE_CONTINUE_CATEGORY, pickedUp, fetched);
+}
+
+// Same for "Client: Picked": createArofloJob reads it to put the job on the picked card
+// even if the name matchers would now land somewhere else.
+export function carryClientPicked(pickedUp = [], fetched = []) {
+  return carry(CLIENT_PICKED_CATEGORY, pickedUp, fetched);
+}
+
+function carry(category, pickedUp, fetched) {
+  if (!pickedUp.includes(category) || fetched.includes(category)) return fetched;
+  return [...fetched, category];
 }
 
 // What the plugin asks the office, and the buttons it offers, for an email held because
@@ -149,4 +204,33 @@ export function upsertGateRecord(fields, opts) {
 export async function pendingDecisions(status, opts) {
   const body = await dashboardFetch(`/api/workorder-gate/pending?status=${encodeURIComponent(status)}`, {}, `Pending ${status}`, opts);
   return body?.items ?? [];
+}
+
+// Every active client card the dashboard holds: [{ aroFloId, name, category }]. Filled from
+// AroFlo's client report, so it costs no AroFlo API calls and a card made this morning is in
+// it within the hour.
+export async function dashboardClients(opts) {
+  const body = await dashboardFetch("/api/workorder-gate/clients", {}, "Client list", opts);
+  return Array.isArray(body?.clients) ? body.clients : [];
+}
+
+// → { picks: [{ aroFloId, name, timesPicked }], propertyCards: [{ aroFloId, name }] }.
+// Cards people picked before for this sender and agency name, and the card on the latest job
+// at the property (a hint for the AI, never an answer on its own).
+export function clientContext({ from, name, street, suburb }, opts) {
+  const q = new URLSearchParams();
+  if (from) q.set("from", from);
+  if (name) q.set("name", name);
+  if (street) q.set("street", street);
+  if (suburb) q.set("suburb", suburb);
+  return dashboardFetch(`/api/workorder-gate/client-context?${q}`, {}, "Client context", opts);
+}
+
+// The gate record for one email, or null when there is none.
+export async function gateRecord(messageId, { fetchImpl = fetch, env = process.env } = {}) {
+  const { base, headers } = dashboard(env);
+  const res = await fetchImpl(`${base}/api/workorder-gate?messageId=${encodeURIComponent(messageId)}`, { headers });
+  if (res.status === 404) return null;
+  if (!res.ok) throw new Error(`Gate record read failed: ${res.status} ${await res.text()}`);
+  return res.json();
 }
