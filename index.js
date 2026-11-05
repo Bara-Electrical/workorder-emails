@@ -17,6 +17,7 @@ import {
   PICK_CLIENT_CATEGORY, CLIENT_PICKED_CATEGORY,
 } from "./gate.js";
 import { aiPickClient, closestClients } from "./clientPick.js";
+import { lookupProperty, lookupFindings } from "./propertyLookup.js";
 
 const REQUIRED_ENV = [
   "OPENAI_API_KEY",
@@ -298,6 +299,12 @@ const openaiClientPick = process.env.OPENAI_API_KEY_WORKORDER_CLIENT_PICK
   ? new OpenAI({ apiKey: process.env.OPENAI_API_KEY_WORKORDER_CLIENT_PICK })
   : null;
 if (!openaiClientPick) console.warn("[startup] OPENAI_API_KEY_WORKORDER_CLIENT_PICK not set — held emails get no AI client suggestion");
+// Its own key for the evap / two-storey property check (see propertyLookup.js). Optional:
+// without it aircon jobs go in as before, with no property check.
+const openaiPropertyLookup = process.env.OPENAI_12_WORKORDER_LISTING
+  ? new OpenAI({ apiKey: process.env.OPENAI_12_WORKORDER_LISTING })
+  : null;
+if (!openaiPropertyLookup) console.warn("[startup] OPENAI_12_WORKORDER_LISTING not set — aircon jobs get no evap / two-storey property check");
 
 // Gate the debug/introspection endpoints behind a shared secret, checked as either an
 // x-api-key header or a ?key= query param (so it can be embedded directly in a webhook
@@ -711,6 +718,8 @@ async function evapTaskTypeId(pkg) {
 // is an evap package whatever the work order called it, since AC1/ACEC1 no longer cover an
 // evap; a job with a reverse-cycle unit tagged as well stays as it is.
 const EVAP_TASK_TYPES = ["EV1", "EVEC1"];
+// The aircon service packages the evap / two-storey property check runs on.
+const PROPERTY_CHECK_PACKAGES = ["AC1", "AC2", "ACEC1", "EV1", "EVEC1"];
 const EVAP_PACKAGE_FOR = { AC1: "EV1", ACEC1: "EVEC1" };
 function applyEvapTag(result, airconUnitType) {
   const tags = String(airconUnitType || "").split(",").map(t => t.trim().toLowerCase()).filter(Boolean);
@@ -1414,7 +1423,7 @@ function limitWithGst(limit) {
   return /gst/i.test(text) ? text : `${text} inc GST`;
 }
 
-function buildDescription(result, airconUnitType = null, site = "") {
+function buildDescription(result, airconUnitType = null, site = "", propertyLine = null) {
   const parts = [];
   const spacer = `<p>&nbsp;</p>`;
   const lockboxDetails = extractLockboxDetails(result["access-details"]);
@@ -1425,6 +1434,12 @@ function buildDescription(result, airconUnitType = null, site = "") {
   const airconJob = isAirconJob(result);
   if (airconUnitType && airconJob) {
     parts.push(`<p><span style="background:#ffe0b3;font-weight:bold">Unit Type: ${escapeHtml(airconUnitType)}</span></p>`);
+    parts.push(spacer);
+  }
+  // The evap / two-storey property check's one line, with the listing's link when it has one.
+  if (propertyLine && airconJob) {
+    const link = propertyLine.url ? ` <a href="${escapeHtml(propertyLine.url)}">${escapeHtml(propertyLine.url)}</a>` : "";
+    parts.push(`<p><span style="background:#ffe0b3;font-weight:bold">${escapeHtml(propertyLine.text)}</span>${link}</p>`);
     parts.push(spacer);
   }
 
@@ -1825,6 +1840,19 @@ async function createArofloJob(result, rawEmail, pdfAttachment = null, emailMeta
     warnings.push({ tag: "Aircon mismatch", detail });
   }
 
+  // Aircon services only: does the listing or the roof photo show an evap, and is the house
+  // two storey? Adds warnings and one description line; never changes the task type.
+  let propertyLine = null;
+  const servicePkg = PROPERTY_CHECK_PACKAGES.find(p => p === result["package"] || p === result["task-type"]);
+  if (servicePkg && openaiPropertyLookup && !afterHours) {
+    const coords = await geocodeAddress(result.address);
+    const lookup = await lookupProperty({ openai: openaiPropertyLookup, address: result.address, coords, hereApiKey: process.env.HERE_API_KEY });
+    console.log(`[property] ${result.address} (${servicePkg}):`, JSON.stringify(lookup));
+    const found = lookupFindings(lookup, servicePkg);
+    warnings.push(...found.warnings);
+    propertyLine = found.line;
+  }
+
   const xml =
 `<tasks>
   <task>
@@ -1836,7 +1864,7 @@ async function createArofloJob(result, rawEmail, pdfAttachment = null, emailMeta
     ${location ? `<location><locationid>${location.locationid}</locationid></location>` : ""}
     ${result.address && !location  ? `<sitename>${cdata(result.address)}</sitename>`          : ""}
     <taskname>${cdata(taskName)}</taskname>
-    <description>${cdata(buildDescription(result, aircon.unitType, aircon.site))}</description>
+    <description>${cdata(buildDescription(result, aircon.unitType, aircon.site, propertyLine))}</description>
     <duedate>${dueDate}</duedate>
     ${result["order-number"] ? `<custon>${cdata(result["order-number"])}</custon>` : ""}
     ${(result["account-to"] || realEstate) ? `<customfields><customfield><name><![CDATA[ Account To: ]]></name><type><![CDATA[ text ]]></type><value>${cdata(result["account-to"] || realEstate)}</value></customfield></customfields>` : ""}
