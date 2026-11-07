@@ -299,12 +299,10 @@ const openaiClientPick = process.env.OPENAI_API_KEY_WORKORDER_CLIENT_PICK
   ? new OpenAI({ apiKey: process.env.OPENAI_API_KEY_WORKORDER_CLIENT_PICK })
   : null;
 if (!openaiClientPick) console.warn("[startup] OPENAI_API_KEY_WORKORDER_CLIENT_PICK not set — held emails get no AI client suggestion");
-// Its own key for the evap / two-storey property check (see propertyLookup.js). Optional:
-// without it aircon jobs go in as before, with no property check.
-const openaiPropertyLookup = process.env.OPENAI_12_WORKORDER_LISTING
-  ? new OpenAI({ apiKey: process.env.OPENAI_12_WORKORDER_LISTING })
-  : null;
-if (!openaiPropertyLookup) console.warn("[startup] OPENAI_12_WORKORDER_LISTING not set — aircon jobs get no evap / two-storey property check");
+// The evap / two-storey property check (see propertyLookup.js) uses the work order key
+// (OPENAI_10_WORKORDER_EMAILS): Brandon, 7 Nov 2026, it's part of reading work orders, as the
+// client pick is.
+const openaiPropertyLookup = openai;
 
 // Gate the debug/introspection endpoints behind a shared secret, checked as either an
 // x-api-key header or a ?key= query param (so it can be embedded directly in a webhook

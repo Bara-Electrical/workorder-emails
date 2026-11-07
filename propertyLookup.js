@@ -16,8 +16,7 @@
 // task type: a house can have an evap and splits, and the office decides. "Unknown" adds
 // nothing, so a vague listing or a blurry roof does not flag the job.
 //
-// Its own key, OPENAI_12_WORKORDER_LISTING, so OpenAI's usage page shows what it costs.
-// Without the key the check is skipped.
+// It runs on the work order key (OPENAI_10_WORKORDER_EMAILS), as part of reading work orders.
 
 export const PROPERTY_LOOKUP_MODEL = process.env.PROPERTY_LOOKUP_MODEL || "gpt-5-mini";
 
