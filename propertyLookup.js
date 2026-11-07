@@ -137,7 +137,6 @@ export function lookupFindings(lookup, pkg) {
   if (!lookup) return { warnings: [], line: null };
   const { listing, roof } = lookup;
   const roofEvap = roof.evap === "yes" && roof.confidence >= ROOF_CONFIDENCE;
-  const roofNoEvap = roof.evap === "no" && roof.confidence >= ROOF_CONFIDENCE;
   const evapPackage = pkg === "EV1" || pkg === "EVEC1";
   const evapFound = listing.evap === "yes" || roofEvap;
   const twoStorey = listing.storeys === 2;
@@ -155,9 +154,11 @@ export function lookupFindings(lookup, pkg) {
     warnings.push({ tag: "Two storey", detail: `The listing says two storey${listing.evidence ? ` ("${listing.evidence}")` : ""}${listing.url ? ` ${listing.url}` : ""}. Evap on a two-storey roof: 2 Story Evap Service, call the PM before going up.` });
   }
 
+  // Only an evap that was seen is reported. A "no" is not: on 22 Perth houses with a known evap
+  // (7 Nov 2026) the photo said "no evap" with 0.8 confidence on most of them, so "no evap
+  // seen" would mislead.
   const bits = [];
   if (evapFound) bits.push("evap");
-  else if (evapPackage && (listing.evap === "no" || roofNoEvap)) bits.push("no evap seen");
   if (twoStorey) bits.push("2 storey");
   else if (listing.storeys === 1) bits.push("single storey");
   if (!bits.length) return { warnings, line: null };
