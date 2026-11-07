@@ -17,7 +17,7 @@ import {
   PICK_CLIENT_CATEGORY, CLIENT_PICKED_CATEGORY,
 } from "./gate.js";
 import { aiPickClient, closestClients } from "./clientPick.js";
-import { lookupProperty, lookupFindings } from "./propertyLookup.js";
+import { lookupProperty, lookupFindings, fetchRoofPhoto } from "./propertyLookup.js";
 
 const REQUIRED_ENV = [
   "OPENAI_API_KEY",
@@ -3508,6 +3508,30 @@ app.get("/clients", requireApiKey, (req, res) => {
     dashboardLastLoaded: dashboardClientsLastLoaded,
     clients: [...clientCache.values()].map(c => ({ clientid: c.clientid, clientname: c.clientname })),
   });
+});
+
+// Runs the evap / two-storey property check on one address, as a work order would, without
+// creating a job: GET /property-check?address=...&package=AC1&key=... Shows the roof photo the
+// model saw, its answer, and the warnings and description line the job would get.
+app.get("/property-check", requireApiKey, async (req, res) => {
+  const address = String(req.query.address || "").trim();
+  if (!address) return res.status(400).send("Pass ?address=...");
+  const pkg = PROPERTY_CHECK_PACKAGES.includes(String(req.query.package || "").toUpperCase()) ? String(req.query.package).toUpperCase() : "AC1";
+  const coords = await geocodeAddress(address);
+  const hereApiKey = process.env.HERE_API_KEY;
+  const [photo, lookup] = await Promise.all([
+    coords ? fetchRoofPhoto({ lat: coords.lat, lon: coords.lon, hereApiKey }) : null,
+    lookupProperty({ openai: openaiPropertyLookup, address, coords, hereApiKey }),
+  ]);
+  const found = lookupFindings(lookup, pkg);
+  const result = { address, package: pkg, coords, lookup, warnings: found.warnings, descriptionLine: found.line };
+  console.log(`[property] Test check ${address} (${pkg}):`, JSON.stringify(lookup));
+  if (req.query.format === "json") return res.json(result);
+  const img = photo ? `<img src="data:${photo.contentType};base64,${photo.data.toString("base64")}" style="max-width:100%;width:640px;display:block">` : "<p>No roof photo</p>";
+  res.type("html").send(`<!doctype html><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Property check</title>
+<body style="font-family:Arial,sans-serif;max-width:680px;margin:16px auto;padding:0 16px">
+<h3>${escapeHtml(address)} (${pkg})</h3>${img}<p>${photo ? escapeHtml(photo.source) : ""}</p>
+<pre style="white-space:pre-wrap;background:#f4f4f4;padding:12px">${escapeHtml(JSON.stringify(result, null, 2))}</pre></body>`);
 });
 
 app.get("/find-client", requireApiKey, async (req, res) => {
