@@ -26,6 +26,23 @@ const PDF_TIMEOUT_MS    = 30000;
 let browser = null;
 let launching = null;
 
+// The browser is closed once no snapshot has used it for IDLE_CLOSE_MS. Kept open, an idle
+// Chromium holds ~350MB for the whole life of the process, and Railway bills memory by the
+// minute; work-order emails arrive a few times an hour, so relaunching (about a second) on
+// the next one costs far less than holding it. A batch in one poll still shares one browser.
+const IDLE_CLOSE_MS = 2 * 60 * 1000;
+let inFlight = 0;
+let idleTimer = null;
+
+function scheduleIdleClose() {
+  clearTimeout(idleTimer);
+  idleTimer = setTimeout(() => {
+    idleTimer = null;
+    if (inFlight === 0 && !launching) closeSnapshotBrowser();
+  }, IDLE_CLOSE_MS);
+  idleTimer.unref?.();
+}
+
 async function getBrowser() {
   if (browser?.isConnected()) return browser;
   // A crashed or killed browser leaves a disconnected handle behind; drop it and relaunch
@@ -50,6 +67,8 @@ async function getBrowser() {
 export async function snapshotWorkOrderPage(url, { label = "Work order page" } = {}) {
   if (!url) return null;
   let page = null;
+  inFlight++;
+  clearTimeout(idleTimer);
   try {
     const b = await getBrowser();
     page = await b.newPage({ viewport: { width: 1280, height: 1600 } });
@@ -71,10 +90,12 @@ export async function snapshotWorkOrderPage(url, { label = "Work order page" } =
     return null;
   } finally {
     if (page) await page.close().catch(() => {});
+    inFlight--;
+    if (inFlight === 0) scheduleIdleClose();
   }
 }
 
-// For a clean shutdown; the poll loop does not need it.
+// Used by the idle timer above, and for a clean shutdown.
 export async function closeSnapshotBrowser() {
   const b = browser;
   browser = null;
