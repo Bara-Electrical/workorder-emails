@@ -1421,7 +1421,7 @@ function limitWithGst(limit) {
   return /gst/i.test(text) ? text : `${text} inc GST`;
 }
 
-function buildDescription(result, airconUnitType = null, site = "", propertyLine = null) {
+function buildDescription(result, airconUnitType = null, site = "") {
   const parts = [];
   const spacer = `<p>&nbsp;</p>`;
   const lockboxDetails = extractLockboxDetails(result["access-details"]);
@@ -1432,12 +1432,6 @@ function buildDescription(result, airconUnitType = null, site = "", propertyLine
   const airconJob = isAirconJob(result);
   if (airconUnitType && airconJob) {
     parts.push(`<p><span style="background:#ffe0b3;font-weight:bold">Unit Type: ${escapeHtml(airconUnitType)}</span></p>`);
-    parts.push(spacer);
-  }
-  // The evap / two-storey property check's one line, with the listing's link when it has one.
-  if (propertyLine && airconJob) {
-    const link = propertyLine.url ? ` <a href="${escapeHtml(propertyLine.url)}">${escapeHtml(propertyLine.url)}</a>` : "";
-    parts.push(`<p><span style="background:#ffe0b3;font-weight:bold">${escapeHtml(propertyLine.text)}</span>${link}</p>`);
     parts.push(spacer);
   }
 
@@ -1839,8 +1833,7 @@ async function createArofloJob(result, rawEmail, pdfAttachment = null, emailMeta
   }
 
   // Aircon services only: does the listing or the roof photo show an evap, and is the house
-  // two storey? Adds warnings and one description line; never changes the task type.
-  let propertyLine = null;
+  // two storey? Adds warnings only: nothing goes in the task description (Brandon, 11 Nov 2026), and the task type never changes.
   const servicePkg = PROPERTY_CHECK_PACKAGES.find(p => p === result["package"] || p === result["task-type"]);
   if (servicePkg && openaiPropertyLookup && !afterHours) {
     const coords = await geocodeAddress(result.address);
@@ -1848,7 +1841,6 @@ async function createArofloJob(result, rawEmail, pdfAttachment = null, emailMeta
     console.log(`[property] ${result.address} (${servicePkg}):`, JSON.stringify(lookup));
     const found = lookupFindings(lookup, servicePkg);
     warnings.push(...found.warnings);
-    propertyLine = found.line;
   }
 
   const xml =
@@ -1862,7 +1854,7 @@ async function createArofloJob(result, rawEmail, pdfAttachment = null, emailMeta
     ${location ? `<location><locationid>${location.locationid}</locationid></location>` : ""}
     ${result.address && !location  ? `<sitename>${cdata(result.address)}</sitename>`          : ""}
     <taskname>${cdata(taskName)}</taskname>
-    <description>${cdata(buildDescription(result, aircon.unitType, aircon.site, propertyLine))}</description>
+    <description>${cdata(buildDescription(result, aircon.unitType, aircon.site))}</description>
     <duedate>${dueDate}</duedate>
     ${result["order-number"] ? `<custon>${cdata(result["order-number"])}</custon>` : ""}
     ${(result["account-to"] || realEstate) ? `<customfields><customfield><name><![CDATA[ Account To: ]]></name><type><![CDATA[ text ]]></type><value>${cdata(result["account-to"] || realEstate)}</value></customfield></customfields>` : ""}
