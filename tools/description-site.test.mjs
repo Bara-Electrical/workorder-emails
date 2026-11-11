@@ -36,7 +36,7 @@ const module_ = [
   grabFn("function tallyFromUnitTags(airconUnitType)"),
   grabFn("function reconcileAircon(airconUnitType, siteAircon)"),
   grabFn("function limitWithGst(limit)"),
-  grabFn("function buildDescription(result, airconUnitType = null, site = \"\", propertyLine = null)"),
+  grabFn("function buildDescription(result, airconUnitType = null, site = \"\")"),
   "export { buildDescription, reconcileAircon, tallyFromUnitTags };",
 ].join("\n");
 
