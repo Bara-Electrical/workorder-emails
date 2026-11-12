@@ -1416,6 +1416,11 @@ function reconcileAircon(airconUnitType, siteAircon) {
 // The office reads every expenditure limit as inc GST, so the description says so. A limit
 // the work order already qualifies ("$500 + GST", "$450 ex GST") is left as written rather
 // than contradicted.
+// "2026-11-11" -> "11/11/2026". Only a real year-month-day date; anything else is left as written.
+function dayFirstDates(text) {
+  return text.replace(/(?<![\d-])(20\d{2})-(0[1-9]|1[0-2])-(0[1-9]|[12]\d|3[01])(?![\d-])/g, (_, y, m, d) => `${d}/${m}/${y}`);
+}
+
 function limitWithGst(limit) {
   const text = String(limit).trim();
   return /gst/i.test(text) ? text : `${text} inc GST`;
@@ -2754,6 +2759,7 @@ CRITICAL RULES:
 - address is required — if it isn't clearly stated in the body/PDF content, check the email subject line (provided at the top of the input) since it often contains the property address.
 - task-description must be a concise electrician job summary. Report the issue(s) exactly as stated in the work order — do NOT prescribe a diagnosis, root cause, or repair procedure that isn't explicitly written in the work order. For example, if the work order says "AC not working on heat cycle, error code indicates a gas leak", the description must report that symptom/error code as-is — do not add instructions like "locate and repair leak" or "recharge refrigerant" unless the work order itself explicitly says to do that repair. Inventing a repair scope beyond what was reported can commit the company to unapproved cost. If anything is listed as conditional or requires approval (e.g. "deluxe clean if approved", "AC2 if required"), include that in the description too. If the work order lists multiple numbered items and a later reply in the thread says only some of them are electrical (with the rest going to another contractor), the description must restate what those electrical items actually are (not just "points 1 and 2") — copy the item text itself, not just its number, since the reader won't have the original numbered list in front of them. Also note briefly that the remaining item(s) are being handled separately/by another contractor, without going into detail on who.
 - If the job involves two or more distinct tasks/items (e.g. a numbered list in the work order, or several unrelated jobs mentioned in the email), put each one on its own line in task-description, separated by a single newline character ("\n") — one line per item, written as a short standalone instruction. This is rendered as a bulleted list for the technician, so do not add your own numbering, dashes, or bullet characters. If there is genuinely only one task, write it as a single line with no newline.
+- Write any date in task-description day first as DD/MM/YYYY (e.g. 11/11/2026), never as 2026-11-11.
 - Do NOT include instructions to contact the tenant or PM for access in task-description. Contacting the tenant for access is the default assumption for every job and must not be stated.
 - Key numbers in access-details are reference numbers for our existing key management system — we already hold these keys. Do NOT include any instruction to collect, pick up, or obtain keys in task-description based solely on a key number being listed in access-details.
 - Do NOT guess missing fields — if missing return null.
@@ -2801,6 +2807,9 @@ Return ONLY valid JSON with these exact keys:
   });
 
   const parsed = JSON.parse(responseAI.output_text);
+  // The office writes dates day first; the model sometimes copies a work order's
+  // 2026-11-11 as is (job 110885, 12 Nov 2026). Only the date format changes.
+  if (typeof parsed["task-description"] === "string") parsed["task-description"] = dayFirstDates(parsed["task-description"]);
 
   // Normalise address to title case in case the source had ALL CAPS suburb
   if (parsed.address) {
