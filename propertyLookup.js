@@ -166,6 +166,30 @@ export function lookupFindings(lookup, pkg) {
   return { warnings, line: { text: `Property check (${sources}): ${bits.join(", ")}`, url: listing.url } };
 }
 
+const esc = (s) => String(s ?? "").replace(/[&<>"]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+
+// The result email to Brandon (Brandon, 15 Nov 2026: no tags on the email, nothing in the
+// plugin, admin staff must not see it; "just send me an email"). → { subject, html }.
+export function propertyEmail({ address, pkg, jobNumber, jobUrl, lookup }) {
+  const found = lookupFindings(lookup, pkg);
+  const verdict = !lookup ? "check failed"
+    : found.warnings.length ? found.warnings.map(w => w.tag).join(", ")
+    : "nothing flagged";
+  const subject = `Evap check: ${jobNumber ? `JN ${jobNumber}` : address} (${pkg}): ${verdict}`;
+  const row = (k, v) => `<tr><td style="padding:4px 12px 4px 0;font-weight:bold;vertical-align:top">${esc(k)}</td><td style="padding:4px 0">${v}</td></tr>`;
+  const l = lookup?.listing, r = lookup?.roof;
+  const html = `<div style="font-family:Arial,sans-serif;font-size:14px">
+<p><b>${esc(address)}</b>, booked as ${esc(pkg)}${jobNumber ? `, ${jobUrl ? `<a href="${esc(jobUrl)}">JN ${esc(jobNumber)}</a>` : `JN ${esc(jobNumber)}`}` : ""}</p>
+${!lookup ? "<p>The check failed (see the [property] log lines).</p>" : `<table style="border-collapse:collapse">
+${row("Result", esc(verdict))}
+${found.warnings.map(w => row(w.tag, esc(w.detail))).join("\n")}
+${row("Listing", l.found ? `evap ${esc(l.evap)}, storeys ${esc(l.storeys)}${l.url ? ` <a href="${esc(l.url)}">listing</a>` : ""}<br><i>${esc(l.evidence)}</i>` : "no matching listing found")}
+${row("Roof photo", r.usable ? `evap ${esc(r.evap)} (confidence ${esc(r.confidence)})${lookup.photoUrl ? ` <a href="${esc(lookup.photoUrl)}">photo</a>` : ""}<br><i>${esc(r.evidence)}</i>` : "not usable")}
+</table>`}
+<p style="color:#888">Only you get this email. Nothing is added to the job, its email or the plugin.</p></div>`;
+  return { subject, html };
+}
+
 // → the parsed lookup or null. Never throws: a failed check leaves the job as it was.
 export async function lookupProperty({ openai, address, coords, hereApiKey, model = PROPERTY_LOOKUP_MODEL, fetchImpl = fetch }) {
   if (!openai || !address) return null;
@@ -180,7 +204,12 @@ export async function lookupProperty({ openai, address, coords, hereApiKey, mode
       input: [{ role: "user", content }],
     });
     const lookup = parseLookup(response.output_text);
-    if (lookup) lookup.photoSource = photo?.source ?? null;
+    if (lookup) {
+      lookup.photoSource = photo?.source ?? null;
+      // The photo's own link, for the result email. Landgate's is a plain public image URL;
+      // HERE's carries the API key, so it is never passed on.
+      lookup.photoUrl = photo?.source === "Landgate" && coords ? landgateUrl(coords.lat, coords.lon) : null;
+    }
     return lookup;
   } catch (err) {
     console.warn("[property] Lookup failed:", err.message);

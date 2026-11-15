@@ -17,7 +17,7 @@ import {
   PICK_CLIENT_CATEGORY, CLIENT_PICKED_CATEGORY,
 } from "./gate.js";
 import { aiPickClient, closestClients } from "./clientPick.js";
-import { lookupProperty, lookupFindings, fetchRoofPhoto } from "./propertyLookup.js";
+import { lookupProperty, lookupFindings, fetchRoofPhoto, propertyEmail } from "./propertyLookup.js";
 
 const REQUIRED_ENV = [
   "OPENAI_API_KEY",
@@ -1838,15 +1838,19 @@ async function createArofloJob(result, rawEmail, pdfAttachment = null, emailMeta
   }
 
   // Aircon services only: does the listing or the roof photo show an evap, and is the house
-  // two storey? Adds warnings only: nothing goes in the task description (Brandon, 11 Nov 2026), and the task type never changes.
+  // two storey? The answer only goes to Brandon by email, once the job exists (Brandon, 15 Nov
+  // 2026: no tags on the email, nothing in the plugin, admin staff must not see it). Nothing
+  // goes in the task description (11 Nov 2026), and the task type never changes. It runs
+  // alongside job creation and never holds it up.
   const servicePkg = PROPERTY_CHECK_PACKAGES.find(p => p === result["package"] || p === result["task-type"]);
-  if (servicePkg && openaiPropertyLookup && !afterHours) {
-    const coords = await geocodeAddress(result.address);
-    const lookup = await lookupProperty({ openai: openaiPropertyLookup, address: result.address, coords, hereApiKey: process.env.HERE_API_KEY });
-    console.log(`[property] ${result.address} (${servicePkg}):`, JSON.stringify(lookup));
-    const found = lookupFindings(lookup, servicePkg);
-    warnings.push(...found.warnings);
-  }
+  const propertyCheckRun = servicePkg && openaiPropertyLookup && !afterHours
+    ? (async () => {
+        const coords = await geocodeAddress(result.address);
+        const lookup = await lookupProperty({ openai: openaiPropertyLookup, address: result.address, coords, hereApiKey: process.env.HERE_API_KEY });
+        console.log(`[property] ${result.address} (${servicePkg}):`, JSON.stringify(lookup));
+        return lookup;
+      })().catch(err => { console.warn("[property] Check failed:", err.message); return null; })
+    : null;
 
   const xml =
 `<tasks>
@@ -2066,6 +2070,13 @@ async function createArofloJob(result, rawEmail, pdfAttachment = null, emailMeta
         if (substatusId) warnings.push({ tag: "Substatus failed", detail });
       }
     }
+  }
+
+  if (propertyCheckRun) {
+    propertyCheckRun.then(lookup => {
+      const { subject, html } = propertyEmail({ address: result.address, pkg: servicePkg, jobNumber, jobUrl, lookup });
+      return sendAlertEmail(subject, html, `property check JN ${jobNumber}`);
+    }).catch(err => console.warn("[property] Result email failed:", err.message));
   }
 
   return { jobNumber, jobUrl, checks, warnings };

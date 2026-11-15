@@ -95,5 +95,19 @@ await test("lookupProperty sends the photo and web search, and never throws", as
   assert.equal(await lookupProperty({ openai: broken, address: "x", coords: null }), null);
 });
 
+await test("result email: verdict in the subject, findings and links in the body", async () => {
+  const { propertyEmail } = await import("../propertyLookup.js");
+  const l = lookup({ evap: "yes", storeys: 2, evidence: "ducted evaporative" }, { evap: "no", confidence: 0.8 });
+  l.photoUrl = "https://services.slip.wa.gov.au/x";
+  const e = propertyEmail({ address: "1 Test St, Leeming WA", pkg: "AC1", jobNumber: "110001", jobUrl: "https://x/job", lookup: l });
+  assert.equal(e.subject, "Evap check: JN 110001 (AC1): Evap found, Two storey");
+  assert.match(e.html, /ducted evaporative/);
+  assert.match(e.html, /services\.slip\.wa\.gov\.au/);
+  const none = propertyEmail({ address: "<b>2 St</b>", pkg: "EV1", jobNumber: "2", lookup: lookup({}, {}) });
+  assert.equal(none.subject, "Evap check: JN 2 (EV1): nothing flagged");
+  assert.doesNotMatch(none.html, /<b>2 St<\/b>/);
+  assert.equal(propertyEmail({ address: "x", pkg: "AC1", jobNumber: "3", lookup: null }).subject, "Evap check: JN 3 (AC1): check failed");
+});
+
 if (failed) { console.log(`\n${failed} failed`); process.exit(1); }
 console.log("\nproperty lookup: all passed");
