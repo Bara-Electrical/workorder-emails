@@ -42,8 +42,8 @@ await test("AC1 with evap in the listing: Evap found, no task type change", () =
 });
 
 await test("AC1 with a sure roof photo: Evap found; an unsure one: nothing", () => {
-  assert.deepEqual(lookupFindings(lookup({}, { evap: "yes", confidence: 0.8 }), "ACEC1").warnings.map(w => w.tag), ["Evap found"]);
-  const weak = lookupFindings(lookup({}, { evap: "yes", confidence: 0.5 }), "ACEC1");
+  assert.deepEqual(lookupFindings(lookup({}, { evap: "yes", confidence: 0.9 }), "ACEC1").warnings.map(w => w.tag), ["Evap found"]);
+  const weak = lookupFindings(lookup({}, { evap: "yes", confidence: 0.85 }), "ACEC1");
   assert.deepEqual(weak, { warnings: [], line: null });
 });
 
