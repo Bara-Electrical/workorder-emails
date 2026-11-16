@@ -38,7 +38,13 @@ B. Is the house single storey or two storey (double storey, two-storey, split le
 
 Use two sources:
 1. Web search. Search for the exact street address and read the property's own sale or rental listing (realestate.com.au, domain.com.au, allhomes, reiwa.com.au, an agency's site). Only use a listing whose street number, street and suburb all match the address. A different unit or a neighbour's house does not count. If you find no matching listing, say so.
-2. The attached aerial photo, taken straight down, with the property at the CENTRE. Ignore neighbouring houses. A Perth evaporative cooler sits ON the roof: a squat square or rectangular box about 1.0 to 1.5 m across, usually beige, grey or cream, often near the ridge, with a short shadow. Do not confuse it with solar hot water (flat panel with a long cylinder), solar PV (dark flat rectangles), skylights (flush with the roof), satellite dishes (round), whirlybirds (small round cowls under 0.5 m) or a refrigerated condenser (bigger, with a round fan grille). Storeys cannot be read reliably from straight above: use the photo for storeys only when it is obvious, otherwise "unknown".
+2. The attached aerial photo, taken straight down, with the property at the CENTRE. Ignore neighbouring houses. The photo is 45 m across, about 4.4 cm a pixel, so 1 m is about 23 pixels. A Perth evaporative cooler sits ON the roof: a box about 1.1 to 1.3 m square (25 to 30 pixels), standing about 1 m proud of the roof, so it casts a clear shadow at least half its own width. Its top is a solid lid, usually beige, grey, cream or terracotta-coloured plastic; its sides are louvred pad panels. Answer "yes" only when you see a box of that size AND that shadow. Most small pale rectangles on Perth roofs are NOT evaps:
+   - skylights and roof windows: flat or slightly raised, often white, glassy or bright, and casting little or no shadow (this is the most common mistake: a pale rectangle on a tile roof with a thin shadow is a skylight)
+   - box vents, exhaust hoods, flues and Solatube domes: smaller than 0.8 m (under 18 pixels)
+   - whirlybirds: small round cowls under 0.5 m
+   - solar hot water: flat panel with a long cylinder; solar PV: dark flat rectangles; satellite dishes: round; refrigerated condensers: a round fan grille on top
+   - flat or metal roof sections, patios and verandas: large flat pale areas
+   When unsure between a skylight or vent and an evap, answer "unknown", not "yes". Storeys cannot be read reliably from straight above: use the photo for storeys only when it is obvious, otherwise "unknown".
 
 Be strict. "unknown" is the right answer whenever the evidence is not clear. A listing that does not mention cooling at all is "unknown" for the evap, not "no".
 
@@ -127,9 +133,9 @@ export function parseLookup(text) {
   };
 }
 
-// The roof photo only counts when the model is fairly sure: a beige box on a beige tile
-// roof is easy to imagine.
-export const ROOF_CONFIDENCE = 0.7;
+// The roof photo only counts when the model is very sure: a skylight on a tile roof was
+// called an evap at 0.85 (55 Wilber Street, Rossmoyne, 15 Nov 2026).
+export const ROOF_CONFIDENCE = 0.9;
 
 // What the lookup means for the job: warning tags and one description line.
 // pkg is the job's package (AC1, AC2, ACEC1, EV1, EVEC1).
