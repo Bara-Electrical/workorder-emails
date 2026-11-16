@@ -147,12 +147,10 @@ check("mismatch names what the record says", reconcileAircon("Evap", { Split: 2 
   check("aircon job with both sources shows the tag", html.includes("Unit Type: Evap"));
   check("…and not the site record as well", !html.includes("Site:"));
 }
-{
-  const job = { "task-type": "Real Estate Aircon Maintenance", "package": "AC1", "task-description": "Service" };
-  const r = reconcileAircon(null, { Evaporative: 1 });
-  const html = buildDescription(job, r.unitType, r.site);
-  check("aircon job with no tag falls back to the site record", html.includes("Site: 1× Evaporative") && !html.includes("Unit Type"));
-}
+// Jobs are made without the site record's line (Brandon, 16 Nov 2026: warnings only,
+// nothing added to the description), so index.js must not pass it to buildDescription.
+check("index.js does not put the site record in the description",
+  !src.includes("buildDescription(result, aircon.unitType, aircon.site)") && src.includes("buildDescription(result, aircon.unitType)"));
 
 const failures = results.filter(r => !r.ok);
 console.log(`description site line: ${results.length - failures.length}/${results.length} passed`);
