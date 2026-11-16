@@ -17,6 +17,7 @@ import {
   PICK_CLIENT_CATEGORY, CLIENT_PICKED_CATEGORY,
 } from "./gate.js";
 import { aiPickClient, closestClients } from "./clientPick.js";
+import { normaliseAddress } from "./addressText.js";
 import { lookupProperty, lookupFindings, fetchRoofPhoto, propertyEmail } from "./propertyLookup.js";
 
 const REQUIRED_ENV = [
@@ -2824,22 +2825,8 @@ Return ONLY valid JSON with these exact keys:
 
   // Normalise address to title case in case the source had ALL CAPS suburb
   if (parsed.address) {
-    parsed.address = parsed.address.replace(/,?\s*Australia\s*$/i, "").trim();
-    parsed.address = parsed.address.replace(/\b\w+/g, w =>
-      w.length <= 2 ? w.toUpperCase() : w.charAt(0).toUpperCase() + w.slice(1).toLowerCase()
-    );
-    // Expand common street type abbreviations
-    const streetAbbr = {
-      "\\bSt\\b": "Street", "\\bRd\\b": "Road",    "\\bAve\\b": "Avenue",
-      "\\bDr\\b": "Drive",  "\\bLn\\b": "Lane",     "\\bCt\\b": "Court",
-      "\\bPl\\b": "Place",  "\\bCl\\b": "Close",    "\\bCres\\b": "Crescent",
-      "\\bBlvd\\b": "Boulevard", "\\bHwy\\b": "Highway", "\\bFwy\\b": "Freeway",
-      "\\bTce\\b": "Terrace",    "\\bPde\\b": "Parade",  "\\bGr\\b": "Grove",
-      "\\bBvd\\b": "Boulevard",  "\\bCct\\b": "Circuit", "\\bEsp\\b": "Esplanade",
-    };
-    for (const [abbr, full] of Object.entries(streetAbbr)) {
-      parsed.address = parsed.address.replace(new RegExp(abbr, "gi"), full);
-    }
+    // Title case, street types spelt out, "St James" kept as St James (not "Street James").
+    parsed.address = normaliseAddress(parsed.address);
     // No "Unit" in job addresses — this is the address the task name, site name and any new
     // AroFlo location are all built from.
     parsed.address = stripUnitWord(parsed.address);
