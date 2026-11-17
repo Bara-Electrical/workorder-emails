@@ -1427,7 +1427,24 @@ function limitWithGst(limit) {
   return /gst/i.test(text) ? text : `${text} inc GST`;
 }
 
-function buildDescription(result, airconUnitType = null, site = "") {
+// The last electrical compliance check at the property, from the dashboard's property check,
+// as one line at the BOTTOM of the description (Brandon, 17 Nov 2026: "add it to the bottom
+// of the task description with the field link to the other job"). The link is AroFlo FIELD,
+// which is what techs have on their phones. The dashboard's completedAt is a plain date
+// stored as UTC midnight, so it is read in UTC. Empty when the site has none on record.
+function lastEccLine(lastEcc) {
+  if (!lastEcc?.jobNumber) return "";
+  const d = lastEcc.completedAt ? new Date(lastEcc.completedAt) : null;
+  const date = d && !Number.isNaN(d.getTime())
+    ? `${String(d.getUTCDate()).padStart(2, "0")}/${String(d.getUTCMonth() + 1).padStart(2, "0")}/${d.getUTCFullYear()}`
+    : "";
+  const job = /^https:\/\/field\.aroflo\.com\//.test(lastEcc.fieldUrl || "")
+    ? `<a href="${escapeHtml(lastEcc.fieldUrl)}">${escapeHtml(lastEcc.jobNumber)}</a>`
+    : escapeHtml(lastEcc.jobNumber);
+  return `<p>Last ECC: ${date ? `${date}, ` : ""}job ${job}</p>`;
+}
+
+function buildDescription(result, airconUnitType = null, site = "", lastEcc = null) {
   const parts = [];
   const spacer = `<p>&nbsp;</p>`;
   const lockboxDetails = extractLockboxDetails(result["access-details"]);
@@ -1478,6 +1495,12 @@ function buildDescription(result, airconUnitType = null, site = "") {
   if (pkg && PACKAGE_TEMPLATES[pkg]) {
     parts.push(spacer);
     parts.push(PACKAGE_TEMPLATES[pkg]);
+  }
+
+  const ecc = lastEccLine(lastEcc);
+  if (ecc) {
+    parts.push(spacer);
+    parts.push(ecc);
   }
 
   return parts.join("\n");
@@ -1864,7 +1887,7 @@ async function createArofloJob(result, rawEmail, pdfAttachment = null, emailMeta
     ${location ? `<location><locationid>${location.locationid}</locationid></location>` : ""}
     ${result.address && !location  ? `<sitename>${cdata(result.address)}</sitename>`          : ""}
     <taskname>${cdata(taskName)}</taskname>
-    <description>${cdata(buildDescription(result, aircon.unitType))}</description>
+    <description>${cdata(buildDescription(result, aircon.unitType, "", checks.lastEcc))}</description>
     <duedate>${dueDate}</duedate>
     ${result["order-number"] ? `<custon>${cdata(result["order-number"])}</custon>` : ""}
     ${(result["account-to"] || realEstate) ? `<customfields><customfield><name><![CDATA[ Account To: ]]></name><type><![CDATA[ text ]]></type><value>${cdata(result["account-to"] || realEstate)}</value></customfield></customfields>` : ""}
