@@ -36,7 +36,8 @@ const module_ = [
   grabFn("function tallyFromUnitTags(airconUnitType)"),
   grabFn("function reconcileAircon(airconUnitType, siteAircon)"),
   grabFn("function limitWithGst(limit)"),
-  grabFn("function buildDescription(result, airconUnitType = null, site = \"\")"),
+  grabFn("function lastEccLine(lastEcc)"),
+  grabFn("function buildDescription(result, airconUnitType = null, site = \"\", lastEcc = null)"),
   "export { buildDescription, reconcileAircon, tallyFromUnitTags };",
 ].join("\n");
 
@@ -150,7 +151,30 @@ check("mismatch names what the record says", reconcileAircon("Evap", { Split: 2 
 // Jobs are made without the site record's line (Brandon, 16 Nov 2026: warnings only,
 // nothing added to the description), so index.js must not pass it to buildDescription.
 check("index.js does not put the site record in the description",
-  !src.includes("buildDescription(result, aircon.unitType, aircon.site)") && src.includes("buildDescription(result, aircon.unitType)"));
+  !src.includes("buildDescription(result, aircon.unitType, aircon.site)") && src.includes('buildDescription(result, aircon.unitType, "", checks.lastEcc)'));
+
+// ---- Last ECC at the property, at the very bottom (Brandon, 17 Nov 2026) ----
+{
+  const FIELD = "https://field.aroflo.com/Handheld/service/index.cfm?viewexist=1&wrCoded=92%26%3EBW";
+  const html = buildDescription(
+    { "task-type": "Real Estate General Maintenance", "task-description": "Fix light", "expenditure-limit": "$330" },
+    null, "", { jobNumber: "104233", completedAt: "2026-03-12T00:00:00.000Z", fieldUrl: FIELD });
+  check("last ECC line names the date and job", html.includes("Last ECC: 12/03/2026, job <a href="));
+  check("last ECC links to the job in AroFlo field", html.includes(`href="${FIELD.replace(/&/g, "&amp;")}">104233</a>`));
+  check("last ECC is the last thing in the description", html.trimEnd().endsWith("104233</a></p>"));
+  check("…after the expenditure limit", html.indexOf("Expenditure Limit") < html.indexOf("Last ECC"));
+}
+{
+  const html = buildDescription({ "task-type": "EC1", "package": "EC1", "task-description": "Annual compliance" }, null, "",
+    { jobNumber: "99001", completedAt: "2025-11-01T00:00:00.000Z", fieldUrl: null });
+  check("last ECC comes after the package template", html.indexOf("Last ECC") > html.indexOf("</ul>") || html.trimEnd().endsWith("job 99001</p>"));
+  check("no link without a field url", html.includes("Last ECC: 01/11/2025, job 99001</p>"));
+}
+{
+  const html = buildDescription({ "task-type": "EC1", "task-description": "x" }, null, "", { jobNumber: "1", fieldUrl: "https://evil.example/x" });
+  check("only a field.aroflo.com link is used", !html.includes("evil.example"));
+  check("no ECC on record, no line", !buildDescription({ "task-type": "EC1", "task-description": "x" }, null, "", null).includes("Last ECC"));
+}
 
 const failures = results.filter(r => !r.ok);
 console.log(`description site line: ${results.length - failures.length}/${results.length} passed`);
