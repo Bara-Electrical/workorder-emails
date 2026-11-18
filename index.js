@@ -1432,6 +1432,9 @@ function limitWithGst(limit) {
 // of the task description with the field link to the other job"). The link is AroFlo FIELD,
 // which is what techs have on their phones. The dashboard's completedAt is a plain date
 // stored as UTC midnight, so it is read in UTC. Empty when the site has none on record.
+// Packages that include an electrical compliance check.
+const ECC_PACKAGES = ["EC1", "SEC1", "ACEC1", "EVEC1"];
+
 function lastEccLine(lastEcc) {
   if (!lastEcc?.jobNumber) return "";
   const d = lastEcc.completedAt ? new Date(lastEcc.completedAt) : null;
@@ -1497,7 +1500,10 @@ function buildDescription(result, airconUnitType = null, site = "", lastEcc = nu
     parts.push(PACKAGE_TEMPLATES[pkg]);
   }
 
-  const ecc = lastEccLine(lastEcc);
+  // Only on compliance jobs (Brandon, 18 Nov 2026: "only supposed to go on ecc jobs not
+  // everything"): the package or task type is one that includes an electrical compliance check.
+  const eccJob = [pkg, result["task-type"]].some(k => ECC_PACKAGES.includes(k));
+  const ecc = eccJob ? lastEccLine(lastEcc) : "";
   if (ecc) {
     parts.push(spacer);
     parts.push(ecc);
