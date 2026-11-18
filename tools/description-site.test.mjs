@@ -36,6 +36,7 @@ const module_ = [
   grabFn("function tallyFromUnitTags(airconUnitType)"),
   grabFn("function reconcileAircon(airconUnitType, siteAircon)"),
   grabFn("function limitWithGst(limit)"),
+  src.match(/^const ECC_PACKAGES = .*$/m)[0],
   grabFn("function lastEccLine(lastEcc)"),
   grabFn("function buildDescription(result, airconUnitType = null, site = \"\", lastEcc = null)"),
   "export { buildDescription, reconcileAircon, tallyFromUnitTags };",
@@ -157,7 +158,7 @@ check("index.js does not put the site record in the description",
 {
   const FIELD = "https://field.aroflo.com/Handheld/service/index.cfm?viewexist=1&wrCoded=92%26%3EBW";
   const html = buildDescription(
-    { "task-type": "Real Estate General Maintenance", "task-description": "Fix light", "expenditure-limit": "$330" },
+    { "task-type": "Real Estate General Maintenance", "package": "EC1", "task-description": "Compliance check and fix light", "expenditure-limit": "$330" },
     null, "", { jobNumber: "104233", completedAt: "2026-03-12T00:00:00.000Z", fieldUrl: FIELD });
   check("last ECC line names the date and job", html.includes("Last ECC: 12/03/2026, job <a href="));
   check("last ECC links to the job in AroFlo field", html.includes(`href="${FIELD.replace(/&/g, "&amp;")}">104233</a>`));
@@ -174,6 +175,16 @@ check("index.js does not put the site record in the description",
   const html = buildDescription({ "task-type": "EC1", "task-description": "x" }, null, "", { jobNumber: "1", fieldUrl: "https://evil.example/x" });
   check("only a field.aroflo.com link is used", !html.includes("evil.example"));
   check("no ECC on record, no line", !buildDescription({ "task-type": "EC1", "task-description": "x" }, null, "", null).includes("Last ECC"));
+}
+// Only on compliance jobs (Brandon, 18 Nov 2026: "only supposed to go on ecc jobs not everything").
+{
+  const last = { jobNumber: "104233", completedAt: "2026-03-12T00:00:00.000Z", fieldUrl: null };
+  check("not on a general maintenance job", !buildDescription({ "task-type": "Real Estate General Maintenance", "task-description": "Fix light" }, null, "", last).includes("Last ECC"));
+  check("not on a plain aircon service", !buildDescription({ "task-type": "AC1", "package": "AC1", "task-description": "Service" }, null, "", last).includes("Last ECC"));
+  check("not on an evap service", !buildDescription({ "task-type": "EV1", "package": "EV1", "task-description": "Service" }, null, "", last).includes("Last ECC"));
+  for (const p of ["EC1", "SEC1", "ACEC1", "EVEC1"]) {
+    check(`on ${p}`, buildDescription({ "task-type": p, "package": p, "task-description": "x" }, null, "", last).includes("Last ECC"));
+  }
 }
 
 const failures = results.filter(r => !r.ok);
