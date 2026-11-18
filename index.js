@@ -1293,9 +1293,13 @@ async function findOrUpdateLocation(clientId, locations, address, tenantName, te
   return location;
 }
 
-async function logActivity(action, jobNumber) {
+// extra: the new job's link, client, address and type on "Job created" lines, which the
+// dashboard turns into a Teams message to Brandon (18 Nov 2026). The log line itself keeps
+// only action and job number.
+async function logActivity(action, jobNumber, extra = {}) {
   try {
     await postLog("/api/log/activity", {
+      ...extra,
       action,
       jobNumber: jobNumber || null,
       department: "Admin",
@@ -2109,7 +2113,7 @@ async function createArofloJob(result, rawEmail, pdfAttachment = null, emailMeta
     }).catch(err => console.warn("[property] Result email failed:", err.message));
   }
 
-  return { jobNumber, jobUrl, checks, warnings };
+  return { jobNumber, jobUrl, checks, warnings, clientName: client.clientname };
 }
 
 // ================================================================
@@ -3414,9 +3418,11 @@ async function pollInbox(mailbox) {
       }
 
       currentCategories = await setJobStatus(mailbox, message.id, currentCategories, CREATING_JOB_CATEGORY);
-      const { jobNumber, jobUrl, checks, warnings: jobWarnings } = await createArofloJob(result, rawEmail, pdfAttachment, emailMeta, imageAttachments, pageSnapshot);
+      const { jobNumber, jobUrl, checks, warnings: jobWarnings, clientName } = await createArofloJob(result, rawEmail, pdfAttachment, emailMeta, imageAttachments, pageSnapshot);
       logAiOutput(result, message.subject).catch(err => console.warn("[log] logAiOutput:", err.message));
-      logActivity("Job created", jobNumber).catch(err => console.warn("[log] logActivity:", err.message));
+      logActivity("Job created", jobNumber, {
+        jobUrl, client: clientName, address: result.address || null, jobType: [result["package"], result["task-type"]].find(v => v && v !== "null") || null,
+      }).catch(err => console.warn("[log] logActivity:", err.message));
       const allWarnings = [...preWarnings, ...jobWarnings];
       // jobUrl rides inside checks: the record's Json column already exists and the plugin
       // reads checks.jobUrl, so no dashboard migration is needed for one link.
