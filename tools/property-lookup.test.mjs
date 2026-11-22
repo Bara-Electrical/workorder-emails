@@ -105,8 +105,12 @@ await test("result email: verdict in the subject, findings and links in the body
   assert.match(e.html, /services\.slip\.wa\.gov\.au/);
   const none = propertyEmail({ address: "<b>2 St</b>", pkg: "EV1", jobNumber: "2", lookup: lookup({}, {}) });
   assert.equal(none.subject, "Evap check: JN 2 (EV1): nothing flagged");
+  assert.equal(none.flagged, false);
+  assert.equal(e.flagged, true);
   assert.doesNotMatch(none.html, /<b>2 St<\/b>/);
-  assert.equal(propertyEmail({ address: "x", pkg: "AC1", jobNumber: "3", lookup: null }).subject, "Evap check: JN 3 (AC1): check failed");
+  const failedCheck = propertyEmail({ address: "x", pkg: "AC1", jobNumber: "3", lookup: null });
+  assert.equal(failedCheck.subject, "Evap check: JN 3 (AC1): check failed");
+  assert.equal(failedCheck.flagged, false);
 });
 
 if (failed) { console.log(`\n${failed} failed`); process.exit(1); }

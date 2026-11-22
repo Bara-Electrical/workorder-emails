@@ -2108,7 +2108,8 @@ async function createArofloJob(result, rawEmail, pdfAttachment = null, emailMeta
 
   if (propertyCheckRun) {
     propertyCheckRun.then(lookup => {
-      const { subject, html } = propertyEmail({ address: result.address, pkg: servicePkg, jobNumber, jobUrl, lookup });
+      const { subject, html, flagged } = propertyEmail({ address: result.address, pkg: servicePkg, jobNumber, jobUrl, lookup });
+      if (!flagged) { console.log(`[property] ${subject}: no email`); return; }
       return sendAlertEmail(subject, html, `property check JN ${jobNumber}`);
     }).catch(err => console.warn("[property] Result email failed:", err.message));
   }

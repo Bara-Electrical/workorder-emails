@@ -193,7 +193,9 @@ ${row("Listing", l.found ? `evap ${esc(l.evap)}, storeys ${esc(l.storeys)}${l.ur
 ${row("Roof photo", r.usable ? `evap ${esc(r.evap)} (confidence ${esc(r.confidence)})${lookup.photoUrl ? ` <a href="${esc(lookup.photoUrl)}">photo</a>` : ""}<br><i>${esc(r.evidence)}</i>` : "not usable")}
 </table>`}
 <p style="color:#888">Only you get this email. Nothing is added to the job, its email or the plugin.</p></div>`;
-  return { subject, html };
+  // Only a flagged result is emailed (23 Nov 2026: "only send me the email if something gets
+  // flagged"); nothing found or a failed check sends nothing.
+  return { subject, html, flagged: !!lookup && found.warnings.length > 0 };
 }
 
 // → the parsed lookup or null. Never throws: a failed check leaves the job as it was.
