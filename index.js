@@ -17,6 +17,7 @@ import {
   PICK_CLIENT_CATEGORY, CLIENT_PICKED_CATEGORY,
 } from "./gate.js";
 import { aiPickClient, closestClients } from "./clientPick.js";
+import { clientFromWebhook } from "./clientWebhook.js";
 import { normaliseAddress } from "./addressText.js";
 import { lookupProperty, lookupFindings, fetchRoofPhoto, propertyEmail } from "./propertyLookup.js";
 
@@ -739,8 +740,8 @@ function perthDateString(date = new Date()) {
 }
 
 // In-memory client cache: lowercase clientname → client object. Built from two lists by
-// rebuildClientCache: AroFlo's own (arofloClients, pulled at startup, at 3am and on the
-// /aroflo-webhook), and the dashboard's active cards (dashboardClientList, every hour, no
+// rebuildClientCache: AroFlo's own (arofloClients, pulled at startup and at 3am, plus single
+// clients added by /aroflo-webhook), and the dashboard's active cards (dashboardClientList, every hour, no
 // AroFlo API cost), which only adds names AroFlo's pull did not have yet. So a card the office
 // makes in AroFlo is matched within the hour instead of after the next 3am pull.
 const clientCache = new Map();
@@ -3597,11 +3598,49 @@ app.post("/gate/decided", (req, res) => {
 
 // ================================================================
 // AROFLO WEBHOOK — new client created
+// AroFlo calls this when a client card is made (URL ?key=ADMIN_API_KEY). Only that one client
+// is read from AroFlo (one v1 call) and added to the list, so a work order for a client made
+// this morning matches now instead of after the 3am pull. Never a full reload: that is ten
+// calls a time. The body is read as text because AroFlo's payload is a template and may not be
+// JSON; it is logged in full so the first real delivery shows its shape.
 // ================================================================
-app.post("/aroflo-webhook", requireApiKey, express.json(), async (req, res) => {
-  console.log("[webhook] Aroflo webhook received:", JSON.stringify(req.body));
+// Keyed with the same ?key= as every other AroFlo webhook (AROFLO_WEBHOOK_SECRET, shared with
+// the dashboard), so the URL is registered the same way. Falls back to ADMIN_API_KEY if unset.
+function requireWebhookKey(req, res, next) {
+  const secret = process.env.AROFLO_WEBHOOK_SECRET;
+  if (!secret) return requireApiKey(req, res, next);
+  if (req.query.key !== secret) {
+    console.warn("[webhook] Refused a client webhook with the wrong ?key=");
+    return res.status(401).json({ error: "Unauthorized" });
+  }
+  next();
+}
+
+app.post("/aroflo-webhook", requireWebhookKey, express.text({ type: "*/*", limit: "100kb" }), async (req, res) => {
+  const raw = typeof req.body === "string" ? req.body : "";
+  console.log("[webhook] AroFlo client webhook received:", raw.slice(0, 4000));
   res.sendStatus(200);
-  await loadClientCache();
+  let body = null;
+  try { body = JSON.parse(raw); } catch { /* not JSON, so no id to read */ }
+  const { clientId, clientName } = clientFromWebhook(body);
+  if (!clientId && !clientName) {
+    console.warn("[webhook] No client id or name in the payload, nothing added (3am pull still covers it)");
+    return;
+  }
+  try {
+    const where = clientId ? `and|clientid|=|${clientId}` : `and|clientname|=|${clientName}`;
+    const zone = await arofloGet("zone=clients&where=" + encodeURIComponent(where) + "&page=1");
+    const client = toArray(zone?.clients).find(c => c?.clientname && String(c.archived) !== "true");
+    if (!client) {
+      console.warn(`[webhook] AroFlo has no active client for ${clientId ? `id ${clientId}` : `"${clientName}"`}`);
+      return;
+    }
+    arofloClients.set(client.clientname.toLowerCase(), client);
+    rebuildClientCache();
+    console.log(`[webhook] Added client "${client.clientname}" (${client.clientid}), ${clientCache.size} in the list`);
+  } catch (err) {
+    console.error("[webhook] Client lookup failed, the 3am pull will pick it up:", err.message);
+  }
 });
 
 // ================================================================
