@@ -18,3 +18,10 @@ assert.deepEqual(clientFromWebhook(null), { clientId: null, clientName: null });
 assert.deepEqual(clientFromWebhook("Client created"), { clientId: null, clientName: null });
 
 console.log("client-webhook tests passed");
+
+// Real AroFlo "Create Client" delivery, 26 Nov 2026 (name under organisationname).
+assert.deepEqual(
+  clientFromWebhook({ eventname: "Create Client", payload: { api_related_ids: { clientid: "JiYqVy1RPDcsCg==" }, organisationname: "Test", currentuser: "Office User", locationaddress: "" }, timestamputc: "2026/11/25 23:31:17" }),
+  { clientId: "JiYqVy1RPDcsCg==", clientName: "Test" },
+);
+console.log("real AroFlo payload test passed");
