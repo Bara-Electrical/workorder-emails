@@ -3604,7 +3604,19 @@ app.post("/gate/decided", (req, res) => {
 // calls a time. The body is read as text because AroFlo's payload is a template and may not be
 // JSON; it is logged in full so the first real delivery shows its shape.
 // ================================================================
-app.post("/aroflo-webhook", requireApiKey, express.text({ type: "*/*", limit: "100kb" }), async (req, res) => {
+// Keyed with the same ?key= as every other AroFlo webhook (AROFLO_WEBHOOK_SECRET, shared with
+// the dashboard), so the URL is registered the same way. Falls back to ADMIN_API_KEY if unset.
+function requireWebhookKey(req, res, next) {
+  const secret = process.env.AROFLO_WEBHOOK_SECRET;
+  if (!secret) return requireApiKey(req, res, next);
+  if (req.query.key !== secret) {
+    console.warn("[webhook] Refused a client webhook with the wrong ?key=");
+    return res.status(401).json({ error: "Unauthorized" });
+  }
+  next();
+}
+
+app.post("/aroflo-webhook", requireWebhookKey, express.text({ type: "*/*", limit: "100kb" }), async (req, res) => {
   const raw = typeof req.body === "string" ? req.body : "";
   console.log("[webhook] AroFlo client webhook received:", raw.slice(0, 4000));
   res.sendStatus(200);
