@@ -78,6 +78,24 @@ AroFlo may still refuse a login from a new IP with "Unusual login activity detec
 approval goes to the service user's mailbox. Approve it there once; the job is created
 regardless, only the email/upload step is missed and the alert email says so.
 
+### The photo check
+
+`photoCheck.js` looks at a new work order's real photos (after the photo filter) for what
+changes the booking: a 90cm appliance, a double oven, the aircon units and their type, a
+two-storey house on roof work, a ceiling high enough for a tall ladder. A finding counts only
+at 90% confidence or more, with the evidence named, and only when the work order text doesn't
+already say it. `PHOTO_CHECK` decides what happens:
+
+| value | behaviour |
+|---|---|
+| `email` (default) | Brandon gets an email per job with findings; AroFlo is not touched |
+| `aroflo` | as `email`, and the findings are appended to the job: a dated line per need in the pinned SCHEDULING NOTE (`27/11 Photos: 90cm Westinghouse cooktop - 90cm, 2 people - AI`), and on aircon jobs with no unit type known, one `Photos: 2× Split` line at the bottom of the description. Nothing already there is changed |
+| `off` | the check doesn't run |
+
+`PHOTO_CHECK_BACKTEST=<days>` runs an accuracy pass once on startup over past jobs in that
+window (up to `PHOTO_CHECK_BACKTEST_LIMIT`, default 60, jobs with photos), writes nothing,
+logs one `[photo-backtest]` line per job and emails Brandon the result. Remove it afterwards.
+
 ## Environment
 
 Required (the process refuses to start without them):
@@ -97,6 +115,8 @@ Optional:
 | `AROFLO_OFFICE_TOTP_SECRET` | authenticator secret for the service user; without it MFA fails |
 | `DASHBOARD_URL`, `DASHBOARD_API_SECRET` | the property check and gate records; without them jobs are created with a "Property check unavailable" warning |
 | `WORKORDER_GATE` | `off` / `tagged` / `on`, see above |
+| `PHOTO_CHECK` | `email` (default) / `aroflo` / `off`, see above |
+| `PHOTO_CHECK_BACKTEST`, `PHOTO_CHECK_BACKTEST_LIMIT` | one-off accuracy run on startup, see above |
 | `OPENAI_API_KEY_WORKORDER_CLIENT_PICK` | the AI's client suggestion on a held email; without it the plugin offers the dropdown only |
 | `ADMIN_API_KEY` | protects `/clients`, `/find-client`, `/aroflo-webhook`; unset means open |
 | `LOG_API_SECRET` | the activity and AI logs written to the dashboard, best effort |

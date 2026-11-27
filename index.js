@@ -20,6 +20,7 @@ import { aiPickClient, closestClients } from "./clientPick.js";
 import { clientFromWebhook } from "./clientWebhook.js";
 import { normaliseAddress } from "./addressText.js";
 import { lookupProperty, lookupFindings, fetchRoofPhoto, propertyEmail } from "./propertyLookup.js";
+import { photoCheckMode, checkPhotos, photoActions, photoEmail } from "./photoCheck.js";
 
 const REQUIRED_ENV = [
   "OPENAI_API_KEY",
@@ -1452,7 +1453,7 @@ function lastEccLine(lastEcc) {
   return `<p><span style="background:#f0fff0;font-weight:bold">Last ECC: ${date ? `${date} - ` : ""}JN ${job}</span></p>`;
 }
 
-function buildDescription(result, airconUnitType = null, site = "", lastEcc = null) {
+function buildDescription(result, airconUnitType = null, site = "", lastEcc = null, photoLine = null) {
   const parts = [];
   const spacer = `<p>&nbsp;</p>`;
   const lockboxDetails = extractLockboxDetails(result["access-details"]);
@@ -1512,6 +1513,13 @@ function buildDescription(result, airconUnitType = null, site = "", lastEcc = nu
   if (ecc) {
     parts.push(spacer);
     parts.push(ecc);
+  }
+
+  // What the work order's photos show on site (photoCheck.js), only with PHOTO_CHECK=aroflo:
+  // one aircon line, at the bottom so nothing the office reads first moves.
+  if (photoLine) {
+    parts.push(spacer);
+    parts.push(`<p><span style="background:#e0e0e0;font-weight:bold">${escapeHtml(photoLine)}</span></p>`);
   }
 
   return parts.join("\n");
@@ -1612,7 +1620,7 @@ async function resolveClientByPick({ result, rawEmail, emailMeta }) {
   throw new ClientHold({ extractedName, aiPick: ai?.client.clientname ?? null, alreadyAsked: record?.status === "NEEDS_CLIENT" });
 }
 
-async function createArofloJob(result, rawEmail, pdfAttachment = null, emailMeta = null, imageAttachments = [], pageSnapshot = null) {
+async function createArofloJob(result, rawEmail, pdfAttachment = null, emailMeta = null, imageAttachments = [], pageSnapshot = null, photoCheck = null) {
   console.log("[job] Creating Aroflo job...");
   const warnings = [];
 
@@ -1887,6 +1895,18 @@ async function createArofloJob(result, rawEmail, pdfAttachment = null, emailMeta
       })().catch(err => { console.warn("[property] Check failed:", err.message); return null; })
     : null;
 
+  // What the photos show (checked while the email was read, see processMessage). Worked out
+  // here because "is the unit type already known" needs the office tag and the site record.
+  const photoMode = photoCheckMode();
+  const siteUnits = checks.aircon?.units ?? checks.aircon ?? {};
+  const photo = photoCheck ? photoActions(photoCheck.findings, {
+    text: [result["task-description"], photoCheck.text].filter(Boolean).join("\n"),
+    pkg: result["package"], taskType: result["task-type"],
+    airconKnown: !!aircon.unitType || ["Split", "Ducted", "Evaporative"].some(t => siteUnits[t] > 0),
+  }) : null;
+  const writePhotos = photoMode === "aroflo" && !!photo;
+  if (photo) console.log(`[photos] ${result.address}: ${photoCheck.findings.length} finding(s), ${photo.used.length} used, mode ${photoMode}:`, JSON.stringify(photoCheck.findings));
+
   const xml =
 `<tasks>
   <task>
@@ -1898,7 +1918,7 @@ async function createArofloJob(result, rawEmail, pdfAttachment = null, emailMeta
     ${location ? `<location><locationid>${location.locationid}</locationid></location>` : ""}
     ${result.address && !location  ? `<sitename>${cdata(result.address)}</sitename>`          : ""}
     <taskname>${cdata(taskName)}</taskname>
-    <description>${cdata(buildDescription(result, aircon.unitType, "", checks.lastEcc))}</description>
+    <description>${cdata(buildDescription(result, aircon.unitType, "", checks.lastEcc, writePhotos ? photo.descriptionLine : null))}</description>
     <duedate>${dueDate}</duedate>
     ${result["order-number"] ? `<custon>${cdata(result["order-number"])}</custon>` : ""}
     ${(result["account-to"] || realEstate) ? `<customfields><customfield><name><![CDATA[ Account To: ]]></name><type><![CDATA[ text ]]></type><value>${cdata(result["account-to"] || realEstate)}</value></customfield></customfields>` : ""}
@@ -1974,6 +1994,7 @@ async function createArofloJob(result, rawEmail, pdfAttachment = null, emailMeta
   // Post the original email as a note and set the substatus in one combined task
   // update (Aroflo doesn't apply substatus on create, so a follow-up write is
   // always needed — piggyback the note content on the same call).
+  const photoWriteErrors = [];
   if (confirmedTaskId) {
     const today     = new Date();
     const dateStamp = `${today.getDate()}/${today.getMonth() + 1}`;
@@ -2021,6 +2042,21 @@ async function createArofloJob(result, rawEmail, pdfAttachment = null, emailMeta
           tag: "Access info not added to scheduling note",
           detail: `Pinned scheduling note not editable — posted as a separate note instead: ${failedLines.join("; ")}`,
         });
+      }
+    }
+
+    // Booking needs the photos show (photoCheck.js), only with PHOTO_CHECK=aroflo: appended to
+    // the SCHEDULING NOTE like the lines above, which is where the booking checker reads needs.
+    // No separate-note fallback: a line that can't go in the pinned note is reported in the
+    // photo check email instead, so nothing lands on the job that the office didn't expect.
+    if (writePhotos) {
+      for (const line of photo.schedulingLines) {
+        try {
+          await appendToPinnedNoteSection(confirmedTaskId, "scheduling", `${dateStamp} ${line} - ${AI_NOTE_INITIALS}`);
+        } catch (err) {
+          console.warn("[photos] Could not append to scheduling note:", err.message);
+          photoWriteErrors.push(`${line} (${err.message})`);
+        }
       }
     }
 
@@ -2113,6 +2149,18 @@ async function createArofloJob(result, rawEmail, pdfAttachment = null, emailMeta
       if (!flagged) { console.log(`[property] ${subject}: no email`); return; }
       return sendAlertEmail(subject, html, `property check JN ${jobNumber}`);
     }).catch(err => console.warn("[property] Result email failed:", err.message));
+  }
+
+  // Brandon hears about every job the photos flagged, written or not, so the accuracy can be
+  // judged before the AroFlo writes go on (and kept an eye on after).
+  if (photo) {
+    const tried = photo.schedulingLines.length + (photo.descriptionLine ? 1 : 0);
+    const { subject, html, worthSending } = photoEmail({
+      jobNumber, jobUrl, address: result.address, check: photoCheck, actions: photo,
+      written: writePhotos && !!confirmedTaskId && tried > 0 && photoWriteErrors.length < tried,
+      writeErrors: photoWriteErrors,
+    });
+    if (worthSending) sendAlertEmail(subject, html, `photo check JN ${jobNumber}`);
   }
 
   return { jobNumber, jobUrl, checks, warnings, clientName: client.clientname };
@@ -2999,7 +3047,16 @@ Return ONLY valid JSON with these exact keys:
 
   const imageAttachments = await filterRealPhotos(candidateImages);
 
-  return { result: parsed, rawEmail: rawBody, pdfAttachment, imageAttachments, emailMeta, pageSnapshot };
+  // What the photos show that changes the booking (photoCheck.js). Best effort: null on any
+  // failure, and the job goes ahead the same. Not on after-hours callouts, which are booked
+  // by phone the same night.
+  let photoCheck = null;
+  if (photoCheckMode() !== "off" && imageAttachments.length > 0 && !emailMeta.afterHours) {
+    photoCheck = await checkPhotos({ openai, images: imageAttachments, workOrderText: textForAI });
+    if (photoCheck) photoCheck.text = textForAI;
+  }
+
+  return { result: parsed, rawEmail: rawBody, pdfAttachment, imageAttachments, emailMeta, pageSnapshot, photoCheck };
 }
 
 // Best-effort alert email to Brandon — used for both per-job warnings and
@@ -3406,7 +3463,7 @@ async function pollInbox(mailbox) {
       continue;
     }
 
-    const { result, rawEmail, pdfAttachment, imageAttachments, emailMeta, pageSnapshot, currentCategories: getCategories } = outcome.value;
+    const { result, rawEmail, pdfAttachment, imageAttachments, emailMeta, pageSnapshot, photoCheck, currentCategories: getCategories } = outcome.value;
     let currentCategories = getCategories();
 
     try {
@@ -3420,7 +3477,7 @@ async function pollInbox(mailbox) {
       }
 
       currentCategories = await setJobStatus(mailbox, message.id, currentCategories, CREATING_JOB_CATEGORY);
-      const { jobNumber, jobUrl, checks, warnings: jobWarnings, clientName } = await createArofloJob(result, rawEmail, pdfAttachment, emailMeta, imageAttachments, pageSnapshot);
+      const { jobNumber, jobUrl, checks, warnings: jobWarnings, clientName } = await createArofloJob(result, rawEmail, pdfAttachment, emailMeta, imageAttachments, pageSnapshot, photoCheck);
       logAiOutput(result, message.subject).catch(err => console.warn("[log] logAiOutput:", err.message));
       logActivity("Job created", jobNumber, {
         jobUrl, client: clientName, address: result.address || null, jobType: [result["package"], result["task-type"]].find(v => v && v !== "null") || null,
@@ -3644,6 +3701,71 @@ app.post("/aroflo-webhook", requireWebhookKey, express.text({ type: "*/*", limit
 });
 
 // ================================================================
+// PHOTO CHECK ACCURACY RUN
+// Set PHOTO_CHECK_BACKTEST=<days> (e.g. 30) and the service, once on startup, runs the photo
+// check over the work orders in that window that became jobs, through the same reading
+// pipeline a new email takes (processMessage, without status tags), and emails Brandon one
+// report. Nothing is written to AroFlo or to the emails. Each job is also logged as one
+// "[photo-backtest]" JSON line, so the results can be compared with what the office later
+// wrote on those jobs. Capped at PHOTO_CHECK_BACKTEST_LIMIT jobs with photos (default 60).
+// ================================================================
+async function runPhotoBacktest(days, limit) {
+  const since = new Date(Date.now() - days * 86_400_000).toISOString();
+  console.log(`[photo-backtest] Starting: jobs since ${since}, up to ${limit} with photos`);
+  const rows = [];
+  const seenJobs = new Set();
+  let scanned = 0;
+  let url = `/users/${WORKORDERS_EMAIL}/messages?$filter=${encodeURIComponent(`receivedDateTime ge ${since}`)}` +
+    `&$select=id,subject,categories,receivedDateTime&$orderby=receivedDateTime desc&$top=50`;
+  while (url && rows.length < limit) {
+    const res = await graphFetch(url.replace(/^https:\/\/graph\.microsoft\.com\/v1\.0/, ""));
+    const data = await res.json();
+    if (!res.ok) throw new Error(`Graph ${res.status}: ${JSON.stringify(data?.error || data)}`);
+    for (const m of data.value || []) {
+      if (rows.length >= limit) break;
+      const tag = (m.categories || []).find(c => /^Job created - \S+/.test(c));
+      // Every message in a job's thread (and the copy forwarded to AroFlo) carries the same
+      // tag, so each job is read once, from its newest message.
+      if (!tag || seenJobs.has(tag)) continue;
+      seenJobs.add(tag);
+      scanned++;
+      try {
+        const full = await fetchFullMessage(WORKORDERS_EMAIL, m.id);
+        const read = await processMessage(full, WORKORDERS_EMAIL, null);
+        if (!read.imageAttachments.length) continue;
+        // With PHOTO_CHECK=off the reading skips the check, so the run does it itself.
+        const check = read.photoCheck ?? await checkPhotos({ openai, images: read.imageAttachments, workOrderText: read.rawEmail })
+          .then(c => (c ? { ...c, text: "" } : null));
+        const actions = check ? photoActions(check.findings, {
+          text: [read.result["task-description"], check.text].filter(Boolean).join("\n"),
+          pkg: read.result["package"], taskType: read.result["task-type"],
+          airconKnown: !!read.emailMeta.airconUnitType,
+        }) : null;
+        const row = {
+          jobNumber: tag.replace(/^Job created - /, ""), subject: m.subject, photos: read.imageAttachments.length,
+          failed: !check, findings: check?.findings ?? [], schedulingLines: actions?.schedulingLines ?? [],
+          descriptionLine: actions?.descriptionLine ?? null, skipped: (actions?.skipped ?? []).map(f => `${f.detail} (${f.reason})`),
+        };
+        rows.push(row);
+        console.log("[photo-backtest]", JSON.stringify(row));
+      } catch (err) {
+        console.warn(`[photo-backtest] ${m.subject}: ${err.message}`);
+      }
+    }
+    url = data["@odata.nextLink"] || null;
+  }
+  const flagged = rows.filter(r => r.schedulingLines.length || r.descriptionLine);
+  const li = (r) => `<li style="font-family:sans-serif;font-size:14px;margin:4px 0"><strong>JN ${escapeHtml(r.jobNumber)}</strong> ${escapeHtml(r.subject || "")}<br>` +
+    [...r.schedulingLines.map(l => `Scheduling note: ${l}`), ...(r.descriptionLine ? [`Description: ${r.descriptionLine}`] : [])].map(escapeHtml).join("<br>") +
+    (r.skipped.length ? `<br><em>Not used: ${escapeHtml(r.skipped.join("; "))}</em>` : "") + "</li>";
+  const html =
+    `<p style="font-family:sans-serif;font-size:14px">${scanned} job(s) from the last ${days} days read, ${rows.length} with photos, ${rows.filter(r => r.failed).length} check(s) failed, ${flagged.length} would get a line on the job.</p>` +
+    (flagged.length ? `<ul>${flagged.map(li).join("")}</ul>` : "");
+  await sendAlertEmail(`Photo check accuracy run: ${flagged.length} of ${rows.length} jobs with photos flagged`, html, "photo backtest");
+  console.log(`[photo-backtest] Done: ${scanned} read, ${rows.length} with photos, ${flagged.length} flagged`);
+}
+
+// ================================================================
 // START
 // ================================================================
 app.listen(process.env.PORT || 3000, async () => {
@@ -3657,4 +3779,11 @@ app.listen(process.env.PORT || 3000, async () => {
 
   pollEmails();
   setInterval(pollEmails, POLL_INTERVAL_MS);
+
+  const backtestDays = Number(process.env.PHOTO_CHECK_BACKTEST);
+  if (backtestDays > 0) {
+    const limit = Number(process.env.PHOTO_CHECK_BACKTEST_LIMIT) || 60;
+    runPhotoBacktest(Math.min(backtestDays, 90), Math.min(limit, 200))
+      .catch(err => console.error("[photo-backtest] Failed:", err.message));
+  }
 });
