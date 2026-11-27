@@ -1449,7 +1449,7 @@ function lastEccLine(lastEcc) {
   const job = /^https:\/\/field\.aroflo\.com\//.test(lastEcc.fieldUrl || "")
     ? `<a href="${escapeHtml(lastEcc.fieldUrl)}">${escapeHtml(lastEcc.jobNumber)}</a>`
     : escapeHtml(lastEcc.jobNumber);
-  return `<p>Last ECC: ${date ? `${date}, ` : ""}job ${job}</p>`;
+  return `<p><span style="background:#f0fff0;font-weight:bold">Last ECC: ${date ? `${date} - ` : ""}JN ${job}</span></p>`;
 }
 
 function buildDescription(result, airconUnitType = null, site = "", lastEcc = null) {

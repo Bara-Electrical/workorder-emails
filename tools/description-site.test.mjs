@@ -160,16 +160,17 @@ check("index.js does not put the site record in the description",
   const html = buildDescription(
     { "task-type": "Real Estate General Maintenance", "package": "EC1", "task-description": "Compliance check and fix light", "expenditure-limit": "$330" },
     null, "", { jobNumber: "104233", completedAt: "2026-03-12T00:00:00.000Z", fieldUrl: FIELD });
-  check("last ECC line names the date and job", html.includes("Last ECC: 12/03/2026, job <a href="));
+  check("last ECC line names the date and job", html.includes("Last ECC: 12/03/2026 - JN <a href="));
+  check("last ECC line is bold on honeydew", html.includes(`<p><span style="background:#f0fff0;font-weight:bold">Last ECC:`));
   check("last ECC links to the job in AroFlo field", html.includes(`href="${FIELD.replace(/&/g, "&amp;")}">104233</a>`));
-  check("last ECC is the last thing in the description", html.trimEnd().endsWith("104233</a></p>"));
+  check("last ECC is the last thing in the description", html.trimEnd().endsWith("104233</a></span></p>"));
   check("…after the expenditure limit", html.indexOf("Expenditure Limit") < html.indexOf("Last ECC"));
 }
 {
   const html = buildDescription({ "task-type": "EC1", "package": "EC1", "task-description": "Annual compliance" }, null, "",
     { jobNumber: "99001", completedAt: "2025-11-01T00:00:00.000Z", fieldUrl: null });
-  check("last ECC comes after the package template", html.indexOf("Last ECC") > html.indexOf("</ul>") || html.trimEnd().endsWith("job 99001</p>"));
-  check("no link without a field url", html.includes("Last ECC: 01/11/2025, job 99001</p>"));
+  check("last ECC comes after the package template", html.indexOf("Last ECC") > html.indexOf("</ul>") || html.trimEnd().endsWith("JN 99001</span></p>"));
+  check("no link without a field url", html.includes("Last ECC: 01/11/2025 - JN 99001</span></p>"));
 }
 {
   const html = buildDescription({ "task-type": "EC1", "task-description": "x" }, null, "", { jobNumber: "1", fieldUrl: "https://evil.example/x" });
